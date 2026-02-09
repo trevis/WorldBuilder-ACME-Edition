@@ -1,4 +1,4 @@
-﻿using CommunityToolkit.Mvvm.ComponentModel;
+using CommunityToolkit.Mvvm.ComponentModel;
 using DatReaderWriter;
 using DatReaderWriter.DBObjs;
 using DatReaderWriter.Enums;
@@ -37,7 +37,43 @@ namespace WorldBuilder.Shared.Documents {
 
     [MemoryPackable]
     public partial class TerrainUpdateEvent : BaseDocumentEvent {
+        /// <summary>
+        /// Which terrain field this update applies to. Used by LayerDocument
+        /// to set the correct mask bits during compositing.
+        /// </summary>
+        public TerrainField Field { get; set; }
         public Dictionary<ushort, Dictionary<byte, uint>> Changes = new();
+    }
+
+    /// <summary>
+    /// Identifies which field of a TerrainEntry is being edited.
+    /// </summary>
+    public enum TerrainField : byte {
+        Road = 0,
+        Scenery = 1,
+        Type = 2,
+        Height = 3
+    }
+
+    /// <summary>
+    /// Bitmask constants for TerrainField. Used in LayerDocument.FieldMasks
+    /// to track which fields a layer has explicitly set for each cell.
+    /// </summary>
+    public static class TerrainFieldMask {
+        public const byte Road    = 0x01;
+        public const byte Scenery = 0x02;
+        public const byte Type    = 0x04;
+        public const byte Height  = 0x08;
+        public const byte All     = 0x0F;
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static byte For(TerrainField field) => field switch {
+            TerrainField.Road    => Road,
+            TerrainField.Scenery => Scenery,
+            TerrainField.Type    => Type,
+            TerrainField.Height  => Height,
+            _ => throw new ArgumentOutOfRangeException(nameof(field))
+        };
     }
 
     public readonly record struct TerrainEntry {
