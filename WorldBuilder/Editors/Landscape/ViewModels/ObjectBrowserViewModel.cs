@@ -6,6 +6,8 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Numerics;
 using System.Threading.Tasks;
+using WorldBuilder.Lib;
+using WorldBuilder.Lib.Converters;
 using WorldBuilder.Shared.Documents;
 using WorldBuilder.Shared.Lib;
 using WorldBuilder.ViewModels;
@@ -17,6 +19,7 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
     public partial class ObjectBrowserViewModel : ViewModelBase {
         private readonly TerrainEditingContext _context;
         private readonly IDatReaderWriter _dats;
+        private readonly ObjectTagIndex _tagIndex = new();
         private uint[] _allSetupIds = Array.Empty<uint>();
         private uint[] _allGfxObjIds = Array.Empty<uint>();
         private HashSet<uint> _buildingIds = new();
@@ -27,16 +30,25 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
         [ObservableProperty] private uint[] _filteredSetupIds = Array.Empty<uint>();
         [ObservableProperty] private uint[] _filteredGfxObjIds = Array.Empty<uint>();
         [ObservableProperty] private string _searchText = "";
-        [ObservableProperty] private string _status = "Search for an object by hex ID";
+        [ObservableProperty] private string _status = "Search by name or hex ID";
 
         [ObservableProperty] private bool _showSetups = true;
         [ObservableProperty] private bool _showGfxObjs = true;
         [ObservableProperty] private bool _showBuildingsOnly;
         [ObservableProperty] private bool _showSceneryOnly;
 
+        /// <summary>
+        /// Gets the tag index for use by the view (e.g., tooltips).
+        /// </summary>
+        public ObjectTagIndex TagIndex => _tagIndex;
+
         public ObjectBrowserViewModel(TerrainEditingContext context, IDatReaderWriter dats) {
             _context = context;
             _dats = dats;
+
+            // Load keyword tag index for name-based search
+            _tagIndex.LoadFromEmbeddedResource();
+            ObjectIdToTagsConverter.TagIndex = _tagIndex;
 
             try {
                 _allSetupIds = _dats.Dats.Portal.GetAllIdsOfType<Setup>().OrderBy(id => id).ToArray();
@@ -163,6 +175,50 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
             ApplyFilter();
         }
 
+        /// <summary>
+        /// Returns true if the search text looks like a hex ID search (starts with 0x or is all hex chars).
+        /// </summary>
+        private static bool IsHexSearch(string text, out string normalizedHex) {
+            normalizedHex = text.TrimStart('0', 'x', 'X').ToUpperInvariant();
+            return uint.TryParse(normalizedHex, System.Globalization.NumberStyles.HexNumber, null, out _);
+        }
+
+        /// <summary>
+        /// Filters a set of IDs by either hex substring match or keyword search.
+        /// </summary>
+        private (IEnumerable<uint> setups, IEnumerable<uint> gfxObjs) ApplySearchFilter(
+            IEnumerable<uint> setups, IEnumerable<uint> gfxObjs, out string? statusSuffix) {
+            statusSuffix = null;
+
+            if (string.IsNullOrWhiteSpace(SearchText)) return (setups, gfxObjs);
+
+            if (IsHexSearch(SearchText, out var hexSearch)) {
+                // Hex ID search (existing behavior)
+                return (
+                    setups.Where(id => id.ToString("X8").Contains(hexSearch)),
+                    gfxObjs.Where(id => id.ToString("X8").Contains(hexSearch))
+                );
+            }
+
+            // Keyword search via tag index
+            if (!_tagIndex.IsLoaded) {
+                statusSuffix = "(keyword index not loaded)";
+                return (Array.Empty<uint>(), Array.Empty<uint>());
+            }
+
+            var matchedIds = _tagIndex.Search(SearchText);
+            if (matchedIds.Count == 0) {
+                statusSuffix = $"No results for \"{SearchText}\"";
+                return (Array.Empty<uint>(), Array.Empty<uint>());
+            }
+
+            statusSuffix = $"Found {matchedIds.Count} matches for \"{SearchText}\"";
+            return (
+                setups.Where(id => matchedIds.Contains(id)),
+                gfxObjs.Where(id => matchedIds.Contains(id))
+            );
+        }
+
         private void ApplyFilter() {
             // When buildings filter is active, show building IDs directly
             if (ShowBuildingsOnly) {
@@ -173,33 +229,17 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
                     return;
                 }
 
-                // Split building IDs into Setup vs GfxObj by their ID range
-                // Show all buildings regardless of Setups/GfxObjs checkboxes
                 IEnumerable<uint> buildingSetups = _buildingIds
                     .Where(id => (id & 0xFF000000) == 0x02000000).OrderBy(id => id);
                 IEnumerable<uint> buildingGfxObjs = _buildingIds
                     .Where(id => (id & 0xFF000000) != 0x02000000).OrderBy(id => id);
 
-                // Apply hex search on top
-                if (!string.IsNullOrWhiteSpace(SearchText)) {
-                    var searchUpper = SearchText.TrimStart('0', 'x', 'X').ToUpperInvariant();
-                    if (uint.TryParse(searchUpper, System.Globalization.NumberStyles.HexNumber, null, out _)) {
-                        buildingSetups = buildingSetups.Where(id => id.ToString("X8").Contains(searchUpper));
-                        buildingGfxObjs = buildingGfxObjs.Where(id => id.ToString("X8").Contains(searchUpper));
-                    }
-                    else {
-                        FilteredSetupIds = Array.Empty<uint>();
-                        FilteredGfxObjIds = Array.Empty<uint>();
-                        Status = "Invalid hex search";
-                        return;
-                    }
-                }
-
-                var sr = buildingSetups.Take(100).ToArray();
-                var gr = buildingGfxObjs.Take(100).ToArray();
+                var (filtSetups, filtGfx) = ApplySearchFilter(buildingSetups, buildingGfxObjs, out var suffix);
+                var sr = filtSetups.Take(100).ToArray();
+                var gr = filtGfx.Take(100).ToArray();
                 FilteredSetupIds = sr;
                 FilteredGfxObjIds = gr;
-                Status = $"{_buildingIds.Count} buildings total — showing {sr.Length + gr.Length}";
+                Status = suffix ?? $"{_buildingIds.Count} buildings total — showing {sr.Length + gr.Length}";
                 return;
             }
 
@@ -217,25 +257,12 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
                 IEnumerable<uint> sceneryGfxObjs = _sceneryIds
                     .Where(id => (id & 0xFF000000) != 0x02000000).OrderBy(id => id);
 
-                if (!string.IsNullOrWhiteSpace(SearchText)) {
-                    var searchUpper = SearchText.TrimStart('0', 'x', 'X').ToUpperInvariant();
-                    if (uint.TryParse(searchUpper, System.Globalization.NumberStyles.HexNumber, null, out _)) {
-                        scenerySetups = scenerySetups.Where(id => id.ToString("X8").Contains(searchUpper));
-                        sceneryGfxObjs = sceneryGfxObjs.Where(id => id.ToString("X8").Contains(searchUpper));
-                    }
-                    else {
-                        FilteredSetupIds = Array.Empty<uint>();
-                        FilteredGfxObjIds = Array.Empty<uint>();
-                        Status = "Invalid hex search";
-                        return;
-                    }
-                }
-
-                var scsr = scenerySetups.Take(100).ToArray();
-                var scgr = sceneryGfxObjs.Take(100).ToArray();
+                var (filtSetups, filtGfx) = ApplySearchFilter(scenerySetups, sceneryGfxObjs, out var suffix);
+                var scsr = filtSetups.Take(100).ToArray();
+                var scgr = filtGfx.Take(100).ToArray();
                 FilteredSetupIds = scsr;
                 FilteredGfxObjIds = scgr;
-                Status = $"{_sceneryIds.Count} scenery total — showing {scsr.Length + scgr.Length}";
+                Status = suffix ?? $"{_sceneryIds.Count} scenery total — showing {scsr.Length + scgr.Length}";
                 return;
             }
 
@@ -243,25 +270,12 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
             IEnumerable<uint> setups = ShowSetups ? _allSetupIds : Array.Empty<uint>();
             IEnumerable<uint> gfxObjs = ShowGfxObjs ? _allGfxObjIds : Array.Empty<uint>();
 
-            if (!string.IsNullOrWhiteSpace(SearchText)) {
-                var searchUpper = SearchText.TrimStart('0', 'x', 'X').ToUpperInvariant();
-                if (uint.TryParse(searchUpper, System.Globalization.NumberStyles.HexNumber, null, out _)) {
-                    setups = setups.Where(id => id.ToString("X8").Contains(searchUpper));
-                    gfxObjs = gfxObjs.Where(id => id.ToString("X8").Contains(searchUpper));
-                }
-                else {
-                    FilteredSetupIds = Array.Empty<uint>();
-                    FilteredGfxObjIds = Array.Empty<uint>();
-                    Status = "Invalid hex search";
-                    return;
-                }
-            }
-
-            var setupResult = setups.Take(100).ToArray();
-            var gfxResult = gfxObjs.Take(100).ToArray();
+            var (fSetups, fGfx) = ApplySearchFilter(setups, gfxObjs, out var statusSuffix);
+            var setupResult = fSetups.Take(100).ToArray();
+            var gfxResult = fGfx.Take(100).ToArray();
             FilteredSetupIds = setupResult;
             FilteredGfxObjIds = gfxResult;
-            Status = $"Showing {setupResult.Length} Setups, {gfxResult.Length} GfxObjs";
+            Status = statusSuffix ?? $"Showing {setupResult.Length} Setups, {gfxResult.Length} GfxObjs";
         }
 
         /// <summary>
