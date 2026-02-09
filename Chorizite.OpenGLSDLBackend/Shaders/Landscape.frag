@@ -26,6 +26,11 @@ uniform float uSlopeThreshold;      // Slope angle threshold in radians
 uniform vec3 uSlopeHighlightColor;  // Color for slope highlight (RGB)
 uniform float uSlopeHighlightOpacity; // Opacity of slope highlight
 
+// Brush preview uniforms
+uniform bool uBrushActive;          // Enable/disable brush preview
+uniform vec2 uBrushCenter;          // Brush center in world XY coordinates
+uniform float uBrushRadius;         // Brush radius in world units
+
 in vec3 vTexUV;
 in vec4 vOverlay0;
 in vec4 vOverlay1;
@@ -220,6 +225,31 @@ vec3 calculateSlopeHighlight(vec3 normal) {
     return uSlopeHighlightColor * highlight * uSlopeHighlightOpacity;
 }
 
+vec3 calculateBrushPreview(vec2 worldPos) {
+    if (!uBrushActive) return vec3(0.0);
+
+    float dist = distance(worldPos, uBrushCenter);
+    if (dist > uBrushRadius + 2.0) return vec3(0.0); // Early out
+
+    vec3 brushColor = vec3(0.3, 0.6, 1.0); // Soft blue tint
+    float ringColor = 1.0;
+
+    // Inner fill: subtle tint inside the brush radius
+    float fillAlpha = 0.0;
+    if (dist < uBrushRadius) {
+        fillAlpha = 0.12; // Very subtle fill
+    }
+
+    // Edge ring: crisp circle at the brush boundary
+    float ringWidth = max(1.5, uBrushRadius * 0.03); // Scale ring width slightly with brush size
+    float ringDist = abs(dist - uBrushRadius);
+    float ringAlpha = 1.0 - smoothstep(0.0, ringWidth, ringDist);
+    ringAlpha *= 0.8; // Ring opacity
+
+    float totalAlpha = max(fillAlpha, ringAlpha);
+    return brushColor * totalAlpha;
+}
+
 void main() {
     vec4 baseColor = texture(xOverlays, vTexUV);
     vec4 combinedOverlays = vec4(0.0);
@@ -249,6 +279,10 @@ void main() {
     // Apply slope highlighting
     vec3 slopeColor = calculateSlopeHighlight(vNormal);
     finalColor = mix(finalColor, slopeColor, length(slopeColor));
+
+    // Apply brush preview
+    vec3 brushColor = calculateBrushPreview(worldPos);
+    finalColor = finalColor + brushColor;
     
     vec3 litColor = finalColor * (saturate(vLightingFactor) + xAmbient);
     FragColor = vec4(litColor, uAlpha);

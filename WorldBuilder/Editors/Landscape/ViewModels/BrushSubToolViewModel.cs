@@ -1,4 +1,4 @@
-﻿using CommunityToolkit.Mvvm.ComponentModel;
+using CommunityToolkit.Mvvm.ComponentModel;
 using DatReaderWriter.Enums;
 using DatReaderWriter.Types;
 using System;
@@ -45,17 +45,24 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
 
         public override void OnActivated() {
             Context.ActiveVertices.Clear();
+            Context.BrushActive = true;
+            Context.BrushRadius = BrushRadius;
             _lastHitPosition = _currentHitPosition = new TerrainRaycast.TerrainRaycastHit();
             _pendingChanges.Clear();
         }
 
         public override void OnDeactivated() {
+            Context.BrushActive = false;
+            Context.ActiveVertices.Clear();
             if (_isPainting) {
                 FinalizePainting();
             }
         }
 
         public override void Update(double deltaTime) {
+            Context.BrushCenter = new Vector2(_currentHitPosition.NearestVertice.X, _currentHitPosition.NearestVertice.Y);
+            Context.BrushRadius = BrushRadius;
+
             if (Vector3.Distance(_currentHitPosition.NearestVertice, _lastHitPosition.NearestVertice) < 0.01f) return;
 
             Context.ActiveVertices.Clear();

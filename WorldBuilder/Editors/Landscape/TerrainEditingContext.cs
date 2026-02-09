@@ -21,6 +21,21 @@ namespace WorldBuilder.Editors.Landscape {
         public HashSet<Vector2> ActiveVertices { get; } = new();
 
         /// <summary>
+        /// Whether the brush preview should be rendered on the terrain
+        /// </summary>
+        public bool BrushActive { get; set; } = false;
+
+        /// <summary>
+        /// World-space center of the brush preview (XY)
+        /// </summary>
+        public Vector2 BrushCenter { get; set; } = Vector2.Zero;
+
+        /// <summary>
+        /// Radius of the brush preview in world units
+        /// </summary>
+        public float BrushRadius { get; set; } = 0f;
+
+        /// <summary>
         /// Gets the modified landblock IDs since last clear
         /// </summary>
         public IEnumerable<uint> ModifiedLandblocks => _modifiedLandblocks;

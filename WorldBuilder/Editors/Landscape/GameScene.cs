@@ -836,11 +836,12 @@ namespace WorldBuilder.Editors.Landscape {
             var frustum = new Frustum(viewProjection);
             var renderableChunks = GetRenderableChunks(frustum);
 
-            // Render terrain
-            RenderTerrain(renderableChunks, model, camera, cameraDistance, width, height);
+            // Render terrain (with brush preview)
+            RenderTerrain(renderableChunks, model, camera, cameraDistance, width, height, editingContext);
 
-            // Render active vertex spheres
-            if (editingContext.ActiveVertices.Count > 0) {
+            // Render active vertex spheres only when brush preview is NOT active
+            // (brush tools use shader-based preview instead)
+            if (!editingContext.BrushActive && editingContext.ActiveVertices.Count > 0) {
                 RenderActiveSpheres(editingContext, camera, model, viewProjection);
             }
 
@@ -950,7 +951,8 @@ namespace WorldBuilder.Editors.Landscape {
             ICamera camera,
             float cameraDistance,
             float width,
-            float height) {
+            float height,
+            TerrainEditingContext? editingContext = null) {
             _terrainShader.Bind();
             _terrainShader.SetUniform("xAmbient", AmbientLightIntensity);
             _terrainShader.SetUniform("xWorld", model);
@@ -971,6 +973,16 @@ namespace WorldBuilder.Editors.Landscape {
             _terrainShader.SetUniform("uSlopeThreshold", SlopeThreshold * MathF.PI / 180f); // Convert degrees to radians
             _terrainShader.SetUniform("uSlopeHighlightColor", SlopeHighlightColor);
             _terrainShader.SetUniform("uSlopeHighlightOpacity", SlopeHighlightOpacity);
+
+            // Brush preview uniforms
+            bool brushActive = editingContext?.BrushActive ?? false;
+            _terrainShader.SetUniform("uBrushActive", brushActive ? 1 : 0);
+            if (brushActive) {
+                _terrainShader.SetUniform("uBrushCenter", editingContext!.BrushCenter);
+                // Scale radius to match PaintCommand.GetAffectedVertices: (radius * 12) + 1
+                float worldRadius = (editingContext.BrushRadius * 12f) + 1f;
+                _terrainShader.SetUniform("uBrushRadius", worldRadius);
+            }
 
             SurfaceManager.TerrainAtlas.Bind(0);
             _terrainShader.SetUniform("xOverlays", 0);
