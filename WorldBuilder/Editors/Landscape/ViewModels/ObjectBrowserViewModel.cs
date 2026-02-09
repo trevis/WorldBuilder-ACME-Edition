@@ -264,6 +264,11 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
             Status = $"Showing {setupResult.Length} Setups, {gfxResult.Length} GfxObjs";
         }
 
+        /// <summary>
+        /// Raised when an object is selected for placement, so the editor can switch to the Selector tool.
+        /// </summary>
+        public event EventHandler? PlacementRequested;
+
         [RelayCommand]
         private void SelectForPlacement(uint objectId) {
             bool isSetup = (objectId & 0x02000000) != 0;
@@ -279,6 +284,8 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
 
             Status = $"Placing 0x{objectId:X8} - click terrain to place, Escape to cancel";
             Console.WriteLine($"[ObjectBrowser] Selected 0x{objectId:X8} for placement (IsSetup={isSetup})");
+
+            PlacementRequested?.Invoke(this, EventArgs.Empty);
         }
     }
 }

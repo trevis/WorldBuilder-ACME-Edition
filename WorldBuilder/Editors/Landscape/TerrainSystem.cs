@@ -159,7 +159,7 @@ namespace WorldBuilder.Editors.Landscape {
 
         public HashSet<ushort> UpdateLandblock(ushort lbKey, TerrainEntry[] newEntries) {
             var currentLayer = EditingContext.CurrentLayerDoc;
-            if (currentLayer == null) {
+            if (currentLayer == null || currentLayer == TerrainDoc) {
                 TerrainDoc.UpdateLandblockInternal(lbKey, newEntries, out var modifiedLandblocks);
                 return modifiedLandblocks;
             }

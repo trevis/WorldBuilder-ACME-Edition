@@ -95,6 +95,7 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
             HistorySnapshotPanel = new HistorySnapshotPanelViewModel(TerrainSystem, documentStorageService, TerrainSystem.History);
             LayersPanel = new LayersViewModel(TerrainSystem);
             ObjectBrowser = new ObjectBrowserViewModel(TerrainSystem.EditingContext, _dats);
+            ObjectBrowser.PlacementRequested += OnPlacementRequested;
 
             UpdateTerrain(canvasSize);
         }
@@ -295,6 +296,30 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
                 return hexId;
 
             return null;
+        }
+
+        private void OnPlacementRequested(object? sender, EventArgs e) {
+            // Switch to the Selector tool's Select sub-tool so placement clicks are handled
+            var selectorTool = Tools.OfType<SelectorToolViewModel>().FirstOrDefault();
+            if (selectorTool == null) return;
+
+            var selectSubTool = selectorTool.AllSubTools.OfType<SelectSubToolViewModel>().FirstOrDefault();
+            if (selectSubTool == null) return;
+
+            // Save placement state — tool deactivation clears it
+            var sel = TerrainSystem?.EditingContext.ObjectSelection;
+            var wasPlacing = sel?.IsPlacementMode ?? false;
+            var preview = sel?.PlacementPreview;
+            var previewMulti = sel?.PlacementPreviewMulti;
+
+            SelectSubTool(selectSubTool);
+
+            // Restore placement state after tool switch
+            if (wasPlacing && sel != null) {
+                sel.IsPlacementMode = true;
+                sel.PlacementPreview = preview;
+                sel.PlacementPreviewMulti = previewMulti;
+            }
         }
 
         public void Cleanup() {
