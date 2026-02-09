@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Numerics;
 using WorldBuilder.Lib;
@@ -122,5 +122,10 @@ namespace WorldBuilder.Editors.Landscape {
         /// Gets the terrain system
         /// </summary>
         public TerrainSystem TerrainSystem => _terrainSystem;
+
+        /// <summary>
+        /// Gets the object selection state for the selector tool
+        /// </summary>
+        public ObjectSelectionState ObjectSelection { get; } = new();
     }
 }

@@ -1,4 +1,4 @@
-﻿using Chorizite.Core.Render;
+using Chorizite.Core.Render;
 using Chorizite.Core.Render.Enums;
 using Chorizite.OpenGLSDLBackend;
 using DatReaderWriter.Enums;
@@ -17,7 +17,7 @@ namespace WorldBuilder.Editors.Landscape {
         private readonly Dictionary<int, int> _refCounts = new();
         private readonly Stack<int> _freeSlots = new();
         private int _nextIndex = 0;
-        private const int InitialCapacity = 90;
+        private const int InitialCapacity = 8;
 
         public ManagedGLTextureArray TextureArray { get; private set; }
         public int UsedSlots => _textureIndices.Count;

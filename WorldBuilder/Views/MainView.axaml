@@ -25,6 +25,12 @@
             <MenuItem Header="File">
                 <MenuItem Command="{Binding OpenExportDatsWindowCommand}" Header="Export Dats" />
             </MenuItem>
+            <MenuItem Header="Navigate">
+                <MenuItem
+                    Command="{Binding GotoLandblockCommand}"
+                    Header="Go to Landblock"
+                    InputGesture="Ctrl+G" />
+            </MenuItem>
             <MenuItem Command="{Binding OpenSettingsWindowCommand}" Header="Settings" />
         </Menu>
         <Grid>

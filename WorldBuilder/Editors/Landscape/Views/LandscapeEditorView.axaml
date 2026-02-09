@@ -17,10 +17,25 @@
         </Grid.ColumnDefinitions>
 
         <!--  Main 3D viewport area  -->
-        <Panel
-            x:Name="Viewport"
-            Grid.Column="0"
-            Background="Transparent" />
+        <Grid Grid.Column="0">
+            <Panel
+                x:Name="Viewport"
+                Background="Transparent" />
+            <Border
+                Margin="8"
+                Padding="6,3"
+                HorizontalAlignment="Left"
+                VerticalAlignment="Bottom"
+                Background="#88000000"
+                CornerRadius="4"
+                IsHitTestVisible="False">
+                <TextBlock
+                    FontFamily="Consolas, Courier New"
+                    FontSize="12"
+                    Foreground="White"
+                    Text="{Binding CurrentPositionText}" />
+            </Border>
+        </Grid>
 
         <!--  Splitter for tools panel  -->
         <GridSplitter
@@ -46,6 +61,17 @@
                     DockPanel.Dock="Top">
                     <ContentControl Content="{Binding LayersPanel}" />
                 </Border>
+                <!--  Object Browser Panel (collapsible)  -->
+                <Border
+                    BorderBrush="{DynamicResource SystemControlForegroundBaseMediumLowBrush}"
+                    BorderThickness="0,0,0,1"
+                    DockPanel.Dock="Top">
+                    <Expander Header="Object Browser" IsExpanded="False" Padding="4">
+                        <Border MaxHeight="220">
+                            <ContentControl Content="{Binding ObjectBrowser}" />
+                        </Border>
+                    </Expander>
+                </Border>
                 <!--  History and Snapshot Panel  -->
                 <Border
                     Padding="10"
@@ -55,51 +81,74 @@
                     <ContentControl Content="{Binding HistorySnapshotPanel}" />
                 </Border>
 
-                <!--  Tools Panel - fills remaining space  -->
-                <ScrollViewer>
-                    <StackPanel Margin="10" Spacing="15">
-                        <TextBlock
-                            FontSize="16"
-                            FontWeight="Bold"
-                            Text="Tools" />
-                        <ItemsControl ItemsSource="{Binding Tools}">
-                            <ItemsControl.ItemTemplate>
-                                <DataTemplate>
-                                    <StackPanel Margin="0,0,0,15" Spacing="10">
-                                        <TextBlock
-                                            FontSize="14"
-                                            FontWeight="SemiBold"
-                                            Text="{Binding Name}" />
-                                        <ItemsControl ItemsSource="{Binding AllSubTools}">
-                                            <ItemsControl.ItemsPanel>
-                                                <ItemsPanelTemplate>
-                                                    <WrapPanel Orientation="Horizontal" />
-                                                </ItemsPanelTemplate>
-                                            </ItemsControl.ItemsPanel>
-                                            <ItemsControl.ItemTemplate>
-                                                <DataTemplate>
-                                                    <Button
-                                                        Margin="0,0,5,5"
-                                                        Padding="5"
-                                                        Classes.selected="{Binding IsSelected}"
-                                                        Command="{Binding $parent[Grid].((vm:LandscapeEditorViewModel)DataContext).SelectSubToolCommand}"
-                                                        CommandParameter="{Binding}"
-                                                        Focusable="False">
-                                                        <StackPanel Orientation="Horizontal" Spacing="5">
-                                                            <TextBlock
-                                                                FontSize="16"
-                                                                Text="{Binding IconGlyph}"
-                                                                ToolTip.Tip="{Binding Name}" />
-                                                        </StackPanel>
-                                                    </Button>
-                                                </DataTemplate>
-                                            </ItemsControl.ItemTemplate>
-                                        </ItemsControl>
-                                        <Separator Margin="0,5" />
+                <!--  Tool Bar - horizontal tool selector  -->
+                <Border
+                    Padding="6"
+                    BorderBrush="{DynamicResource SystemControlForegroundBaseMediumLowBrush}"
+                    BorderThickness="0,0,0,1"
+                    DockPanel.Dock="Top">
+                    <ItemsControl ItemsSource="{Binding Tools}">
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <WrapPanel Orientation="Horizontal" />
+                            </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Button
+                                    Margin="0,0,4,0"
+                                    Padding="8,4"
+                                    Classes.selected="{Binding IsSelected}"
+                                    Command="{Binding $parent[Grid].((vm:LandscapeEditorViewModel)DataContext).SelectToolCommand}"
+                                    CommandParameter="{Binding}"
+                                    Focusable="False"
+                                    ToolTip.Tip="{Binding Name}">
+                                    <StackPanel Orientation="Horizontal" Spacing="4">
+                                        <TextBlock FontSize="14" Text="{Binding IconGlyph}" />
+                                        <TextBlock FontSize="11" VerticalAlignment="Center" Text="{Binding Name}" />
                                     </StackPanel>
-                                </DataTemplate>
-                            </ItemsControl.ItemTemplate>
-                        </ItemsControl>
+                                </Button>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </Border>
+
+                <!--  Sub-Tool Bar - only shown for selected tool  -->
+                <Border
+                    Padding="6"
+                    BorderBrush="{DynamicResource SystemControlForegroundBaseMediumLowBrush}"
+                    BorderThickness="0,0,0,1"
+                    DockPanel.Dock="Top"
+                    IsVisible="{Binding SelectedTool, Converter={x:Static ObjectConverters.IsNotNull}}">
+                    <ItemsControl ItemsSource="{Binding SelectedTool.AllSubTools}">
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <WrapPanel Orientation="Horizontal" />
+                            </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Button
+                                    Margin="0,0,4,4"
+                                    Padding="6,3"
+                                    Classes.selected="{Binding IsSelected}"
+                                    Command="{Binding $parent[Grid].((vm:LandscapeEditorViewModel)DataContext).SelectSubToolCommand}"
+                                    CommandParameter="{Binding}"
+                                    Focusable="False"
+                                    ToolTip.Tip="{Binding Name}">
+                                    <StackPanel Orientation="Horizontal" Spacing="4">
+                                        <TextBlock FontSize="13" Text="{Binding IconGlyph}" />
+                                        <TextBlock FontSize="11" VerticalAlignment="Center" Text="{Binding Name}" />
+                                    </StackPanel>
+                                </Button>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </Border>
+
+                <!--  Sub-Tool Settings - fills remaining space  -->
+                <ScrollViewer>
+                    <StackPanel Margin="10" Spacing="10">
                         <ContentControl
                             HorizontalContentAlignment="Stretch"
                             Content="{Binding SelectedSubTool}"

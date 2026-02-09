@@ -1,4 +1,4 @@
-﻿using Chorizite.Core.Render;
+using Chorizite.Core.Render;
 using Chorizite.Core.Render.Enums;
 using Chorizite.OpenGLSDLBackend;
 using Chorizite.OpenGLSDLBackend.Lib;
@@ -44,6 +44,18 @@ namespace WorldBuilder.Editors.Landscape {
                 _usageCount[id] = 1;
             }
             return data;
+        }
+
+        /// <summary>
+        /// Returns cached render data if available, without triggering creation.
+        /// Use this during rendering to avoid blocking on DAT reads/GPU uploads.
+        /// </summary>
+        public StaticObjectRenderData? TryGetCachedRenderData(uint id) {
+            if (_renderData.TryGetValue(id, out var data)) {
+                _usageCount.AddOrUpdate(id, 1, (_, count) => count + 1);
+                return data;
+            }
+            return null;
         }
 
         public void ReleaseRenderData(uint id, bool isSetup) {

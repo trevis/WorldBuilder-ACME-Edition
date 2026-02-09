@@ -1,4 +1,4 @@
-﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using System;
@@ -46,7 +46,7 @@ namespace WorldBuilder.Lib.Extensions {
             collection.AddSingleton<DocumentManager>();
             collection.AddSingleton<IDocumentStorageService, DocumentStorageService>();
             collection.AddSingleton(project);
-            collection.AddTransient<LandscapeEditorViewModel>();
+            collection.AddSingleton<LandscapeEditorViewModel>();
             collection.AddTransient<ObjectDebugViewModel>();
             collection.AddTransient<HistorySnapshotPanelViewModel>();
         }

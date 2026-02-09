@@ -1,4 +1,4 @@
-﻿using Chorizite.Core.Render;
+using Chorizite.Core.Render;
 using Chorizite.Core.Render.Enums;
 using Chorizite.OpenGLSDLBackend.Extensions;
 using Chorizite.OpenGLSDLBackend.Lib;
@@ -216,6 +216,7 @@ namespace Chorizite.OpenGLSDLBackend {
 
             return Format switch {
                 TextureFormat.RGBA8 => Width * Height * 4,
+                TextureFormat.RGB8 => Width * Height * 3,
                 TextureFormat.A8 => Width * Height * 1,
                 TextureFormat.Rgba32f => Width * Height * 16,
                 _ => throw new NotSupportedException($"Unsupported format {Format}")

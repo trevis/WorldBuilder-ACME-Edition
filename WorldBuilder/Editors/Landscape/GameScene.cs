@@ -1,15 +1,18 @@
-﻿using Chorizite.ACProtocol.Types;
+using Chorizite.ACProtocol.Types;
 using Chorizite.Core.Render;
 using Chorizite.Core.Render.Vertex;
 using Chorizite.OpenGLSDLBackend;
 using DatReaderWriter.DBObjs;
 using Silk.NET.OpenGL;
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Numerics;
 using System.Reflection;
+using System.Threading;
 using System.Threading.Tasks;
 using WorldBuilder.Lib;
 using WorldBuilder.Lib.Settings;
@@ -26,7 +29,7 @@ namespace WorldBuilder.Editors.Landscape {
         private IShader _terrainShader;
         private IShader _sphereShader;
 
-        //internal readonly StaticObjectManager _objectManager;
+        internal readonly StaticObjectManager _objectManager;
         private IDatReaderWriter _dats => _terrainSystem.Dats;
         private DocumentManager _documentManager => _terrainSystem.DocumentManager;
         private TerrainDocument _terrainDoc => _terrainSystem.TerrainDoc;
@@ -41,7 +44,26 @@ namespace WorldBuilder.Editors.Landscape {
         public CameraManager CameraManager { get; private set; }
 
         private readonly Dictionary<ushort, List<StaticObject>> _sceneryObjects = new();
-        private readonly TerrainSystem _terrainSystem;
+        internal readonly TerrainSystem _terrainSystem;
+
+        // Static object background loading state
+        private const float WarmUpTimeBudgetMs = 12f; // Max ms per frame for GPU model loading
+        private const int MaxIntegratePerFrame = 8; // Max background results to integrate per frame
+        private const int MaxUnloadsPerFrame = 2; // Max landblocks to unload per frame
+        private const float DocUpdateDistanceThreshold = 96f; // Re-check after camera moves ~4 cells
+        private Vector3 _lastDocUpdatePosition = new(float.MinValue);
+        private readonly Queue<(uint Id, bool IsSetup)> _renderDataWarmupQueue = new();
+        private List<StaticObject>? _cachedStaticObjects;
+        private bool _staticObjectsDirty = true;
+
+        // Background loading pipeline
+        private Task? _backgroundLoadTask;
+        private readonly ConcurrentQueue<BackgroundLoadResult> _backgroundLoadResults = new();
+        private readonly HashSet<ushort> _pendingLoadLandblocks = new(); // LB keys currently being loaded
+        private readonly HashSet<ushort> _pendingSceneryRegen = new(); // LB keys needing scenery regen
+        private HashSet<ushort>? _lastVisibleLandblocks;
+
+        private record BackgroundLoadResult(ushort LbKey, string DocId, List<StaticObject> Scenery, HashSet<(uint Id, bool IsSetup)> UniqueObjectIds, long LoadMs, long SceneryMs, int SceneryCount);
 
         // Sphere rendering resources (from TerrainRenderer)
         private uint _sphereVAO;
@@ -113,7 +135,7 @@ namespace WorldBuilder.Editors.Landscape {
             SurfaceManager = new LandSurfaceManager(_renderer, _dats, _region);
             GPUManager = new TerrainGPUResourceManager(_renderer);
 
-            //_objectManager = new StaticObjectManager(renderer, dats);
+            _objectManager = new StaticObjectManager(_renderer, _dats);
 
             // Initialize shaders
             var assembly = typeof(OpenGLRenderer).Assembly;
@@ -230,10 +252,29 @@ namespace WorldBuilder.Editors.Landscape {
         }
 
         public void Update(Vector3 cameraPosition, Matrix4x4 viewProjectionMatrix) {
+            var sw = Stopwatch.StartNew();
+
             var frustum = new Frustum(viewProjectionMatrix);
             var requiredChunks = DataManager.GetRequiredChunks(cameraPosition);
-            //ProximityThreshold = 5000f;
-            //UpdateDynamicDocumentsAsync(cameraPosition).GetAwaiter().GetResult();
+
+            // Pick up completed background loads (never blocks)
+            IntegrateBackgroundLoadResults();
+
+            // Process any pending scenery regenerations (from terrain editing)
+            ProcessPendingSceneryRegen();
+
+            // Check if we need to kick off new background loads
+            float distMoved = Vector3.Distance(cameraPosition, _lastDocUpdatePosition);
+            if (distMoved >= DocUpdateDistanceThreshold || _lastDocUpdatePosition.X == float.MinValue) {
+                _lastDocUpdatePosition = cameraPosition;
+                KickOffBackgroundLoads(cameraPosition);
+                UnloadOutOfRangeLandblocks(cameraPosition);
+            }
+
+            // Incrementally warm up GPU render data (a few per frame, on main thread for GL context)
+            WarmUpRenderData();
+
+            long staticMs = sw.ElapsedMilliseconds;
 
             foreach (var chunkId in requiredChunks) {
                 var chunkX = (uint)(chunkId >> 32);
@@ -246,61 +287,323 @@ namespace WorldBuilder.Editors.Landscape {
                 else if (chunk.IsDirty) {
                     var dirtyLandblocks = chunk.DirtyLandblocks.ToList();
                     GPUManager.UpdateLandblocks(chunk, dirtyLandblocks, _terrainSystem);
+
+                    // Queue scenery regeneration for dirty landblocks so scenery
+                    // objects (trees, rocks) update their Z positions with new terrain heights
+                    foreach (var lbId in dirtyLandblocks) {
+                        var lbKey = (ushort)lbId;
+                        if (_sceneryObjects.ContainsKey(lbKey)) {
+                            _pendingSceneryRegen.Add(lbKey);
+                        }
+                    }
                 }
+            }
+
+            long totalMs = sw.ElapsedMilliseconds;
+            if (totalMs > 16) { // Log if frame took longer than ~60fps
+                Console.WriteLine($"[GameScene.Update] {totalMs}ms total (statics: {staticMs}ms, terrain: {totalMs - staticMs}ms, warmup queue: {_renderDataWarmupQueue.Count})");
             }
         }
 
-        private async Task UpdateDynamicDocumentsAsync(Vector3 cameraPosition) {
-            return;
-            /*
-            var visibleLandblocks = GetProximateLandblocks(cameraPosition);
-            var currentLoaded = _documentManager.ActiveDocs.Keys.Where(k => k.StartsWith("landblock_")).ToHashSet();
+        /// <summary>
+        /// Picks up results from background loading tasks and integrates them into the scene.
+        /// Limited to MaxIntegratePerFrame per call to avoid frame spikes.
+        /// </summary>
+        private void IntegrateBackgroundLoadResults() {
+            int integrated = 0;
+            while (integrated < MaxIntegratePerFrame && _backgroundLoadResults.TryDequeue(out var result)) {
+                _sceneryObjects[result.LbKey] = result.Scenery;
+                _pendingLoadLandblocks.Remove(result.LbKey);
 
-            // Load new ones in batch
-            var toLoad = visibleLandblocks
-                .Where(lbKey => !currentLoaded.Contains($"landblock_{lbKey:X4}"))
-                .Select(lbKey => $"landblock_{lbKey:X4}")
-                .ToList();
-
-            if (toLoad.Any()) {
-                var loadTasks = toLoad.Select(docId => _documentManager.GetOrCreateDocumentAsync<LandblockDocument>(docId)).ToArray();
-                await Task.WhenAll(loadTasks);
-
-                foreach (var docId in toLoad) {
-                    var lbKey = ushort.Parse(docId.Replace("landblock_", ""), System.Globalization.NumberStyles.HexNumber);
-                    var doc = _documentManager.GetOrCreateDocumentAsync<LandblockDocument>(docId).GetAwaiter().GetResult();
-                    if (doc != null) {
-                        var scenery = GenerateScenery(lbKey, doc);
-                        _sceneryObjects[lbKey] = scenery;
+                // Queue render data creation for unique object IDs
+                foreach (var (id, isSetup) in result.UniqueObjectIds) {
+                    if (_objectManager.TryGetCachedRenderData(id) == null) {
+                        _renderDataWarmupQueue.Enqueue((id, isSetup));
                     }
                 }
+
+                _staticObjectsDirty = true;
+                integrated++;
+
+                Console.WriteLine($"[Statics] Integrated landblock {result.DocId}: " +
+                    $"doc={result.LoadMs}ms, scenery={result.SceneryMs}ms ({result.SceneryCount} objects), " +
+                    $"unique models={result.UniqueObjectIds.Count}, warmup queue={_renderDataWarmupQueue.Count}");
             }
-            */
-            // Unload out-of-range (sequential is fine, unloads are rare/light)
-            /*
+        }
+
+        /// <summary>
+        /// Determines which landblocks need loading and kicks off a background task.
+        /// Never blocks the calling thread.
+        /// </summary>
+        private void KickOffBackgroundLoads(Vector3 cameraPosition) {
+            // Don't start new loads if a batch is still running
+            if (_backgroundLoadTask != null && !_backgroundLoadTask.IsCompleted) return;
+
+            var visibleLandblocks = GetProximateLandblocks(cameraPosition);
+            _lastVisibleLandblocks = visibleLandblocks;
+            var currentLoaded = _documentManager.ActiveDocs.Keys.Where(k => k.StartsWith("landblock_")).ToHashSet();
+
+            var toLoad = visibleLandblocks
+                .Where(lbKey => !currentLoaded.Contains($"landblock_{lbKey:X4}") && !_pendingLoadLandblocks.Contains(lbKey))
+                .ToList();
+
+            if (toLoad.Count == 0) return;
+
+            Console.WriteLine($"[Statics] {toLoad.Count} landblocks need loading, starting background task...");
+
+            // Mark them as pending so we don't double-load
+            foreach (var lbKey in toLoad) {
+                _pendingLoadLandblocks.Add(lbKey);
+            }
+
+            // Capture references needed by the background thread
+            var documentManager = _documentManager;
+            var terrainSystem = _terrainSystem;
+            var region = _region;
+            var dats = _dats;
+            var resultQueue = _backgroundLoadResults;
+
+            _backgroundLoadTask = Task.Run(() => {
+                var batchSw = Stopwatch.StartNew();
+                int loaded = 0;
+
+                foreach (var lbKey in toLoad) {
+                    var docId = $"landblock_{lbKey:X4}";
+                    try {
+                        var loadSw = Stopwatch.StartNew();
+                        var doc = documentManager.GetOrCreateDocumentAsync<LandblockDocument>(docId).GetAwaiter().GetResult();
+                        long loadMs = loadSw.ElapsedMilliseconds;
+
+                        if (doc != null) {
+                            var scenerySw = Stopwatch.StartNew();
+                            var scenery = GenerateSceneryThreadSafe(lbKey, doc, terrainSystem, region, dats);
+                            long sceneryMs = scenerySw.ElapsedMilliseconds;
+
+                            // Collect unique object IDs
+                            var uniqueIds = new HashSet<(uint, bool)>();
+                            foreach (var obj in doc.GetStaticObjects()) {
+                                uniqueIds.Add((obj.Id, obj.IsSetup));
+                            }
+                            foreach (var obj in scenery) {
+                                uniqueIds.Add((obj.Id, obj.IsSetup));
+                            }
+
+                            resultQueue.Enqueue(new BackgroundLoadResult(lbKey, docId, scenery, uniqueIds, loadMs, sceneryMs, scenery.Count));
+                            loaded++;
+                        }
+                    }
+                    catch (Exception ex) {
+                        Console.WriteLine($"[Statics] Error loading {docId} on background thread: {ex.Message}");
+                        // Remove from pending so it can be retried
+                        resultQueue.Enqueue(new BackgroundLoadResult(lbKey, docId, new List<StaticObject>(), new HashSet<(uint, bool)>(), 0, 0, 0));
+                    }
+                }
+
+                Console.WriteLine($"[Statics] Background batch complete: {loaded}/{toLoad.Count} landblocks in {batchSw.ElapsedMilliseconds}ms");
+            });
+        }
+
+        /// <summary>
+        /// Unloads landblock documents and scenery that are out of camera range.
+        /// Limited to MaxUnloadsPerFrame to avoid frame spikes.
+        /// </summary>
+        private void UnloadOutOfRangeLandblocks(Vector3 cameraPosition) {
+            var visibleLandblocks = _lastVisibleLandblocks ?? GetProximateLandblocks(cameraPosition);
+            var currentLoaded = _documentManager.ActiveDocs.Keys.Where(k => k.StartsWith("landblock_")).ToHashSet();
+
             var toUnload = currentLoaded
                 .Where(docId => !visibleLandblocks.Contains(ushort.Parse(docId.Replace("landblock_", ""), System.Globalization.NumberStyles.HexNumber)))
+                .Take(MaxUnloadsPerFrame)
                 .ToList();
 
             foreach (var docId in toUnload) {
-                var doc = _documentManager.GetOrCreateDocumentAsync<LandblockDocument>(docId).GetAwaiter().GetResult();
-                if (doc != null) {
-                    foreach (var obj in doc.GetStaticObjects()) {
-                        _objectManager.ReleaseRenderData(obj.Id, obj.IsSetup);
-                    }
-                }
+                try {
+                    var sw = Stopwatch.StartNew();
 
-                var lbKey = ushort.Parse(docId.Replace("landblock_", ""), System.Globalization.NumberStyles.HexNumber);
-                if (_sceneryObjects.TryGetValue(lbKey, out var scenery)) {
-                    foreach (var obj in scenery) {
-                        _objectManager.ReleaseRenderData(obj.Id, obj.IsSetup);
+                    // Just remove scenery data - don't block on GPU cleanup or document close
+                    var lbKey = ushort.Parse(docId.Replace("landblock_", ""), System.Globalization.NumberStyles.HexNumber);
+                    if (_sceneryObjects.TryGetValue(lbKey, out var scenery)) {
+                        foreach (var obj in scenery) {
+                            _objectManager.ReleaseRenderData(obj.Id, obj.IsSetup);
+                        }
+                        _sceneryObjects.Remove(lbKey);
                     }
-                    _sceneryObjects.Remove(lbKey);
-                }
 
-                await _documentManager.CloseDocumentAsync(docId);
+                    // Release static object render data
+                    if (_documentManager.ActiveDocs.TryGetValue(docId, out var baseDoc) && baseDoc is LandblockDocument lbDoc) {
+                        foreach (var obj in lbDoc.GetStaticObjects()) {
+                            _objectManager.ReleaseRenderData(obj.Id, obj.IsSetup);
+                        }
+                    }
+
+                    // Fire-and-forget the document close (DB/IO work)
+                    _ = _documentManager.CloseDocumentAsync(docId);
+                    _staticObjectsDirty = true;
+
+                    Console.WriteLine($"[Statics] Unloaded {docId} in {sw.ElapsedMilliseconds}ms");
+                }
+                catch (Exception ex) {
+                    Console.WriteLine($"[Statics] Error unloading {docId}: {ex.Message}");
+                }
             }
-            */
+
+            // If there are more to unload, force re-check next frame
+            if (toUnload.Count >= MaxUnloadsPerFrame) {
+                _lastDocUpdatePosition = new Vector3(float.MinValue);
+            }
+        }
+
+        /// <summary>
+        /// Incrementally creates GPU render data for queued objects using a time budget.
+        /// Must run on the main thread (GL context). Stops as soon as the time budget is exceeded.
+        /// </summary>
+        private void WarmUpRenderData() {
+            if (_renderDataWarmupQueue.Count == 0) return;
+
+            var sw = Stopwatch.StartNew();
+            int loaded = 0;
+            int skipped = 0;
+            while (_renderDataWarmupQueue.Count > 0) {
+                // Check time budget BEFORE loading each model (except the first - always load at least one)
+                if (loaded > 0 && sw.ElapsedMilliseconds >= WarmUpTimeBudgetMs) break;
+
+                var (id, isSetup) = _renderDataWarmupQueue.Dequeue();
+                if (_objectManager.TryGetCachedRenderData(id) != null) {
+                    skipped++;
+                    continue;
+                }
+
+                try {
+                    var data = _objectManager.GetRenderData(id, isSetup);
+                    loaded++;
+
+                    // If this was a setup, queue its GfxObj parts for warmup too
+                    if (data != null && data.IsSetup && data.SetupParts != null) {
+                        foreach (var (partId, _) in data.SetupParts) {
+                            if (_objectManager.TryGetCachedRenderData(partId) == null) {
+                                _renderDataWarmupQueue.Enqueue((partId, false));
+                            }
+                        }
+                    }
+                }
+                catch (Exception ex) {
+                    Console.WriteLine($"[Statics] WarmUp error for 0x{id:X8}: {ex.Message}");
+                }
+            }
+
+            if (loaded > 0) {
+                Console.WriteLine($"[Statics] WarmUp: {loaded} models in {sw.ElapsedMilliseconds}ms " +
+                    $"(skipped {skipped} cached, remaining: {_renderDataWarmupQueue.Count})");
+            }
+        }
+
+        /// <summary>
+        /// Thread-safe version of GenerateScenery that doesn't access instance fields directly.
+        /// </summary>
+        private static List<StaticObject> GenerateSceneryThreadSafe(
+            ushort lbKey, LandblockDocument lbDoc,
+            TerrainSystem terrainSystem, Region region, IDatReaderWriter dats) {
+
+            var scenery = new List<StaticObject>();
+            var lbId = (uint)lbKey;
+            var lbTerrainEntries = terrainSystem.GetLandblockTerrain(lbKey);
+            if (lbTerrainEntries == null) return scenery;
+
+            var buildings = new HashSet<int>();
+            var lbGlobalX = (lbId >> 8) & 0xFF;
+            var lbGlobalY = lbId & 0xFF;
+
+            foreach (var b in lbDoc.GetStaticObjects()) {
+                var localX = b.Origin.X - lbGlobalX * 192f;
+                var localY = b.Origin.Y - lbGlobalY * 192f;
+                var cellX = (int)MathF.Floor(localX / 24f);
+                var cellY = (int)MathF.Floor(localY / 24f);
+                if (cellX >= 0 && cellX < 8 && cellY >= 0 && cellY < 8) {
+                    buildings.Add(cellX * 9 + cellY);
+                }
+            }
+
+            var blockCellX = (int)lbGlobalX * 8;
+            var blockCellY = (int)lbGlobalY * 8;
+
+            for (int i = 0; i < lbTerrainEntries.Length; i++) {
+                var entry = lbTerrainEntries[i];
+                var terrainType = entry.Type;
+                var sceneType = entry.Scenery;
+
+                if (terrainType >= region.TerrainInfo.TerrainTypes.Count) continue;
+
+                var terrainInfo = region.TerrainInfo.TerrainTypes[(int)terrainType];
+                if (sceneType >= terrainInfo.SceneTypes.Count) continue;
+
+                var sceneInfoIdx = terrainInfo.SceneTypes[(int)sceneType];
+                var sceneInfo = region.SceneInfo.SceneTypes[(int)sceneInfoIdx];
+
+                if (sceneInfo.Scenes.Count == 0) continue;
+
+                var cellX = i / 9;
+                var cellY = i % 9;
+                var globalCellX = (uint)(blockCellX + cellX);
+                var globalCellY = (uint)(blockCellY + cellY);
+
+                var cellMat = globalCellY * (712977289u * globalCellX + 1813693831u) - 1109124029u * globalCellX + 2139937281u;
+                var offset = cellMat * 2.3283064e-10f;
+                var sceneIdx = (int)(sceneInfo.Scenes.Count * offset);
+                sceneIdx = Math.Clamp(sceneIdx, 0, sceneInfo.Scenes.Count - 1);
+                var sceneId = sceneInfo.Scenes[sceneIdx];
+
+                if (!dats.TryGet<Scene>(sceneId, out var scene) || scene.Objects.Count == 0) continue;
+                if (entry.Road != 0) continue;
+                if (buildings.Contains(i)) continue;
+
+                var cellXMat = -1109124029 * (int)globalCellX;
+                var cellYMat = 1813693831 * (int)globalCellY;
+                var cellMat2 = 1360117743 * globalCellX * globalCellY + 1888038839;
+
+                for (uint j = 0; j < scene.Objects.Count; j++) {
+                    var obj = scene.Objects[(int)j];
+                    if (obj.ObjectId == 0) continue;
+
+                    var noise = (uint)(cellXMat + cellYMat - cellMat2 * (23399 + j)) * 2.3283064e-10f;
+                    if (noise >= obj.Frequency) continue;
+
+                    var localPos = SceneryHelpers.Displace(obj, globalCellX, globalCellY, j);
+                    var lx = cellX * 24f + localPos.X;
+                    var ly = cellY * 24f + localPos.Y;
+
+                    if (lx < 0 || ly < 0 || lx >= 192f || ly >= 192f) continue;
+                    if (TerrainGeometryGenerator.OnRoad(new Vector3(lx, ly, 0), lbTerrainEntries)) continue;
+
+                    var lbOffset = new Vector3(lx, ly, 0);
+                    var z = TerrainGeometryGenerator.GetHeight(region, lbTerrainEntries, lbGlobalX, lbGlobalY, lbOffset);
+                    localPos.Z = z;
+                    lbOffset.Z = z;
+
+                    var normal = TerrainGeometryGenerator.GetNormal(region, lbTerrainEntries, lbGlobalX, lbGlobalY, lbOffset);
+                    if (!SceneryHelpers.CheckSlope(obj, normal.Z)) continue;
+
+                    Quaternion quat = obj.Align != 0
+                        ? SceneryHelpers.ObjAlign(obj, normal, z, localPos)
+                        : SceneryHelpers.RotateObj(obj, globalCellX, globalCellY, j, localPos);
+
+                    var scaleVal = SceneryHelpers.ScaleObj(obj, globalCellX, globalCellY, j);
+                    var scale = new Vector3(scaleVal);
+
+                    var blockX = (lbId >> 8) & 0xFF;
+                    var blockY = lbId & 0xFF;
+                    var worldOrigin = new Vector3(blockX * 192f + lx, blockY * 192f + ly, z);
+
+                    scenery.Add(new StaticObject {
+                        Id = obj.ObjectId,
+                        Origin = worldOrigin,
+                        Orientation = quat,
+                        IsSetup = (obj.ObjectId & 0x02000000) != 0,
+                        Scale = scale
+                    });
+                }
+            }
+
+            return scenery;
         }
 
         private HashSet<ushort> GetProximateLandblocks(Vector3 cameraPosition) {
@@ -355,22 +658,15 @@ namespace WorldBuilder.Editors.Landscape {
 
                 landblocksByChunk[chunkId].Add(landblockId);
 
-                // Regenerate scenery for updated landblock if loaded
-                /*
+                // Mark scenery for background regeneration instead of blocking
                 var lbKey = (ushort)landblockId;
                 if (_sceneryObjects.ContainsKey(lbKey)) {
-                    var doc = _documentManager.GetOrCreateDocumentAsync<LandblockDocument>($"landblock_{lbKey:X4}").GetAwaiter().GetResult();
-                    if (doc != null) {
-                        // Release old scenery render data
-                        foreach (var obj in _sceneryObjects[lbKey]) {
-                            _objectManager.ReleaseRenderData(obj.Id, obj.IsSetup);
-                        }
-                        var newScenery = GenerateScenery(lbKey, doc);
-                        _sceneryObjects[lbKey] = newScenery;
-                    }
+                    _pendingSceneryRegen.Add(lbKey);
                 }
-                */
             }
+
+            // Kick off background regen for any pending scenery
+            ProcessPendingSceneryRegen();
 
             foreach (var kvp in landblocksByChunk) {
                 var chunk = DataManager.GetChunk(kvp.Key);
@@ -380,143 +676,59 @@ namespace WorldBuilder.Editors.Landscape {
             }
         }
 
+        /// <summary>
+        /// Regenerates scenery for modified landblocks on a background thread.
+        /// </summary>
+        private void ProcessPendingSceneryRegen() {
+            if (_pendingSceneryRegen.Count == 0) return;
+            if (_backgroundLoadTask != null && !_backgroundLoadTask.IsCompleted) return; // Wait for current batch
+
+            var toRegen = _pendingSceneryRegen.ToList();
+            _pendingSceneryRegen.Clear();
+
+            // Mark them as pending loads so they aren't double-queued
+            foreach (var lbKey in toRegen) {
+                _pendingLoadLandblocks.Add(lbKey);
+            }
+
+            var documentManager = _documentManager;
+            var terrainSystem = _terrainSystem;
+            var region = _region;
+            var dats = _dats;
+            var resultQueue = _backgroundLoadResults;
+
+            Console.WriteLine($"[Statics] Regenerating scenery for {toRegen.Count} landblocks in background...");
+
+            _backgroundLoadTask = Task.Run(() => {
+                foreach (var lbKey in toRegen) {
+                    var docId = $"landblock_{lbKey:X4}";
+                    try {
+                        var doc = documentManager.GetOrCreateDocumentAsync<LandblockDocument>(docId).GetAwaiter().GetResult();
+                        if (doc != null) {
+                            var sw = Stopwatch.StartNew();
+                            var scenery = GenerateSceneryThreadSafe(lbKey, doc, terrainSystem, region, dats);
+                            long sceneryMs = sw.ElapsedMilliseconds;
+
+                            var uniqueIds = new HashSet<(uint, bool)>();
+                            foreach (var obj in doc.GetStaticObjects()) uniqueIds.Add((obj.Id, obj.IsSetup));
+                            foreach (var obj in scenery) uniqueIds.Add((obj.Id, obj.IsSetup));
+
+                            resultQueue.Enqueue(new BackgroundLoadResult(lbKey, docId, scenery, uniqueIds, 0, sceneryMs, scenery.Count));
+                        }
+                    }
+                    catch (Exception ex) {
+                        Console.WriteLine($"[Statics] Error regenerating scenery for {docId}: {ex.Message}");
+                        resultQueue.Enqueue(new BackgroundLoadResult(lbKey, docId, new List<StaticObject>(), new HashSet<(uint, bool)>(), 0, 0, 0));
+                    }
+                }
+            });
+        }
+
+        /// <summary>
+        /// Convenience wrapper for main-thread callers (e.g. UpdateLandblocks scenery regen).
+        /// </summary>
         private List<StaticObject> GenerateScenery(ushort lbKey, LandblockDocument lbDoc) {
-            return new();
-            var scenery = new List<StaticObject>();
-            var lbId = (uint)lbKey;
-            var lbTerrainEntries = _terrainSystem.GetLandblockTerrain(lbKey);
-            if (lbTerrainEntries == null) {
-                return scenery;
-            }
-
-            var buildings = new HashSet<int>();
-            var lbGlobalX = (lbId >> 8) & 0xFF;
-            var lbGlobalY = lbId & 0xFF;
-
-            // Build set of cells that contain buildings
-            foreach (var b in lbDoc.GetStaticObjects()) {
-                var localX = b.Origin.X - lbGlobalX * 192f;
-                var localY = b.Origin.Y - lbGlobalY * 192f;
-                var cellX = (int)MathF.Floor(localX / 24f);
-                var cellY = (int)MathF.Floor(localY / 24f);
-
-                if (cellX >= 0 && cellX < 8 && cellY >= 0 && cellY < 8) {
-                    buildings.Add(cellX * 9 + cellY);
-                }
-            }
-
-            var blockCellX = (int)lbGlobalX * 8;
-            var blockCellY = (int)lbGlobalY * 8;
-
-            for (int i = 0; i < lbTerrainEntries.Length; i++) {
-                var entry = lbTerrainEntries[i];
-                var terrainType = entry.Type;
-                var sceneType = entry.Scenery;
-
-                if (terrainType >= _region.TerrainInfo.TerrainTypes.Count) continue;
-
-                var terrainInfo = _region.TerrainInfo.TerrainTypes[(int)terrainType];
-                if (sceneType >= terrainInfo.SceneTypes.Count) continue;
-
-                var sceneInfoIdx = terrainInfo.SceneTypes[(int)sceneType];
-                var sceneInfo = _region.SceneInfo.SceneTypes[(int)sceneInfoIdx];
-
-                if (sceneInfo.Scenes.Count == 0) {
-                    continue;
-                }
-
-                var cellX = i / 9;
-                var cellY = i % 9;
-                var globalCellX = (uint)(blockCellX + cellX);
-                var globalCellY = (uint)(blockCellY + cellY);
-
-                // Scene selection
-                var cellMat = globalCellY * (712977289u * globalCellX + 1813693831u) - 1109124029u * globalCellX +
-                              2139937281u;
-                var offset = cellMat * 2.3283064e-10f;
-                var sceneIdx = (int)(sceneInfo.Scenes.Count * offset);
-                sceneIdx = Math.Clamp(sceneIdx, 0, sceneInfo.Scenes.Count - 1);
-                var sceneId = sceneInfo.Scenes[sceneIdx];
-
-                if (!_dats.TryGet<Scene>(sceneId, out var scene) || scene.Objects.Count == 0) {
-                    continue;
-                }
-
-                // Skip roads and buildings
-                if (entry.Road != 0) {
-                    continue;
-                }
-
-                if (buildings.Contains(i)) {
-                    continue;
-                }
-
-                var cellXMat = -1109124029 * (int)globalCellX;
-                var cellYMat = 1813693831 * (int)globalCellY;
-                var cellMat2 = 1360117743 * globalCellX * globalCellY + 1888038839;
-
-                for (uint j = 0; j < scene.Objects.Count; j++) {
-                    var obj = scene.Objects[(int)j];
-
-                    if (obj.ObjectId == 0) {
-                        continue;
-                    }
-
-                    var noise = (uint)(cellXMat + cellYMat - cellMat2 * (23399 + j)) * 2.3283064e-10f;
-                    if (noise >= obj.Frequency) continue; // spawn when noise < frequency
-
-                    var localPos = SceneryHelpers.Displace(obj, globalCellX, globalCellY, j);
-                    var lx = cellX * 24f + localPos.X;
-                    var ly = cellY * 24f + localPos.Y;
-
-                    if (lx < 0 || ly < 0 || lx >= 192f || ly >= 192f) {
-                        continue;
-                    }
-
-                    if (TerrainGeometryGenerator.OnRoad(new Vector3(lx, ly, 0), lbTerrainEntries)) {
-                        continue;
-                    }
-
-                    var lbOffset = new Vector3(lx, ly, 0);
-
-                    var z = TerrainGeometryGenerator.GetHeight(_region, lbTerrainEntries, lbGlobalX, lbGlobalY,
-                        lbOffset);
-                    localPos.Z = z;
-                    lbOffset.Z = z;
-
-                    var normal =
-                        TerrainGeometryGenerator.GetNormal(_region, lbTerrainEntries, lbGlobalX, lbGlobalY, lbOffset);
-
-                    if (!SceneryHelpers.CheckSlope(obj, normal.Z)) {
-                        continue;
-                    }
-
-                    Quaternion quat;
-                    if (obj.Align != 0) {
-                        quat = SceneryHelpers.ObjAlign(obj, normal, z, localPos);
-                    }
-                    else {
-                        quat = SceneryHelpers.RotateObj(obj, globalCellX, globalCellY, j, localPos);
-                    }
-
-                    var scaleVal = SceneryHelpers.ScaleObj(obj, globalCellX, globalCellY, j);
-                    var scale = new Vector3(scaleVal);
-
-                    var blockX = (lbId >> 8) & 0xFF;
-                    var blockY = lbId & 0xFF;
-                    var worldOrigin = new Vector3(blockX * 192f + lx, blockY * 192f + ly, z);
-
-                    scenery.Add(new StaticObject {
-                        Id = obj.ObjectId,
-                        Origin = worldOrigin,
-                        Orientation = quat,
-                        IsSetup = (obj.ObjectId & 0x02000000) != 0,
-                        Scale = scale
-                    });
-                }
-            }
-
-            return scenery;
+            return GenerateSceneryThreadSafe(lbKey, lbDoc, _terrainSystem, _region, _dats);
         }
 
         public IEnumerable<(TerrainChunk chunk, ChunkRenderData renderData)> GetRenderableChunks(Frustum frustum) {
@@ -534,15 +746,24 @@ namespace WorldBuilder.Editors.Landscape {
         public int GetVisibleChunkCount(Frustum frustum) => GetRenderableChunks(frustum).Count();
 
         public IEnumerable<StaticObject> GetAllStaticObjects() {
-            return new List<StaticObject>();
-            /*
-            var statics = new List<StaticObject>();
-            foreach (var doc in _documentManager.ActiveDocs.Values.OfType<LandblockDocument>()) {
-                statics.AddRange(doc.GetStaticObjects());
+            if (_staticObjectsDirty || _cachedStaticObjects == null) {
+                var statics = new List<StaticObject>();
+                foreach (var doc in _documentManager.ActiveDocs.Values.OfType<LandblockDocument>()) {
+                    statics.AddRange(doc.GetStaticObjects());
+                }
+                statics.AddRange(_sceneryObjects.Values.SelectMany(x => x));
+                _cachedStaticObjects = statics;
+                _staticObjectsDirty = false;
             }
-            statics.AddRange(_sceneryObjects.Values.SelectMany(x => x));
-            return statics;
-            */
+            return _cachedStaticObjects;
+        }
+
+        /// <summary>
+        /// Marks the static objects cache as dirty so it gets rebuilt next frame.
+        /// Call this after modifying landblock documents or scenery.
+        /// </summary>
+        public void InvalidateStaticObjectsCache() {
+            _staticObjectsDirty = true;
         }
 
         public void Render(
@@ -584,10 +805,103 @@ namespace WorldBuilder.Editors.Landscape {
             }
 
             // Render static objects
+            var renderSw = Stopwatch.StartNew();
             var staticObjects = GetAllStaticObjects().ToList();
             if (staticObjects.Count > 0) {
                 RenderStaticObjects(staticObjects, camera, viewProjection);
             }
+            long renderStaticsMs = renderSw.ElapsedMilliseconds;
+            if (renderStaticsMs > 16) {
+                Console.WriteLine($"[GameScene.Render] Static objects: {renderStaticsMs}ms ({staticObjects.Count} objects)");
+            }
+
+            // Render selection highlight
+            if (editingContext.ObjectSelection.HasSelection) {
+                RenderSelectionHighlight(editingContext.ObjectSelection, camera, viewProjection);
+            }
+
+            // Render placement preview
+            if (editingContext.ObjectSelection.IsPlacementMode && editingContext.ObjectSelection.PlacementPreview.HasValue) {
+                RenderPlacementPreview(editingContext.ObjectSelection.PlacementPreview.Value, camera, viewProjection);
+            }
+        }
+
+        /// <summary>
+        /// Renders a highlight around the selected object using corner spheres.
+        /// </summary>
+        private unsafe void RenderSelectionHighlight(ObjectSelectionState selection, ICamera camera, Matrix4x4 viewProjection) {
+            if (!selection.HasSelection) return;
+
+            // Collect corners for all selected objects
+            var allCorners = new List<Vector3>();
+            foreach (var entry in selection.SelectedEntries) {
+                var obj = entry.Object;
+                var bounds = _objectManager.GetBounds(obj.Id, obj.IsSetup);
+                if (bounds == null) continue;
+
+                var (localMin, localMax) = bounds.Value;
+                var worldTransform = Matrix4x4.CreateScale(obj.Scale)
+                    * Matrix4x4.CreateFromQuaternion(obj.Orientation)
+                    * Matrix4x4.CreateTranslation(obj.Origin);
+
+                allCorners.Add(Vector3.Transform(new Vector3(localMin.X, localMin.Y, localMin.Z), worldTransform));
+                allCorners.Add(Vector3.Transform(new Vector3(localMax.X, localMin.Y, localMin.Z), worldTransform));
+                allCorners.Add(Vector3.Transform(new Vector3(localMin.X, localMax.Y, localMin.Z), worldTransform));
+                allCorners.Add(Vector3.Transform(new Vector3(localMax.X, localMax.Y, localMin.Z), worldTransform));
+                allCorners.Add(Vector3.Transform(new Vector3(localMin.X, localMin.Y, localMax.Z), worldTransform));
+                allCorners.Add(Vector3.Transform(new Vector3(localMax.X, localMin.Y, localMax.Z), worldTransform));
+                allCorners.Add(Vector3.Transform(new Vector3(localMin.X, localMax.Y, localMax.Z), worldTransform));
+                allCorners.Add(Vector3.Transform(new Vector3(localMax.X, localMax.Y, localMax.Z), worldTransform));
+            }
+
+            if (allCorners.Count == 0) return;
+
+            // Render spheres at all corners in one draw call
+            _gl.Enable(EnableCap.Blend);
+            _gl.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
+
+            _sphereShader.Bind();
+            _sphereShader.SetUniform("uViewProjection", viewProjection);
+            _sphereShader.SetUniform("uCameraPosition", camera.Position);
+            _sphereShader.SetUniform("uSphereColor", new Vector3(1.0f, 0.8f, 0.0f)); // Gold highlight
+            _sphereShader.SetUniform("uLightDirection", Vector3.Normalize(LightDirection));
+            _sphereShader.SetUniform("uAmbientIntensity", 0.8f);
+            _sphereShader.SetUniform("uSpecularPower", SpecularPower);
+            _sphereShader.SetUniform("uGlowColor", new Vector3(1.0f, 0.8f, 0.0f));
+            _sphereShader.SetUniform("uGlowIntensity", 2.0f);
+            _sphereShader.SetUniform("uGlowPower", 0.3f);
+            _sphereShader.SetUniform("uSphereRadius", SphereRadius * 0.5f);
+
+            var cornersArray = allCorners.ToArray();
+            _gl.BindBuffer(GLEnum.ArrayBuffer, _sphereInstanceVBO);
+            fixed (Vector3* posPtr = cornersArray) {
+                _gl.BufferData(GLEnum.ArrayBuffer, (nuint)(cornersArray.Length * sizeof(Vector3)), posPtr, GLEnum.DynamicDraw);
+            }
+
+            _gl.BindVertexArray(_sphereVAO);
+            _gl.DrawElementsInstanced(GLEnum.Triangles, (uint)_sphereIndexCount, GLEnum.UnsignedInt, null, (uint)cornersArray.Length);
+            _gl.BindVertexArray(0);
+            _gl.UseProgram(0);
+            _gl.Disable(EnableCap.Blend);
+        }
+
+        /// <summary>
+        /// Renders a translucent preview of the object being placed.
+        /// </summary>
+        private void RenderPlacementPreview(StaticObject previewObj, ICamera camera, Matrix4x4 viewProjection) {
+            // Load render data on demand (safe here since we're on the GL thread)
+            var renderData = _objectManager.GetRenderData(previewObj.Id, previewObj.IsSetup);
+            if (renderData == null) return;
+
+            // For setup objects, also load each GfxObj part on demand
+            if (renderData.IsSetup && renderData.SetupParts != null) {
+                foreach (var (partId, _) in renderData.SetupParts) {
+                    _objectManager.GetRenderData(partId, false);
+                }
+            }
+
+            var objects = new List<StaticObject> { previewObj };
+            RenderStaticObjects(objects, camera, viewProjection);
         }
 
         private void RenderTerrain(
@@ -683,7 +997,6 @@ namespace WorldBuilder.Editors.Landscape {
 
 
         private unsafe void RenderStaticObjects(List<StaticObject> objects, ICamera camera, Matrix4x4 viewProjection) {
-            /*
             _gl.Enable(EnableCap.DepthTest);
             _gl.Enable(EnableCap.Blend);
             _gl.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
@@ -708,17 +1021,15 @@ namespace WorldBuilder.Editors.Landscape {
 
             foreach (var group in groups) {
                 var (id, isSetup) = group.Key;
-                var renderData = _objectManager.GetRenderData(id, isSetup);
 
-                if (renderData == null) {
-                    Console.WriteLine($"Warning: No render data for object 0x{id:X8} (IsSetup={isSetup})");
-                    continue;
-                }
+                // Non-blocking: only render objects whose render data is already cached
+                var renderData = _objectManager.TryGetCachedRenderData(id);
+                if (renderData == null) continue; // Will be loaded incrementally by WarmUpRenderData
 
                 if (isSetup) {
                     // Setup objects - render each part
                     foreach (var (partId, partTransform) in renderData.SetupParts) {
-                        var partRenderData = _objectManager.GetRenderData(partId, false);
+                        var partRenderData = _objectManager.TryGetCachedRenderData(partId);
                         if (partRenderData == null) continue;
 
                         // Create instance data for each instance of this setup
@@ -739,11 +1050,9 @@ namespace WorldBuilder.Editors.Landscape {
             _gl.BindVertexArray(0);
             _gl.UseProgram(0);
             _gl.Disable(EnableCap.Blend);
-            */
         }
 
         private unsafe void RenderBatchedObject(StaticObjectRenderData renderData, List<Matrix4x4> instanceTransforms) {
-            /*
             if (instanceTransforms.Count == 0 || renderData.Batches.Count == 0) return;
 
             // Create instance buffer - 16 floats per Matrix4x4
@@ -801,7 +1110,6 @@ namespace WorldBuilder.Editors.Landscape {
 
             _gl.BindVertexArray(0);
             _gl.DeleteBuffer(instanceVBO);
-            */
         }
 
         public void Dispose() {
@@ -810,7 +1118,7 @@ namespace WorldBuilder.Editors.Landscape {
                 _gl.DeleteBuffer(_sphereIBO);
                 _gl.DeleteBuffer(_sphereInstanceVBO);
                 _gl.DeleteVertexArray(_sphereVAO);
-                //_objectManager?.Dispose();
+                _objectManager?.Dispose();
                 GPUManager?.Dispose();
                 _disposed = true;
             }

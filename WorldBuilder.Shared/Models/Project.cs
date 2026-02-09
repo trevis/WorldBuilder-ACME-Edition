@@ -202,6 +202,13 @@ namespace WorldBuilder.Shared.Models {
                 }
             }
 
+            // Export static object changes from LandblockDocuments
+            foreach (var (docId, doc) in DocumentManager.ActiveDocs) {
+                if (doc is LandblockDocument lbDoc) {
+                    lbDoc.SaveToDats(writer, portalIteration);
+                }
+            }
+
             // TODO: all other dat iterations
             writer.Dats.Portal.Iteration.CurrentIteration = portalIteration;
 

@@ -1,4 +1,4 @@
-﻿using Chorizite.Core.Render;
+using Chorizite.Core.Render;
 using System.Numerics;
 using WorldBuilder.Editors.Landscape;
 
@@ -8,8 +8,11 @@ namespace WorldBuilder.Lib {
         public bool LeftPressed;
         public bool RightPressed;
         public bool MiddlePressed;
+        public bool ShiftPressed;
+        public bool CtrlPressed;
         public Vector2 Delta;
         public bool IsOverTerrain;
         public TerrainRaycast.TerrainRaycastHit? TerrainHit;
+        public ObjectRaycast.ObjectRaycastHit? ObjectHit;
     }
 }

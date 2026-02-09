@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Numerics;
 using WorldBuilder.Lib.Settings;
 
@@ -134,6 +134,13 @@ namespace WorldBuilder.Lib {
             else {
                 _isDragging = false;
             }
+        }
+
+        public void ProcessKeyboardRotation(float yawDelta, float pitchDelta) {
+            yaw += yawDelta;
+            pitch += pitchDelta;
+            pitch = Math.Clamp(pitch, -89.0f, 89.0f);
+            UpdateCameraVectors();
         }
 
         public void ProcessMouseScroll(float yOffset) {

@@ -1,4 +1,4 @@
-﻿using Avalonia;
+using Avalonia;
 using Avalonia.Input;
 using System;
 using System.Collections;
@@ -54,14 +54,32 @@ namespace WorldBuilder.Lib {
                 camera,
                 provider
             );
+
+            // Object raycast (only if scene is available)
+            ObjectRaycast.ObjectRaycastHit? objectHit = null;
+            if (provider.Scene != null) {
+                var objHitResult = ObjectRaycast.Raycast(
+                    relativePos.X, relativePos.Y,
+                    Width, Height,
+                    camera,
+                    provider.Scene
+                );
+                if (objHitResult.Hit) {
+                    objectHit = objHitResult;
+                }
+            }
+
             _currentMouseState = new MouseState {
                 Position = relativePos,
                 LeftPressed = properties.IsLeftButtonPressed,
                 RightPressed = properties.IsRightButtonPressed,
                 MiddlePressed = properties.IsMiddleButtonPressed,
+                ShiftPressed = Modifiers.HasFlag(KeyModifiers.Shift),
+                CtrlPressed = Modifiers.HasFlag(KeyModifiers.Control),
                 Delta = relativePos - _lastMousePos,
                 IsOverTerrain = hitResult.Hit,
-                TerrainHit = hitResult.Hit ? hitResult : null
+                TerrainHit = hitResult.Hit ? hitResult : null,
+                ObjectHit = objectHit
             };
         }
     }

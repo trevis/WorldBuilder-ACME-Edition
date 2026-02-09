@@ -118,15 +118,44 @@ public partial class LandscapeEditorView : Base3DView {
         if (_viewModel?.TerrainSystem == null) return;
 
         var camera = _viewModel.TerrainSystem.Scene.CameraManager.Current;
+        bool shiftHeld = InputState.IsKeyDown(Key.LeftShift) || InputState.IsKeyDown(Key.RightShift);
 
-        if (InputState.IsKeyDown(Key.W))
+        // Shift + Arrow keys = rotate camera (perspective only)
+        if (shiftHeld && camera is PerspectiveCamera perspCam) {
+            float rotateSpeed = 60f * (float)deltaTime; // degrees per second
+            if (InputState.IsKeyDown(Key.Left))
+                perspCam.ProcessKeyboardRotation(rotateSpeed, 0);
+            if (InputState.IsKeyDown(Key.Right))
+                perspCam.ProcessKeyboardRotation(-rotateSpeed, 0);
+            if (InputState.IsKeyDown(Key.Up))
+                perspCam.ProcessKeyboardRotation(0, rotateSpeed);
+            if (InputState.IsKeyDown(Key.Down))
+                perspCam.ProcessKeyboardRotation(0, -rotateSpeed);
+        }
+
+        // WASD always moves, Arrow keys move only when Shift is not held
+        if (InputState.IsKeyDown(Key.W) || (!shiftHeld && InputState.IsKeyDown(Key.Up)))
             camera.ProcessKeyboard(CameraMovement.Forward, deltaTime);
-        if (InputState.IsKeyDown(Key.S))
+        if (InputState.IsKeyDown(Key.S) || (!shiftHeld && InputState.IsKeyDown(Key.Down)))
             camera.ProcessKeyboard(CameraMovement.Backward, deltaTime);
-        if (InputState.IsKeyDown(Key.A))
+        if (InputState.IsKeyDown(Key.A) || (!shiftHeld && InputState.IsKeyDown(Key.Left)))
             camera.ProcessKeyboard(CameraMovement.Left, deltaTime);
-        if (InputState.IsKeyDown(Key.D))
+        if (InputState.IsKeyDown(Key.D) || (!shiftHeld && InputState.IsKeyDown(Key.Right)))
             camera.ProcessKeyboard(CameraMovement.Right, deltaTime);
+
+        // Keyboard zoom (+/- keys)
+        bool zoomIn = InputState.IsKeyDown(Key.OemPlus) || InputState.IsKeyDown(Key.Add);
+        bool zoomOut = InputState.IsKeyDown(Key.OemMinus) || InputState.IsKeyDown(Key.Subtract);
+        if (zoomIn || zoomOut) {
+            float direction = zoomIn ? 1f : -1f;
+            if (camera is OrthographicTopDownCamera ortho) {
+                float zoomSpeed = ortho.OrthographicSize * 0.02f;
+                ortho.OrthographicSize = Math.Clamp(ortho.OrthographicSize - direction * zoomSpeed, 1f, 100000f);
+            }
+            else {
+                camera.ProcessKeyboard(zoomIn ? CameraMovement.Forward : CameraMovement.Backward, deltaTime * 2);
+            }
+        }
     }
 
     private void RenderToolOverlay() {
@@ -141,6 +170,11 @@ public partial class LandscapeEditorView : Base3DView {
     protected override void OnGlKeyDown(KeyEventArgs e) {
         if (!_didInit || _viewModel?.TerrainSystem == null) return;
 
+        // Go to Landblock (Ctrl+G)
+        if (e.Key == Key.G && e.KeyModifiers.HasFlag(KeyModifiers.Control)) {
+            _ = _viewModel.GotoLandblockCommand.ExecuteAsync(null);
+        }
+
         if (e.Key == Key.Z && e.KeyModifiers.HasFlag(KeyModifiers.Control)) {
             if (e.KeyModifiers.HasFlag(KeyModifiers.Shift)) {
                 _viewModel.TerrainSystem.History.Redo();
@@ -151,6 +185,91 @@ public partial class LandscapeEditorView : Base3DView {
         }
         if (e.Key == Key.Y && e.KeyModifiers.HasFlag(KeyModifiers.Control)) {
             _viewModel.TerrainSystem.History.Redo();
+        }
+
+        // Object copy/paste/delete (supports multi-selection)
+        var sel = _viewModel.TerrainSystem.EditingContext.ObjectSelection;
+
+        if (e.Key == Key.C && e.KeyModifiers.HasFlag(KeyModifiers.Control)) {
+            if (sel.HasSelection) {
+                if (sel.IsMultiSelection) {
+                    sel.ClipboardMulti = sel.SelectedEntries
+                        .Where(entry => !entry.IsScenery)
+                        .Select(entry => entry.Object)
+                        .ToList();
+                    sel.Clipboard = null;
+                    Console.WriteLine($"[Selector] Copied {sel.ClipboardMulti.Count} objects");
+                }
+                else if (sel.SelectedObject.HasValue) {
+                    sel.Clipboard = sel.SelectedObject.Value;
+                    sel.ClipboardMulti = null;
+                    Console.WriteLine($"[Selector] Copied object 0x{sel.SelectedObject.Value.Id:X8}");
+                }
+            }
+        }
+
+        if (e.Key == Key.V && e.KeyModifiers.HasFlag(KeyModifiers.Control)) {
+            if (sel.ClipboardMulti != null && sel.ClipboardMulti.Count > 0) {
+                // Multi-paste: place group relative to their center
+                sel.IsPlacementMode = true;
+                sel.PlacementPreviewMulti = sel.ClipboardMulti.Select(obj => new WorldBuilder.Shared.Documents.StaticObject {
+                    Id = obj.Id,
+                    IsSetup = obj.IsSetup,
+                    Origin = obj.Origin,
+                    Orientation = obj.Orientation,
+                    Scale = obj.Scale
+                }).ToList();
+                sel.PlacementPreview = sel.PlacementPreviewMulti[0];
+                Console.WriteLine($"[Selector] Entering multi-placement mode for {sel.ClipboardMulti.Count} objects");
+            }
+            else if (sel.Clipboard.HasValue) {
+                sel.IsPlacementMode = true;
+                sel.PlacementPreviewMulti = null;
+                sel.PlacementPreview = new WorldBuilder.Shared.Documents.StaticObject {
+                    Id = sel.Clipboard.Value.Id,
+                    IsSetup = sel.Clipboard.Value.IsSetup,
+                    Origin = sel.Clipboard.Value.Origin,
+                    Orientation = sel.Clipboard.Value.Orientation,
+                    Scale = sel.Clipboard.Value.Scale
+                };
+                Console.WriteLine($"[Selector] Entering placement mode for 0x{sel.Clipboard.Value.Id:X8}");
+            }
+        }
+
+        if (e.Key == Key.Delete) {
+            if (sel.HasSelection) {
+                // Collect non-scenery selections, sorted by descending index to avoid shift issues
+                var toDelete = sel.SelectedEntries
+                    .Where(entry => !entry.IsScenery && entry.ObjectIndex >= 0)
+                    .OrderByDescending(entry => entry.ObjectIndex)
+                    .ToList();
+
+                if (toDelete.Count > 0) {
+                    var commands = toDelete.Select(entry =>
+                        (WorldBuilder.Lib.History.ICommand)new WorldBuilder.Editors.Landscape.Commands.RemoveObjectCommand(
+                            _viewModel.TerrainSystem.EditingContext,
+                            entry.LandblockKey,
+                            entry.ObjectIndex)
+                    ).ToList();
+
+                    var compound = new WorldBuilder.Editors.Landscape.Commands.CompoundCommand(
+                        $"Delete {toDelete.Count} object(s)", commands);
+                    _viewModel.TerrainSystem.History.ExecuteCommand(compound);
+                    Console.WriteLine($"[Selector] Deleted {toDelete.Count} object(s)");
+                }
+            }
+        }
+
+        if (e.Key == Key.Escape) {
+            if (sel.IsPlacementMode) {
+                sel.IsPlacementMode = false;
+                sel.PlacementPreview = null;
+                sel.PlacementPreviewMulti = null;
+                Console.WriteLine($"[Selector] Cancelled placement mode");
+            }
+            else if (sel.HasSelection) {
+                sel.Deselect();
+            }
         }
     }
 

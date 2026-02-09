@@ -1,4 +1,4 @@
-﻿using Avalonia;
+using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -6,6 +6,7 @@ using CommunityToolkit.Mvvm.Input;
 using CommunityToolkit.Mvvm.Messaging;
 using System;
 using System.Threading.Tasks;
+using WorldBuilder.Editors.Landscape.ViewModels;
 using WorldBuilder.Lib;
 using WorldBuilder.Lib.Settings;
 using WorldBuilder.Views;
@@ -43,6 +44,14 @@ public partial class MainViewModel : ViewModelBase {
         }
         else {
             throw new Exception("Unable to open settings window");
+        }
+    }
+
+    [RelayCommand]
+    private async Task GotoLandblock() {
+        var landscapeEditor = ProjectManager.Instance.GetProjectService<LandscapeEditorViewModel>();
+        if (landscapeEditor != null) {
+            await landscapeEditor.GotoLandblockCommand.ExecuteAsync(null);
         }
     }
 

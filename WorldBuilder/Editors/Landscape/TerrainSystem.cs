@@ -57,6 +57,14 @@ namespace WorldBuilder.Editors.Landscape {
             collection.AddSingleton<BrushSubToolViewModel>();
             collection.AddSingleton<BucketFillSubToolViewModel>();
             collection.AddSingleton<TexturePaintingToolViewModel>();
+            collection.AddSingleton<HeightRaiseLowerSubToolViewModel>();
+            collection.AddSingleton<HeightSetSubToolViewModel>();
+            collection.AddSingleton<HeightSmoothSubToolViewModel>();
+            collection.AddSingleton<HeightToolViewModel>();
+            collection.AddSingleton<SelectSubToolViewModel>();
+            collection.AddSingleton<MoveObjectSubToolViewModel>();
+            collection.AddSingleton<RotateObjectSubToolViewModel>();
+            collection.AddSingleton<SelectorToolViewModel>();
             collection.AddSingleton(TerrainDoc ?? throw new ArgumentNullException(nameof(TerrainDoc)));
             collection.AddSingleton(dats);
             collection.AddSingleton(project);
@@ -161,7 +169,7 @@ namespace WorldBuilder.Editors.Landscape {
         }
 
         public IEnumerable<StaticObject> GetAllStaticObjects() {
-            return new List<StaticObject>();
+            return Scene.GetAllStaticObjects();
         }
 
         public override async Task<BaseDocument?> LoadDocumentAsync(string documentId, Type documentType,
@@ -195,7 +203,7 @@ namespace WorldBuilder.Editors.Landscape {
         }
 
         public IEnumerable<(Vector3 Pos, Quaternion Rot)> GetAllStaticSpawns() {
-            return new List<(Vector3, Quaternion)>();
+            return Scene.GetAllStaticObjects().Select(o => (o.Origin, o.Orientation));
         }
 
         public void RegenerateChunks(IEnumerable<ulong> chunkIds) {
