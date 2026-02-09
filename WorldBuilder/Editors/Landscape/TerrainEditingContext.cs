@@ -69,7 +69,7 @@ namespace WorldBuilder.Editors.Landscape {
                 terrainDoc.UpdateLandblocksBatchInternal(changes, out var modifiedLandblocks);
             }
             else if (currentLayer is LayerDocument layerDoc) {
-                layerDoc.UpdateLandblocksBatchInternal(changes, out var modifiedLandblocks);
+                layerDoc.UpdateLandblocksBatchInternal(TerrainField.Type, changes, out var modifiedLandblocks);
             }
         }
 
@@ -89,7 +89,7 @@ namespace WorldBuilder.Editors.Landscape {
                 terrainDoc.UpdateLandblocksBatchInternal(changes, out var modifiedLandblocks);
             }
             else if (currentLayer is LayerDocument layerDoc) {
-                layerDoc.UpdateLandblocksBatchInternal(changes, out var modifiedLandblocks);
+                layerDoc.UpdateLandblocksBatchInternal(TerrainField.Type, changes, out var modifiedLandblocks);
             }
         }
 

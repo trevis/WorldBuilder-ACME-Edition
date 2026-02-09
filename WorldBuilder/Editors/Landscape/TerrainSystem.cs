@@ -99,21 +99,45 @@ namespace WorldBuilder.Editors.Landscape {
                 }
             }
 
-            // Get all visible layers in order (Bottom -> Top)
+            // Get all visible layers in order (Top -> Bottom for first-non-null per field)
             var layers = GetVisibleLayers();
 
             bool hasContent = baseTerrain != null;
+
+            // Track which fields have been claimed per cell
+            var resolved = new byte[81];
 
             foreach (var layer in layers) {
                 var doc = DocumentManager.GetOrCreateDocumentAsync<LayerDocument>(layer.DocumentId).GetAwaiter()
                     .GetResult();
                 if (doc is null) continue;
 
-                if (doc.TerrainData.Landblocks.TryGetValue(lbKey, out var sparseCells)) {
-                    hasContent = true;
-                    foreach (var (cellIndex, cellValue) in sparseCells) {
-                        result[cellIndex] = new TerrainEntry(cellValue);
-                    }
+                // Check if this layer has data and masks for this landblock
+                if (!doc.TerrainData.Landblocks.TryGetValue(lbKey, out var sparseCells)) continue;
+                doc.TerrainData.FieldMasks.TryGetValue(lbKey, out var sparseMasks);
+
+                hasContent = true;
+                foreach (var (cellIndex, cellValue) in sparseCells) {
+                    // Determine which fields this layer claims for this cell
+                    byte layerMask = (sparseMasks != null && sparseMasks.TryGetValue(cellIndex, out var m))
+                        ? m
+                        : TerrainFieldMask.All; // No mask = legacy data, treat as all fields
+
+                    // Only apply fields not yet claimed by a higher layer
+                    byte unclaimed = (byte)(layerMask & ~resolved[cellIndex]);
+                    if (unclaimed == 0) continue;
+
+                    var entry = new TerrainEntry(cellValue);
+                    var current = result[cellIndex];
+
+                    result[cellIndex] = new TerrainEntry(
+                        road:    (unclaimed & TerrainFieldMask.Road) != 0    ? entry.Road    : current.Road,
+                        scenery: (unclaimed & TerrainFieldMask.Scenery) != 0 ? entry.Scenery : current.Scenery,
+                        type:    (unclaimed & TerrainFieldMask.Type) != 0    ? entry.Type    : current.Type,
+                        height:  (unclaimed & TerrainFieldMask.Height) != 0  ? entry.Height  : current.Height
+                    );
+
+                    resolved[cellIndex] |= unclaimed;
                 }
             }
 
@@ -124,7 +148,7 @@ namespace WorldBuilder.Editors.Landscape {
             var result = new List<TerrainLayer>();
             var items = TerrainDoc.TerrainData.RootItems ?? [];
             CollectVisibleLayers(items, result);
-            result.Reverse(); // Apply Bottom-to-Top (painter's algorithm)
+            // No reverse -- iterate top-to-bottom for first-non-null per field
             return result;
         }
 
@@ -146,25 +170,26 @@ namespace WorldBuilder.Editors.Landscape {
             _layerRefreshPending = true;
         }
 
-        public HashSet<ushort> UpdateLandblocksBatch(Dictionary<ushort, Dictionary<byte, uint>> allChanges) {
+        public HashSet<ushort> UpdateLandblocksBatch(TerrainField field, Dictionary<ushort, Dictionary<byte, uint>> allChanges) {
             var currentLayer = EditingContext.CurrentLayerDoc;
             if (currentLayer == null || currentLayer == TerrainDoc) {
+                // Base layer: no field masks needed, updates full uint array
                 TerrainDoc.UpdateLandblocksBatchInternal(allChanges, out var modifiedLandblocks);
                 return modifiedLandblocks;
             }
 
-            ((LayerDocument)currentLayer).UpdateLandblocksBatchInternal(allChanges, out var modifiedLandblocks2);
+            ((LayerDocument)currentLayer).UpdateLandblocksBatchInternal(field, allChanges, out var modifiedLandblocks2);
             return modifiedLandblocks2;
         }
 
-        public HashSet<ushort> UpdateLandblock(ushort lbKey, TerrainEntry[] newEntries) {
+        public HashSet<ushort> UpdateLandblock(TerrainField field, ushort lbKey, TerrainEntry[] newEntries) {
             var currentLayer = EditingContext.CurrentLayerDoc;
             if (currentLayer == null || currentLayer == TerrainDoc) {
                 TerrainDoc.UpdateLandblockInternal(lbKey, newEntries, out var modifiedLandblocks);
                 return modifiedLandblocks;
             }
 
-            ((LayerDocument)currentLayer).UpdateLandblockInternal(lbKey, newEntries, out var modifiedLandblocks2);
+            ((LayerDocument)currentLayer).UpdateLandblockInternal(lbKey, newEntries, field, out var modifiedLandblocks2);
             return modifiedLandblocks2;
         }
 
