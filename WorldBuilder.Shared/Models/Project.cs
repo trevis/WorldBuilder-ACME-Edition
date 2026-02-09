@@ -143,7 +143,8 @@ namespace WorldBuilder.Shared.Models {
                 CollectExportLayers(terrainDoc.TerrainData.RootItems, exportLayers);
             }
 
-            exportLayers.Reverse(); // Apply Bottom-To-Top (painter's algorithm)
+            // No reverse -- iterate top-to-bottom for first-non-null per field
+            // (CollectExportLayers already returns in tree order = top-to-bottom)
 
             // Identify all landblocks that need to be saved (modified in base OR any export layer)
             var modifiedLandblocks = new HashSet<ushort>(terrainDoc.TerrainData.Landblocks.Keys);
@@ -170,14 +171,33 @@ namespace WorldBuilder.Shared.Models {
                     continue;
                 }
 
-                // 2. Apply changes from each export layer in order
+                // Apply changes from each export layer using per-field masks (top-to-bottom)
+                var resolved = new byte[LANDBLOCK_SIZE];
                 foreach (var layer in exportLayers) {
-                    if (layerDocs.TryGetValue(layer.DocumentId, out var layerDoc)) {
-                        if (layerDoc.TerrainData.Landblocks.TryGetValue(lbKey, out var sparseCells)) {
-                            foreach (var (cellIdx, cellValue) in sparseCells) {
-                                currentEntries[cellIdx] = new TerrainEntry(cellValue);
-                            }
-                        }
+                    if (!layerDocs.TryGetValue(layer.DocumentId, out var layerDoc)) continue;
+                    if (!layerDoc.TerrainData.Landblocks.TryGetValue(lbKey, out var sparseCells)) continue;
+                    layerDoc.TerrainData.FieldMasks.TryGetValue(lbKey, out var sparseMasks);
+
+                    foreach (var (cellIdx, cellValue) in sparseCells) {
+                        // Determine which fields this layer claims for this cell
+                        byte layerMask = (sparseMasks != null && sparseMasks.TryGetValue(cellIdx, out var m))
+                            ? m
+                            : TerrainFieldMask.All; // No mask = legacy data
+
+                        byte unclaimed = (byte)(layerMask & ~resolved[cellIdx]);
+                        if (unclaimed == 0) continue;
+
+                        var entry = new TerrainEntry(cellValue);
+                        var current = currentEntries[cellIdx];
+
+                        currentEntries[cellIdx] = new TerrainEntry(
+                            road:    (unclaimed & TerrainFieldMask.Road) != 0    ? entry.Road    : current.Road,
+                            scenery: (unclaimed & TerrainFieldMask.Scenery) != 0 ? entry.Scenery : current.Scenery,
+                            type:    (unclaimed & TerrainFieldMask.Type) != 0    ? entry.Type    : current.Type,
+                            height:  (unclaimed & TerrainFieldMask.Height) != 0  ? entry.Height  : current.Height
+                        );
+
+                        resolved[cellIdx] |= unclaimed;
                     }
                 }
 
