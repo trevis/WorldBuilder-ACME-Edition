@@ -126,7 +126,7 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
             }
 
             if (batchChanges.Count > 0) {
-                var modifiedLandblocks = Context.TerrainSystem.UpdateLandblocksBatch(batchChanges);
+                var modifiedLandblocks = Context.TerrainSystem.UpdateLandblocksBatch(TerrainField.Height, batchChanges);
                 Context.MarkLandblocksModified(modifiedLandblocks);
             }
         }

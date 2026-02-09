@@ -138,7 +138,7 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
 
             // Apply all changes in a single batch operation
             if (batchChanges.Count > 0) {
-                var modifiedLandblocks = Context.TerrainSystem.UpdateLandblocksBatch(batchChanges);
+                var modifiedLandblocks = Context.TerrainSystem.UpdateLandblocksBatch(TerrainField.Type, batchChanges);
                 Context.MarkLandblocksModified(modifiedLandblocks);
             }
         }

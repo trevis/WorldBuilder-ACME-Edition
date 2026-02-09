@@ -5,6 +5,7 @@ using System.Numerics;
 using WorldBuilder.Editors.Landscape.Commands;
 using WorldBuilder.Lib;
 using WorldBuilder.Lib.History;
+using WorldBuilder.Shared.Documents;
 
 namespace WorldBuilder.Editors.Landscape.ViewModels {
     public partial class RoadRemoveSubToolViewModel : SubToolViewModelBase {
@@ -98,7 +99,7 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
 
             _pendingChanges.Add((landblockId, vertexIndex, originalRoad, newRoad));
             landblockData[vertexIndex] = landblockData[vertexIndex] with { Road = newRoad };
-            var modifiedLandblocks = Context.TerrainSystem.UpdateLandblock(landblockId, landblockData);
+            var modifiedLandblocks = Context.TerrainSystem.UpdateLandblock(TerrainField.Road, landblockId, landblockData);
 
             _modifiedLandblocks.UnionWith(modifiedLandblocks);
             foreach (var lbId in _modifiedLandblocks) {
