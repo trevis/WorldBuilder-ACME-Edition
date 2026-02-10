@@ -8,6 +8,11 @@
     x:DataType="vm:LandscapeEditorViewModel">
     <Grid>
         <Grid.ColumnDefinitions>
+            <ColumnDefinition
+                Width="280"
+                MinWidth="180"
+                MaxWidth="500" />
+            <ColumnDefinition Width="Auto" />
             <ColumnDefinition Width="*" />
             <ColumnDefinition Width="Auto" />
             <ColumnDefinition
@@ -16,8 +21,33 @@
                 MaxWidth="500" />
         </Grid.ColumnDefinitions>
 
+        <!--  Left Panel: Object Browser  -->
+        <Border
+            Grid.Column="0"
+            Background="{DynamicResource SystemControlBackgroundAltHighBrush}"
+            BorderBrush="{DynamicResource SystemControlForegroundBaseMediumLowBrush}"
+            BorderThickness="0,0,1,0">
+            <DockPanel LastChildFill="True">
+                <TextBlock
+                    DockPanel.Dock="Top"
+                    Margin="10,8,10,6"
+                    FontSize="13"
+                    FontWeight="SemiBold"
+                    Text="Object Browser" />
+                <ContentControl Content="{Binding ObjectBrowser}" />
+            </DockPanel>
+        </Border>
+
+        <!--  Splitter between left panel and viewport  -->
+        <GridSplitter
+            Grid.Column="1"
+            Width="5"
+            HorizontalAlignment="Center"
+            VerticalAlignment="Stretch"
+            Background="Transparent" />
+
         <!--  Main 3D viewport area  -->
-        <Grid Grid.Column="0">
+        <Grid Grid.Column="2">
             <Panel
                 x:Name="Viewport"
                 Background="Transparent" />
@@ -101,7 +131,7 @@
 
         <!--  Splitter for tools panel  -->
         <GridSplitter
-            Grid.Column="1"
+            Grid.Column="3"
             Width="5"
             HorizontalAlignment="Center"
             VerticalAlignment="Stretch"
@@ -109,7 +139,7 @@
 
         <!--  Tools Panel with History at bottom  -->
         <Border
-            Grid.Column="2"
+            Grid.Column="4"
             Background="{DynamicResource SystemControlBackgroundAltHighBrush}"
             BorderBrush="{DynamicResource SystemControlForegroundBaseMediumLowBrush}"
             BorderThickness="1,0,0,0">
@@ -122,17 +152,6 @@
                     BorderThickness="0,0,0,1"
                     DockPanel.Dock="Top">
                     <ContentControl Content="{Binding LayersPanel}" />
-                </Border>
-                <!--  Object Browser Panel (collapsible)  -->
-                <Border
-                    BorderBrush="{DynamicResource SystemControlForegroundBaseMediumLowBrush}"
-                    BorderThickness="0,0,0,1"
-                    DockPanel.Dock="Top">
-                    <Expander Header="Object Browser" IsExpanded="False" Padding="4">
-                        <Border MaxHeight="220">
-                            <ContentControl Content="{Binding ObjectBrowser}" />
-                        </Border>
-                    </Expander>
                 </Border>
                 <!--  History and Snapshot Panel  -->
                 <Border
