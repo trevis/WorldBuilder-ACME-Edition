@@ -244,15 +244,18 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
                         Scale = preview.Scale
                     };
 
+                    // Flatten terrain first, then snap building Z to the exact flattened height
+                    float? snappedZ = FlattenTerrainUnderBuilding(newObj);
+                    if (snappedZ.HasValue && Math.Abs(snappedZ.Value - newObj.Origin.Z) > 0.01f) {
+                        newObj.Origin = new Vector3(newObj.Origin.X, newObj.Origin.Y, snappedZ.Value);
+                    }
+
                     var cmd = new AddObjectCommand(Context, lbKey, newObj);
                     _commandHistory.ExecuteCommand(cmd);
                     Context.TerrainSystem.Scene.InvalidateStaticObjectsCache();
                     Context.ObjectSelection.Select(newObj, lbKey, cmd.AddedIndex, false);
 
-                    Console.WriteLine($"[Selector] Placed object 0x{newObj.Id:X8} at ({terrainPos.X:F1}, {terrainPos.Y:F1}, {terrainPos.Z:F1})");
-
-                    // Flatten terrain under building footprint
-                    FlattenTerrainUnderBuilding(newObj);
+                    Console.WriteLine($"[Selector] Placed object 0x{newObj.Id:X8} at ({newObj.Origin.X:F1}, {newObj.Origin.Y:F1}, {newObj.Origin.Z:F1})");
 
                     return true;
                 }
@@ -298,19 +301,50 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
         /// Only applies to known building models. Uses the model's bounding box to determine
         /// the rectangular footprint.
         /// </summary>
-        private void FlattenTerrainUnderBuilding(StaticObject obj) {
+        /// <summary>
+        /// Returns the snapped Z height (from the height table) or null if flattening didn't apply.
+        /// </summary>
+        private float? FlattenTerrainUnderBuilding(StaticObject obj) {
             try {
-                // Get model bounds from the object manager
+                // Start with model bounds from the object manager
                 var bounds = Context.TerrainSystem.Scene._objectManager.GetBounds(obj.Id, obj.IsSetup);
-                if (!bounds.HasValue) return;
+                if (!bounds.HasValue) return null;
 
                 var (localMin, localMax) = bounds.Value;
 
-                // Compute world-space AABB (ignoring rotation for V1)
+                // Compute world-space AABB from exterior model
                 float worldMinX = obj.Origin.X + localMin.X;
                 float worldMaxX = obj.Origin.X + localMax.X;
                 float worldMinY = obj.Origin.Y + localMin.Y;
                 float worldMaxY = obj.Origin.Y + localMax.Y;
+
+                // Expand footprint using blueprint EnvCell positions (covers full interior extent)
+                var dats = Context.TerrainSystem.Dats;
+                if (dats != null) {
+                    var blueprint = BuildingBlueprintCache.GetBlueprint(obj.Id, dats);
+                    if (blueprint != null && blueprint.Cells.Count > 0) {
+                        foreach (var cell in blueprint.Cells) {
+                            // Transform cell's local offset by building orientation to get world offset
+                            var worldOffset = Vector3.Transform(cell.RelativeOrigin, obj.Orientation);
+                            float cellX = obj.Origin.X + worldOffset.X;
+                            float cellY = obj.Origin.Y + worldOffset.Y;
+                            // Expand bounds to include this cell (with margin for cell geometry)
+                            // AC cells can be up to ~24m across, use full cell width as margin
+                            const float cellMargin = 24f;
+                            worldMinX = Math.Min(worldMinX, cellX - cellMargin);
+                            worldMaxX = Math.Max(worldMaxX, cellX + cellMargin);
+                            worldMinY = Math.Min(worldMinY, cellY - cellMargin);
+                            worldMaxY = Math.Max(worldMaxY, cellY + cellMargin);
+                        }
+                    }
+                }
+
+                // Ensure minimum footprint of at least 24m around building center
+                const float minRadius = 24f;
+                worldMinX = Math.Min(worldMinX, obj.Origin.X - minRadius);
+                worldMaxX = Math.Max(worldMaxX, obj.Origin.X + minRadius);
+                worldMinY = Math.Min(worldMinY, obj.Origin.Y - minRadius);
+                worldMaxY = Math.Max(worldMaxY, obj.Origin.Y + minRadius);
 
                 // Find the target height byte by reverse-lookup in the height table
                 var heightTable = Context.TerrainSystem.Region.LandDefs.LandHeightTable;
@@ -318,7 +352,7 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
 
                 // Get all terrain vertices in the rectangular footprint
                 var vertices = PaintCommand.GetVerticesInRect(worldMinX, worldMinY, worldMaxX, worldMaxY, Context);
-                if (vertices.Count == 0) return;
+                if (vertices.Count == 0) return null;
 
                 // Build change set (same pattern as HeightSetSubToolViewModel)
                 var changes = new Dictionary<ushort, List<(int VertexIndex, byte OriginalValue, byte NewValue)>>();
@@ -343,16 +377,31 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
                     list.Add((vIndex, original, targetHeight));
                 }
 
-                if (changes.Count == 0) return;
+                if (changes.Count == 0) return heightTable[targetHeight];
 
-                // Execute as a HeightChangeCommand (supports undo and handles static object Z adjustment)
-                var heightCmd = new HeightChangeCommand(Context, "Flatten terrain under building", changes);
-                _commandHistory.ExecuteCommand(heightCmd);
+                // Apply terrain changes directly (without HeightChangeCommand's static object Z adjustment,
+                // which would cause nearby existing buildings to float/sink)
+                var batchChanges = new Dictionary<ushort, Dictionary<byte, uint>>();
+                foreach (var (lbId, changeList) in changes) {
+                    if (!landblockDataCache.TryGetValue(lbId, out var terrainData)) continue;
+                    if (!batchChanges.TryGetValue(lbId, out var lbChanges)) {
+                        lbChanges = new Dictionary<byte, uint>();
+                        batchChanges[lbId] = lbChanges;
+                    }
+                    foreach (var (vIndex, _, newVal) in changeList) {
+                        var newEntry = terrainData[vIndex] with { Height = newVal };
+                        lbChanges[(byte)vIndex] = newEntry.ToUInt();
+                    }
+                }
+                var modifiedLandblocks = Context.TerrainSystem.UpdateLandblocksBatch(TerrainField.Height, batchChanges);
+                Context.MarkLandblocksModified(modifiedLandblocks);
 
-                Console.WriteLine($"[Selector] Flattened {vertices.Count} terrain vertices under building 0x{obj.Id:X8}");
+                Console.WriteLine($"[Selector] Flattened {vertices.Count} terrain vertices under building 0x{obj.Id:X8} (height={heightTable[targetHeight]:F1})");
+                return heightTable[targetHeight];
             }
             catch (Exception ex) {
                 Console.WriteLine($"[Selector] Error flattening terrain: {ex.Message}");
+                return null;
             }
         }
 

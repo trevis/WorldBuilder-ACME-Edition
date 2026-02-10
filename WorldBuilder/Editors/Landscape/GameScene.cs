@@ -337,7 +337,7 @@ namespace WorldBuilder.Editors.Landscape {
             }
 
             long totalMs = sw.ElapsedMilliseconds;
-            if (totalMs > 16) { // Log if frame took longer than ~60fps
+            if (totalMs > 200) { // Log only significant frame delays
                 Console.WriteLine($"[GameScene.Update] {totalMs}ms total (statics: {staticMs}ms, terrain: {totalMs - staticMs}ms, warmup queue: {_renderDataWarmupQueue.Count})");
             }
         }
@@ -856,7 +856,7 @@ namespace WorldBuilder.Editors.Landscape {
                 RenderStaticObjects(staticObjects, camera, viewProjection);
             }
             long renderStaticsMs = renderSw.ElapsedMilliseconds;
-            if (renderStaticsMs > 16) {
+            if (renderStaticsMs > 200) {
                 Console.WriteLine($"[GameScene.Render] Static objects: {renderStaticsMs}ms ({staticObjects.Count} objects)");
             }
 

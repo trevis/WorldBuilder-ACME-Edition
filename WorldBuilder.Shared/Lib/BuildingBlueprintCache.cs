@@ -225,8 +225,13 @@ namespace WorldBuilder.Shared.Lib {
                     });
                 }
 
-                // Copy visible cells (will be remapped during instantiation)
-                snapshot.VisibleCells.AddRange(envCell.VisibleCells);
+                // Copy visible cells -- only keep references to cells within this building
+                // (drop cross-building references that would be invalid in the new landblock)
+                foreach (var vc in envCell.VisibleCells) {
+                    if (cellIds.Contains(vc)) {
+                        snapshot.VisibleCells.Add(vc);
+                    }
+                }
 
                 // Copy static objects in donor-local space
                 foreach (var stab in envCell.StaticObjects) {
@@ -246,12 +251,13 @@ namespace WorldBuilder.Shared.Lib {
             }
 
             // Copy building portals (will be remapped during instantiation)
+            // Filter StabList to only include cells from this building
             foreach (var portal in donor.Portals) {
                 blueprint.PortalTemplates.Add(new BuildingPortal {
                     Flags = portal.Flags,
                     OtherCellId = portal.OtherCellId,
                     OtherPortalId = portal.OtherPortalId,
-                    StabList = new List<ushort>(portal.StabList)
+                    StabList = portal.StabList.Where(s => cellIds.Contains(s) || !IsEnvCellId(s)).ToList()
                 });
             }
 
