@@ -30,6 +30,8 @@ namespace WorldBuilder.Editors.Landscape {
         private IShader _sphereShader;
 
         internal readonly StaticObjectManager _objectManager;
+        private ThumbnailRenderService? _thumbnailService;
+        public ThumbnailRenderService? ThumbnailService => _thumbnailService;
         private IDatReaderWriter _dats => _terrainSystem.Dats;
         private DocumentManager _documentManager => _terrainSystem.DocumentManager;
         private TerrainDocument _terrainDoc => _terrainSystem.TerrainDoc;
@@ -168,6 +170,7 @@ namespace WorldBuilder.Editors.Landscape {
             GPUManager = new TerrainGPUResourceManager(_renderer);
 
             _objectManager = new StaticObjectManager(_renderer, _dats);
+            _thumbnailService = new ThumbnailRenderService(_gl, _objectManager);
 
             // Initialize shaders
             var assembly = typeof(OpenGLRenderer).Assembly;
@@ -306,6 +309,8 @@ namespace WorldBuilder.Editors.Landscape {
             // Incrementally warm up GPU render data (a few per frame, on main thread for GL context)
             WarmUpRenderData();
 
+            // Thumbnail rendering moved to end of Render() where GL state is known-good
+
             long staticMs = sw.ElapsedMilliseconds;
 
             foreach (var chunkId in requiredChunks) {
@@ -349,7 +354,7 @@ namespace WorldBuilder.Editors.Landscape {
 
                 // Queue render data creation for unique object IDs
                 foreach (var (id, isSetup) in result.UniqueObjectIds) {
-                    if (_objectManager.TryGetCachedRenderData(id) == null) {
+                    if (_objectManager.TryGetCachedRenderData(id) == null && !_objectManager.IsKnownFailure(id)) {
                         _renderDataWarmupQueue.Enqueue((id, isSetup));
                     }
                 }
@@ -512,7 +517,7 @@ namespace WorldBuilder.Editors.Landscape {
                     // If this was a setup, queue its GfxObj parts for warmup too
                     if (data != null && data.IsSetup && data.SetupParts != null) {
                         foreach (var (partId, _) in data.SetupParts) {
-                            if (_objectManager.TryGetCachedRenderData(partId) == null) {
+                            if (_objectManager.TryGetCachedRenderData(partId) == null && !_objectManager.IsKnownFailure(partId)) {
                                 _renderDataWarmupQueue.Enqueue((partId, false));
                             }
                         }
@@ -864,6 +869,11 @@ namespace WorldBuilder.Editors.Landscape {
             if (editingContext.ObjectSelection.IsPlacementMode && editingContext.ObjectSelection.PlacementPreview.HasValue) {
                 RenderPlacementPreview(editingContext.ObjectSelection.PlacementPreview.Value, camera, viewProjection);
             }
+
+            // Process thumbnail rendering at end of Render() where GL state is known-good.
+            // Running during Update() produced blank FBOs because Avalonia's UI renderer
+            // leaves GL state (programs, attributes, etc.) in an unknown configuration.
+            _thumbnailService?.ProcessQueue();
         }
 
         /// <summary>
@@ -874,7 +884,7 @@ namespace WorldBuilder.Editors.Landscape {
 
             // Collect corners for all selected objects
             var allCorners = new List<Vector3>();
-            foreach (var entry in selection.SelectedEntries) {
+            foreach (var entry in selection.SelectedEntries.ToList()) {
                 var obj = entry.Object;
                 var bounds = _objectManager.GetBounds(obj.Id, obj.IsSetup);
                 if (bounds == null) continue;
@@ -1175,6 +1185,7 @@ namespace WorldBuilder.Editors.Landscape {
                 _gl.DeleteBuffer(_sphereIBO);
                 _gl.DeleteBuffer(_sphereInstanceVBO);
                 _gl.DeleteVertexArray(_sphereVAO);
+                _thumbnailService?.Dispose();
                 _objectManager?.Dispose();
                 GPUManager?.Dispose();
                 _disposed = true;
