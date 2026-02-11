@@ -56,10 +56,11 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
 
             if (_currentHitPosition.NearestVertice == Vector3.Zero) return;
 
-            // Run flood fill to find affected vertices
+            // Run flood fill to find affected vertices (constrained to visible landblocks)
             byte newType = (byte)SelectedTerrainType;
+            var visibleLbs = Context.TerrainSystem.Scene.VisibleLandblocks;
             var vertices = FillCommand.FloodFillVertices(
-                Context.TerrainSystem, _currentHitPosition, newType);
+                Context.TerrainSystem, _currentHitPosition, newType, visibleLbs);
 
             if (vertices.Count == 0) return;
 

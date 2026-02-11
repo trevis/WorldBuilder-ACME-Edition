@@ -80,6 +80,12 @@ namespace WorldBuilder.Editors.Landscape {
         private readonly HashSet<ushort> _pendingSceneryRegen = new(); // LB keys needing scenery regen
         private HashSet<ushort>? _lastVisibleLandblocks;
 
+        /// <summary>
+        /// The set of landblock keys currently loaded / visible near the camera.
+        /// Used by tools (e.g. bucket fill) to constrain operations to what the user can see.
+        /// </summary>
+        public HashSet<ushort>? VisibleLandblocks => _lastVisibleLandblocks;
+
         private record BackgroundLoadResult(ushort LbKey, string DocId, List<StaticObject> Scenery, HashSet<(uint Id, bool IsSetup)> UniqueObjectIds, long LoadMs, long SceneryMs, int SceneryCount);
 
         // Sphere rendering resources (from TerrainRenderer)

@@ -24,7 +24,8 @@ namespace WorldBuilder.Editors.Landscape.Commands {
         protected override TerrainEntry SetEntryValue(TerrainEntry entry, byte value) => entry with { Type = value };
 
         private void CollectChanges() {
-            var vertices = FloodFillVertices(_context.TerrainSystem, _hitResult, _newType);
+            var visibleLbs = _context.TerrainSystem.Scene.VisibleLandblocks;
+            var vertices = FloodFillVertices(_context.TerrainSystem, _hitResult, _newType, visibleLbs);
             foreach (var (lbID, index, oldType) in vertices) {
                 if (!_changes.TryGetValue(lbID, out var list)) {
                     list = new List<(int, byte, byte)>();
@@ -39,10 +40,16 @@ namespace WorldBuilder.Editors.Landscape.Commands {
         /// vertices with the same texture type. Returns a list of (landblockId, vertexIndex, oldType).
         /// Can be used for both preview highlighting and actual command execution.
         /// </summary>
+        /// <param name="allowedLandblocks">
+        /// Optional set of landblock keys to constrain the fill to (e.g. visible/loaded landblocks).
+        /// When null the fill is unbounded. When provided the flood will not cross into landblocks
+        /// outside this set, keeping the operation scoped to the camera view.
+        /// </param>
         public static List<(ushort LbID, int VertexIndex, byte OldType)> FloodFillVertices(
             TerrainSystem terrainSystem,
             TerrainRaycast.TerrainRaycastHit hitResult,
-            byte newType) {
+            byte newType,
+            HashSet<ushort>? allowedLandblocks = null) {
 
             var result = new List<(ushort, int, byte)>();
 
@@ -51,6 +58,10 @@ namespace WorldBuilder.Editors.Landscape.Commands {
             uint startCellX = (uint)hitResult.CellX;
             uint startCellY = (uint)hitResult.CellY;
             ushort startLbID = (ushort)((startLbX << 8) | startLbY);
+
+            // If the starting landblock is outside allowed bounds, nothing to fill
+            if (allowedLandblocks != null && !allowedLandblocks.Contains(startLbID))
+                return result;
 
             var startData = terrainSystem.GetLandblockTerrain(startLbID);
             if (startData == null) return result;
@@ -74,6 +85,9 @@ namespace WorldBuilder.Editors.Landscape.Commands {
                 visited.Add((lbX, lbY, cellX, cellY));
 
                 var lbID = (ushort)((lbX << 8) | lbY);
+
+                // Skip landblocks outside the allowed set
+                if (allowedLandblocks != null && !allowedLandblocks.Contains(lbID)) continue;
 
                 if (!landblockDataCache.TryGetValue(lbID, out var data)) {
                     data = terrainSystem.GetLandblockTerrain(lbID);
