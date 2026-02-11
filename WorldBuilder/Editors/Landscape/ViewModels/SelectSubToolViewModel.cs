@@ -246,7 +246,7 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
 
                     if (isBuilding) {
                         // Snap to the center of the nearest outdoor cell (24x24 grid).
-                        // ACE only checks building collision in the player's current outdoor cell,
+                        // AC only checks building collision in the player's current outdoor cell,
                         // so off-center buildings get walk-through walls on the nearest cell edge.
                         // Original AC buildings are always at cell centers (e.g. donor (36,156) = (12,12) in cell).
                         // Edge cells 0 and 7 are excluded to maintain ~36-unit landblock edge clearance.

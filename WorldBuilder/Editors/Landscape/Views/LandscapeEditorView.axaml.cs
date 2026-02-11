@@ -3,11 +3,14 @@ using Avalonia.Controls;
 using Avalonia.Input;
 using Chorizite.Core.Render;
 using Chorizite.OpenGLSDLBackend;
+using CommunityToolkit.Mvvm.Input;
+using DialogHostAvalonia;
 using Silk.NET.OpenGL;
 using System;
 using System.Diagnostics;
 using System.Linq;
 using System.Numerics;
+using System.Threading.Tasks;
 using WorldBuilder.Lib;
 using WorldBuilder.Shared.Documents;
 using WorldBuilder.Shared.Lib;
@@ -238,25 +241,7 @@ public partial class LandscapeEditorView : Base3DView {
 
         if (e.Key == Key.Delete) {
             if (sel.HasSelection) {
-                // Collect non-scenery selections, sorted by descending index to avoid shift issues
-                var toDelete = sel.SelectedEntries
-                    .Where(entry => !entry.IsScenery && entry.ObjectIndex >= 0)
-                    .OrderByDescending(entry => entry.ObjectIndex)
-                    .ToList();
-
-                if (toDelete.Count > 0) {
-                    var commands = toDelete.Select(entry =>
-                        (WorldBuilder.Lib.History.ICommand)new WorldBuilder.Editors.Landscape.Commands.RemoveObjectCommand(
-                            _viewModel.TerrainSystem.EditingContext,
-                            entry.LandblockKey,
-                            entry.ObjectIndex)
-                    ).ToList();
-
-                    var compound = new WorldBuilder.Editors.Landscape.Commands.CompoundCommand(
-                        $"Delete {toDelete.Count} object(s)", commands);
-                    _viewModel.TerrainSystem.History.ExecuteCommand(compound);
-                    Console.WriteLine($"[Selector] Deleted {toDelete.Count} object(s)");
-                }
+                _ = DeleteSelectedObjectsAsync();
             }
         }
 
@@ -330,6 +315,74 @@ public partial class LandscapeEditorView : Base3DView {
             InputScale,
             _viewModel.TerrainSystem.Scene.CameraManager.Current,
             _viewModel.TerrainSystem); // Changed from TerrainProvider
+    }
+
+    private async Task DeleteSelectedObjectsAsync() {
+        if (_viewModel?.TerrainSystem == null) return;
+
+        var sel = _viewModel.TerrainSystem.EditingContext.ObjectSelection;
+        var toDelete = sel.SelectedEntries
+            .Where(entry => !entry.IsScenery && entry.ObjectIndex >= 0)
+            .OrderByDescending(entry => entry.ObjectIndex)
+            .ToList();
+
+        if (toDelete.Count == 0) return;
+
+        var objectLabel = toDelete.Count == 1
+            ? $"object 0x{toDelete[0].Object.Id:X8}"
+            : $"{toDelete.Count} objects";
+
+        var confirmed = await ShowConfirmationDialog(
+            "Delete Object(s)",
+            $"Are you sure you want to delete {objectLabel}?");
+
+        if (!confirmed) return;
+
+        var commands = toDelete.Select(entry =>
+            (WorldBuilder.Lib.History.ICommand)new WorldBuilder.Editors.Landscape.Commands.RemoveObjectCommand(
+                _viewModel.TerrainSystem.EditingContext,
+                entry.LandblockKey,
+                entry.ObjectIndex)
+        ).ToList();
+
+        var compound = new WorldBuilder.Editors.Landscape.Commands.CompoundCommand(
+            $"Delete {toDelete.Count} object(s)", commands);
+        _viewModel.TerrainSystem.History.ExecuteCommand(compound);
+        Console.WriteLine($"[Selector] Deleted {toDelete.Count} object(s)");
+    }
+
+    private async Task<bool> ShowConfirmationDialog(string title, string message) {
+        bool result = false;
+        await DialogHost.Show(new Avalonia.Controls.StackPanel {
+            Margin = new Avalonia.Thickness(20),
+            Spacing = 15,
+            Children = {
+                new Avalonia.Controls.TextBlock {
+                    Text = title, FontSize = 16, FontWeight = Avalonia.Media.FontWeight.Bold
+                },
+                new Avalonia.Controls.TextBlock {
+                    Text = message, TextWrapping = Avalonia.Media.TextWrapping.Wrap, MaxWidth = 400
+                },
+                new Avalonia.Controls.StackPanel {
+                    Orientation = Avalonia.Layout.Orientation.Horizontal,
+                    HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right,
+                    Spacing = 10,
+                    Children = {
+                        new Avalonia.Controls.Button {
+                            Content = "Cancel", Command = new RelayCommand(() => DialogHost.Close("MainDialogHost"))
+                        },
+                        new Avalonia.Controls.Button {
+                            Content = "Delete",
+                            Command = new RelayCommand(() => {
+                                result = true;
+                                DialogHost.Close("MainDialogHost");
+                            })
+                        }
+                    }
+                }
+            }
+        }, "MainDialogHost");
+        return result;
     }
 
     protected override void OnGlDestroy() {
