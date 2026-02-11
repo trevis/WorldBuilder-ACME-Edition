@@ -236,43 +236,36 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
                     int lbY = (int)Math.Floor(terrainPos.Y / 192f);
                     ushort lbKey = (ushort)((lbX << 8) | lbY);
 
-                    // Clamp building position so the entire model stays within a single landblock.
-                    // Snap building placement to the center of the nearest outdoor cell.
-                    // Each landblock has 8x8 outdoor cells of 24x24 units. ACE only checks
-                    // building collision for buildings registered in the player's current
-                    // outdoor cell. If the building's physics BSP extends past the 24x24
-                    // cell boundary, players in the adjacent cell get no collision check,
-                    // causing walk-through walls on that side. Original AC buildings are
-                    // always placed at outdoor cell centers (e.g., donor at local (36,156)
-                    // = (12,12) within cell (1,6) — perfectly centered).
-                    // We also clamp to avoid the outermost ring of cells (cells 0 and 7)
-                    // to maintain ~36-unit clearance from landblock edges.
                     var placementPos = terrainPos;
-                    {
+                    var orientation = preview.Orientation;
+
+                    // Building-specific placement: cell-center snapping, donor orientation, terrain flattening.
+                    // Non-building objects (scenery, trees, etc.) are placed at the exact click position.
+                    var dats = Context.TerrainSystem.Dats;
+                    bool isBuilding = dats != null && BuildingBlueprintCache.IsBuildingModelId(preview.Id, dats);
+
+                    if (isBuilding) {
+                        // Snap to the center of the nearest outdoor cell (24x24 grid).
+                        // ACE only checks building collision in the player's current outdoor cell,
+                        // so off-center buildings get walk-through walls on the nearest cell edge.
+                        // Original AC buildings are always at cell centers (e.g. donor (36,156) = (12,12) in cell).
+                        // Edge cells 0 and 7 are excluded to maintain ~36-unit landblock edge clearance.
                         float lbOriginX = lbX * 192f;
                         float lbOriginY = lbY * 192f;
                         float localX = placementPos.X - lbOriginX;
                         float localY = placementPos.Y - lbOriginY;
 
-                        // Determine which outdoor cell the click falls in
-                        int cellX = Math.Clamp((int)(localX / 24f), 1, 6); // avoid edge cells 0 and 7
+                        int cellX = Math.Clamp((int)(localX / 24f), 1, 6);
                         int cellY = Math.Clamp((int)(localY / 24f), 1, 6);
 
-                        // Snap to the center of that outdoor cell
                         localX = cellX * 24f + 12f;
                         localY = cellY * 24f + 12f;
 
                         placementPos = new Vector3(lbOriginX + localX, lbOriginY + localY, placementPos.Z);
-                    }
 
-                    // For building models, use the donor building's orientation as the default.
-                    // The building's interior cell geometry (CellStructure from Environment data)
-                    // is authored for a specific orientation. Using identity rotation misaligns
-                    // the physics BSP with the visual mesh, causing walk-through walls.
-                    var orientation = preview.Orientation;
-                    var datsForOrientation = Context.TerrainSystem.Dats;
-                    if (datsForOrientation != null && BuildingBlueprintCache.IsBuildingModelId(preview.Id, datsForOrientation)) {
-                        var blueprint = BuildingBlueprintCache.GetBlueprint(preview.Id, datsForOrientation);
+                        // Use the donor building's orientation so the interior cell geometry
+                        // aligns with the physics BSP.
+                        var blueprint = BuildingBlueprintCache.GetBlueprint(preview.Id, dats);
                         if (blueprint != null) {
                             orientation = blueprint.DonorOrientation;
                         }
@@ -286,10 +279,12 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
                         Scale = preview.Scale
                     };
 
-                    // Flatten terrain first, then snap building Z to the exact flattened height
-                    float? snappedZ = FlattenTerrainUnderBuilding(newObj);
-                    if (snappedZ.HasValue && Math.Abs(snappedZ.Value - newObj.Origin.Z) > 0.01f) {
-                        newObj.Origin = new Vector3(newObj.Origin.X, newObj.Origin.Y, snappedZ.Value);
+                    // Flatten terrain under buildings only — scenery objects sit on existing terrain.
+                    if (isBuilding) {
+                        float? snappedZ = FlattenTerrainUnderBuilding(newObj);
+                        if (snappedZ.HasValue && Math.Abs(snappedZ.Value - newObj.Origin.Z) > 0.01f) {
+                            newObj.Origin = new Vector3(newObj.Origin.X, newObj.Origin.Y, snappedZ.Value);
+                        }
                     }
 
                     var cmd = new AddObjectCommand(Context, lbKey, newObj);
