@@ -85,6 +85,19 @@ namespace WorldBuilder.Editors.Landscape {
         }
 
         /// <summary>
+        /// Returns the texture atlas layer index for a given TerrainTextureType.
+        /// Returns -1 if the type is not found in the atlas.
+        /// </summary>
+        public int GetAtlasIndexForTerrainType(TerrainTextureType type) {
+            var desc = TerrainDescriptors.FirstOrDefault(d => d.TerrainType == type);
+            if (desc == null) return -1;
+            if (_textureAtlasIndexLookup.TryGetValue(desc.TerrainTex.TexGID, out var index)) {
+                return index;
+            }
+            return -1;
+        }
+
+        /// <summary>
         /// Generates small Avalonia bitmap thumbnails for each available terrain texture.
         /// Reads the source textures from the DAT, downsamples to thumbnailSize, and returns
         /// a dictionary keyed by TerrainTextureType.

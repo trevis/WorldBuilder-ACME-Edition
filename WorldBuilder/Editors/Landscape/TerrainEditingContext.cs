@@ -36,6 +36,13 @@ namespace WorldBuilder.Editors.Landscape {
         public float BrushRadius { get; set; } = 0f;
 
         /// <summary>
+        /// Texture atlas layer index for the preview texture.
+        /// -1 means no preview. Set by brush/fill tools to show a WYSIWYG
+        /// texture preview on the terrain via the shader.
+        /// </summary>
+        public int PreviewTextureAtlasIndex { get; set; } = -1;
+
+        /// <summary>
         /// Gets the modified landblock IDs since last clear
         /// </summary>
         public IEnumerable<uint> ModifiedLandblocks => _modifiedLandblocks;

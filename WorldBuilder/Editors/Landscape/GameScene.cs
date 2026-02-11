@@ -1073,6 +1073,11 @@ namespace WorldBuilder.Editors.Landscape {
                 _terrainShader.SetUniform("uBrushRadius", worldRadius);
             }
 
+            // Texture preview uniforms
+            int previewIdx = editingContext?.PreviewTextureAtlasIndex ?? -1;
+            _terrainShader.SetUniform("uPreviewActive", previewIdx >= 0 ? 1 : 0);
+            _terrainShader.SetUniform("uPreviewTexIndex", (float)previewIdx);
+
             SurfaceManager.TerrainAtlas.Bind(0);
             _terrainShader.SetUniform("xOverlays", 0);
             SurfaceManager.AlphaAtlas.Bind(1);

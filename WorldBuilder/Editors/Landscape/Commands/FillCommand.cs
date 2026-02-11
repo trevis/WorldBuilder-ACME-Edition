@@ -24,20 +24,42 @@ namespace WorldBuilder.Editors.Landscape.Commands {
         protected override TerrainEntry SetEntryValue(TerrainEntry entry, byte value) => entry with { Type = value };
 
         private void CollectChanges() {
-            uint startLbX = _hitResult.LandblockX;
-            uint startLbY = _hitResult.LandblockY;
-            uint startCellX = (uint)_hitResult.CellX;
-            uint startCellY = (uint)_hitResult.CellY;
+            var vertices = FloodFillVertices(_context.TerrainSystem, _hitResult, _newType);
+            foreach (var (lbID, index, oldType) in vertices) {
+                if (!_changes.TryGetValue(lbID, out var list)) {
+                    list = new List<(int, byte, byte)>();
+                    _changes[lbID] = list;
+                }
+                list.Add((index, oldType, _newType));
+            }
+        }
+
+        /// <summary>
+        /// Performs a read-only flood fill from the hit vertex, collecting all contiguous
+        /// vertices with the same texture type. Returns a list of (landblockId, vertexIndex, oldType).
+        /// Can be used for both preview highlighting and actual command execution.
+        /// </summary>
+        public static List<(ushort LbID, int VertexIndex, byte OldType)> FloodFillVertices(
+            TerrainSystem terrainSystem,
+            TerrainRaycast.TerrainRaycastHit hitResult,
+            byte newType) {
+
+            var result = new List<(ushort, int, byte)>();
+
+            uint startLbX = hitResult.LandblockX;
+            uint startLbY = hitResult.LandblockY;
+            uint startCellX = (uint)hitResult.CellX;
+            uint startCellY = (uint)hitResult.CellY;
             ushort startLbID = (ushort)((startLbX << 8) | startLbY);
 
-            var startData = _context.TerrainSystem.GetLandblockTerrain(startLbID);
-            if (startData == null) return;
+            var startData = terrainSystem.GetLandblockTerrain(startLbID);
+            if (startData == null) return result;
 
             int startIndex = (int)(startCellX * 9 + startCellY);
-            if (startIndex >= startData.Length) return;
+            if (startIndex >= startData.Length) return result;
 
             byte oldType = startData[startIndex].Type;
-            if (oldType == _newType) return;
+            if (oldType == newType) return result;
 
             var visited = new HashSet<(uint lbX, uint lbY, uint cellX, uint cellY)>();
             var queue = new Queue<(uint lbX, uint lbY, uint cellX, uint cellY)>();
@@ -54,7 +76,7 @@ namespace WorldBuilder.Editors.Landscape.Commands {
                 var lbID = (ushort)((lbX << 8) | lbY);
 
                 if (!landblockDataCache.TryGetValue(lbID, out var data)) {
-                    data = _context.TerrainSystem.GetLandblockTerrain(lbID);
+                    data = terrainSystem.GetLandblockTerrain(lbID);
                     if (data == null) continue;
                     landblockDataCache[lbID] = data;
                 }
@@ -62,42 +84,23 @@ namespace WorldBuilder.Editors.Landscape.Commands {
                 int index = (int)(cellX * 9 + cellY);
                 if (index >= data.Length || data[index].Type != oldType) continue;
 
-                if (!_changes.TryGetValue(lbID, out var list)) {
-                    list = new List<(int, byte, byte)>();
-                    _changes[lbID] = list;
-                }
-
-                list.Add((index, oldType, _newType));
+                result.Add((lbID, index, oldType));
 
                 // Queue neighbors
-                if (cellX > 0) {
-                    queue.Enqueue((lbX, lbY, cellX - 1, cellY));
-                }
-                else if (lbX > 0) {
-                    queue.Enqueue((lbX - 1, lbY, 8, cellY));
-                }
+                if (cellX > 0) queue.Enqueue((lbX, lbY, cellX - 1, cellY));
+                else if (lbX > 0) queue.Enqueue((lbX - 1, lbY, 8, cellY));
 
-                if (cellX < 8) {
-                    queue.Enqueue((lbX, lbY, cellX + 1, cellY));
-                }
-                else if (lbX < 255) {
-                    queue.Enqueue((lbX + 1, lbY, 0, cellY));
-                }
+                if (cellX < 8) queue.Enqueue((lbX, lbY, cellX + 1, cellY));
+                else if (lbX < 255) queue.Enqueue((lbX + 1, lbY, 0, cellY));
 
-                if (cellY > 0) {
-                    queue.Enqueue((lbX, lbY, cellX, cellY - 1));
-                }
-                else if (lbY > 0) {
-                    queue.Enqueue((lbX, lbY - 1, cellX, 8));
-                }
+                if (cellY > 0) queue.Enqueue((lbX, lbY, cellX, cellY - 1));
+                else if (lbY > 0) queue.Enqueue((lbX, lbY - 1, cellX, 8));
 
-                if (cellY < 8) {
-                    queue.Enqueue((lbX, lbY, cellX, cellY + 1));
-                }
-                else if (lbY < 255) {
-                    queue.Enqueue((lbX, lbY + 1, cellX, 0));
-                }
+                if (cellY < 8) queue.Enqueue((lbX, lbY, cellX, cellY + 1));
+                else if (lbY < 255) queue.Enqueue((lbX, lbY + 1, cellX, 0));
             }
+
+            return result;
         }
     }
 }

@@ -31,6 +31,10 @@ uniform bool uBrushActive;          // Enable/disable brush preview
 uniform vec2 uBrushCenter;          // Brush center in world XY coordinates
 uniform float uBrushRadius;         // Brush radius in world units
 
+// Texture preview uniforms
+uniform bool uPreviewActive;        // Enable/disable texture preview
+uniform float uPreviewTexIndex;     // Atlas layer index for preview texture
+
 in vec3 vTexUV;
 in vec4 vOverlay0;
 in vec4 vOverlay1;
@@ -251,14 +255,28 @@ vec3 calculateBrushPreview(vec2 worldPos) {
 }
 
 void main() {
-    vec4 baseColor = texture(xOverlays, vTexUV);
+    // Texture preview: substitute base texture inside brush area
+    vec3 texUV = vTexUV;
+    bool isInPreview = false;
+    if (uPreviewActive && uBrushActive) {
+        float dist = distance(vWorldPos, uBrushCenter);
+        if (dist < uBrushRadius) {
+            texUV = vec3(vTexUV.xy, uPreviewTexIndex);
+            isInPreview = true;
+        }
+    }
+
+    vec4 baseColor = texture(xOverlays, texUV);
     vec4 combinedOverlays = vec4(0.0);
     vec4 combinedRoad = vec4(0.0);
     
-    if (vOverlay0.z >= 0.0)
-        combinedOverlays = combineOverlays(vTexUV, vOverlay0, vOverlay1, vOverlay2);
-    if (vRoad0.z >= 0.0)
-        combinedRoad = combineRoad(vTexUV, vRoad0, vRoad1);
+    // Inside preview area, suppress overlays so the preview texture shows cleanly
+    if (!isInPreview) {
+        if (vOverlay0.z >= 0.0)
+            combinedOverlays = combineOverlays(vTexUV, vOverlay0, vOverlay1, vOverlay2);
+        if (vRoad0.z >= 0.0)
+            combinedRoad = combineRoad(vTexUV, vRoad0, vRoad1);
+    }
     
     vec3 baseMasked = vec3(saturate(baseColor.rgb * ((1.0 - combinedOverlays.a) * (1.0 - combinedRoad.a))));
     vec3 overlaysMasked = vec3(saturate(combinedOverlays.rgb * (combinedOverlays.a * (1.0 - combinedRoad.a))));

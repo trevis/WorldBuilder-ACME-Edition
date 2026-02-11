@@ -47,21 +47,41 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
             Context.ActiveVertices.Clear();
             Context.BrushActive = true;
             Context.BrushRadius = BrushRadius;
+            UpdatePreviewTextureIndex();
             _lastHitPosition = _currentHitPosition = new TerrainRaycast.TerrainRaycastHit();
             _pendingChanges.Clear();
         }
 
         public override void OnDeactivated() {
             Context.BrushActive = false;
+            Context.PreviewTextureAtlasIndex = -1;
             Context.ActiveVertices.Clear();
             if (_isPainting) {
                 FinalizePainting();
             }
         }
 
+        partial void OnSelectedTerrainTypeChanged(DatReaderWriter.Enums.TerrainTextureType value) {
+            UpdatePreviewTextureIndex();
+        }
+
+        private void UpdatePreviewTextureIndex() {
+            Context.PreviewTextureAtlasIndex = Context.TerrainSystem.Scene.SurfaceManager
+                .GetAtlasIndexForTerrainType(SelectedTerrainType);
+        }
+
         public override void Update(double deltaTime) {
             Context.BrushCenter = new Vector2(_currentHitPosition.NearestVertice.X, _currentHitPosition.NearestVertice.Y);
             Context.BrushRadius = BrushRadius;
+
+            // Disable texture preview while actively painting (real changes are visible)
+            if (_isPainting) {
+                Context.PreviewTextureAtlasIndex = -1;
+            }
+            else {
+                UpdatePreviewTextureIndex();
+            }
+
             _lastHitPosition = _currentHitPosition;
         }
 
