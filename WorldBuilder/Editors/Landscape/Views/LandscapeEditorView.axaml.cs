@@ -285,6 +285,21 @@ public partial class LandscapeEditorView : Base3DView {
 
     protected override void OnGlPointerPressed(PointerPressedEventArgs e) {
         if (!_didInit) return;
+
+        // Right-click context menu for selected objects or paste
+        if (e.GetCurrentPoint(this).Properties.IsRightButtonPressed && _viewModel?.TerrainSystem != null) {
+            var sel = _viewModel.TerrainSystem.EditingContext.ObjectSelection;
+
+            bool hasEditableSelection = sel.HasSelection &&
+                sel.SelectedEntries.Any(entry => !entry.IsScenery && entry.ObjectIndex >= 0);
+            bool hasClipboard = sel.Clipboard.HasValue || (sel.ClipboardMulti != null && sel.ClipboardMulti.Count > 0);
+
+            if (hasEditableSelection || hasClipboard) {
+                ShowObjectContextMenu(e);
+                return; // Don't pass to camera/tool
+            }
+        }
+
         _currentActiveTool?.HandleMouseDown(InputState.MouseState);
     }
 
@@ -315,6 +330,91 @@ public partial class LandscapeEditorView : Base3DView {
             InputScale,
             _viewModel.TerrainSystem.Scene.CameraManager.Current,
             _viewModel.TerrainSystem); // Changed from TerrainProvider
+    }
+
+    private void ShowObjectContextMenu(PointerPressedEventArgs e) {
+        if (_viewModel?.TerrainSystem == null) return;
+
+        var sel = _viewModel.TerrainSystem.EditingContext.ObjectSelection;
+        bool hasEditableSelection = sel.HasSelection &&
+            sel.SelectedEntries.Any(entry => !entry.IsScenery && entry.ObjectIndex >= 0);
+        bool hasClipboard = sel.Clipboard.HasValue || (sel.ClipboardMulti != null && sel.ClipboardMulti.Count > 0);
+
+        var menu = new ContextMenu();
+
+        // Selection-specific items
+        if (hasEditableSelection) {
+            // Copy
+            var copyItem = new MenuItem { Header = "Copy", InputGesture = new Avalonia.Input.KeyGesture(Key.C, KeyModifiers.Control) };
+            copyItem.Click += (_, _) => {
+                if (sel.IsMultiSelection) {
+                    sel.ClipboardMulti = sel.SelectedEntries
+                        .Where(entry => !entry.IsScenery)
+                        .Select(entry => entry.Object)
+                        .ToList();
+                    sel.Clipboard = null;
+                }
+                else if (sel.SelectedObject.HasValue) {
+                    sel.Clipboard = sel.SelectedObject.Value;
+                    sel.ClipboardMulti = null;
+                }
+            };
+            menu.Items.Add(copyItem);
+
+            // Snap to Terrain
+            var snapItem = new MenuItem { Header = "Snap to Terrain" };
+            snapItem.Click += (_, _) => {
+                var selectTool = _viewModel.Tools
+                    .OfType<ViewModels.SelectorToolViewModel>().FirstOrDefault()
+                    ?.AllSubTools.OfType<ViewModels.SelectSubToolViewModel>().FirstOrDefault();
+                if (selectTool?.SnapToTerrainCommand?.CanExecute(null) == true) {
+                    selectTool.SnapToTerrainCommand.Execute(null);
+                }
+            };
+            snapItem.IsEnabled = !sel.IsMultiSelection && !sel.IsScenery;
+            menu.Items.Add(snapItem);
+        }
+
+        // Paste (available when clipboard has content)
+        if (hasClipboard) {
+            if (menu.Items.Count > 0)
+                menu.Items.Add(new Separator());
+
+            var pasteItem = new MenuItem { Header = "Paste", InputGesture = new Avalonia.Input.KeyGesture(Key.V, KeyModifiers.Control) };
+            pasteItem.Click += (_, _) => {
+                if (sel.ClipboardMulti != null && sel.ClipboardMulti.Count > 0) {
+                    sel.IsPlacementMode = true;
+                    sel.PlacementPreviewMulti = sel.ClipboardMulti.Select(obj => new StaticObject {
+                        Id = obj.Id, IsSetup = obj.IsSetup,
+                        Origin = obj.Origin, Orientation = obj.Orientation, Scale = obj.Scale
+                    }).ToList();
+                    sel.PlacementPreview = sel.PlacementPreviewMulti[0];
+                }
+                else if (sel.Clipboard.HasValue) {
+                    sel.IsPlacementMode = true;
+                    sel.PlacementPreviewMulti = null;
+                    sel.PlacementPreview = new StaticObject {
+                        Id = sel.Clipboard.Value.Id, IsSetup = sel.Clipboard.Value.IsSetup,
+                        Origin = sel.Clipboard.Value.Origin, Orientation = sel.Clipboard.Value.Orientation,
+                        Scale = sel.Clipboard.Value.Scale
+                    };
+                }
+            };
+            menu.Items.Add(pasteItem);
+        }
+
+        // Delete (only when there's a selection)
+        if (hasEditableSelection) {
+            menu.Items.Add(new Separator());
+
+            var deleteItem = new MenuItem { Header = "Delete", InputGesture = new Avalonia.Input.KeyGesture(Key.Delete) };
+            deleteItem.Click += (_, _) => {
+                _ = DeleteSelectedObjectsAsync();
+            };
+            menu.Items.Add(deleteItem);
+        }
+
+        menu.Open(this);
     }
 
     private async Task DeleteSelectedObjectsAsync() {
