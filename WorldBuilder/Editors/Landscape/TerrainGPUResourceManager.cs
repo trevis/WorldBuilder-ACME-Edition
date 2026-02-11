@@ -6,17 +6,26 @@ using System.Collections.Generic;
 
 namespace WorldBuilder.Editors.Landscape {
     /// <summary>
+    /// Holds CPU-generated terrain geometry ready for GPU upload.
+    /// Created on a background thread, consumed on the GL thread.
+    /// </summary>
+    public class PreparedChunkData {
+        public TerrainChunk Chunk { get; init; } = null!;
+        public VertexLandscape[] Vertices { get; init; } = Array.Empty<VertexLandscape>();
+        public uint[] Indices { get; init; } = Array.Empty<uint>();
+        public int ActualVertexCount { get; init; }
+        public int ActualIndexCount { get; init; }
+        public Dictionary<uint, LandblockRenderData> LandblockOffsets { get; init; } = new();
+    }
+
+    /// <summary>
     /// Manages GPU resources for terrain chunks with landblock-level update support
     /// </summary>
     public class TerrainGPUResourceManager : IDisposable {
         private readonly OpenGLRenderer _renderer;
         private readonly Dictionary<ulong, ChunkRenderData> _renderData;
 
-        // Reusable buffers for chunk generation
-        private VertexLandscape[] _chunkVertexBuffer;
-        private uint[] _chunkIndexBuffer;
-
-        // Reusable buffers for landblock updates
+        // Reusable buffers for landblock updates (GL thread only)
         private VertexLandscape[] _landblockVertexBuffer;
         private uint[] _landblockIndexBuffer;
 
@@ -24,21 +33,48 @@ namespace WorldBuilder.Editors.Landscape {
             _renderer = renderer ?? throw new ArgumentNullException(nameof(renderer));
             _renderData = new Dictionary<ulong, ChunkRenderData>(estimatedChunkCount);
 
-            // Buffers for full chunk generation (16x16 landblocks = 256 landblocks)
-            _chunkVertexBuffer = new VertexLandscape[TerrainGeometryGenerator.VerticesPerLandblock * 256];
-            _chunkIndexBuffer = new uint[TerrainGeometryGenerator.IndicesPerLandblock * 256];
-
             // Buffers for single landblock updates
             _landblockVertexBuffer = new VertexLandscape[TerrainGeometryGenerator.VerticesPerLandblock];
             _landblockIndexBuffer = new uint[TerrainGeometryGenerator.IndicesPerLandblock];
         }
 
         /// <summary>
-        /// Creates GPU resources for an entire chunk
+        /// Phase 1 (CPU-only, thread-safe): Generates terrain geometry for a chunk.
+        /// Allocates its own buffers so it can run on any thread without contention.
         /// </summary>
-        public void CreateChunkResources(TerrainChunk chunk, TerrainSystem terrainSystem) {
+        public static PreparedChunkData PrepareChunkGeometry(TerrainChunk chunk, TerrainSystem terrainSystem) {
+            var maxVertexCount = (int)(chunk.ActualLandblockCountX * chunk.ActualLandblockCountY *
+                                       TerrainGeometryGenerator.VerticesPerLandblock);
+            var maxIndexCount = (int)(chunk.ActualLandblockCountX * chunk.ActualLandblockCountY *
+                                      TerrainGeometryGenerator.IndicesPerLandblock);
 
-            var chunkId = chunk.GetChunkId();
+            var vertices = new VertexLandscape[maxVertexCount];
+            var indices = new uint[maxIndexCount];
+
+            TerrainGeometryGenerator.GenerateChunkGeometry(
+                chunk, terrainSystem,
+                vertices.AsSpan(0, maxVertexCount),
+                indices.AsSpan(0, maxIndexCount),
+                out int actualVertexCount, out int actualIndexCount);
+
+            // Build landblock offsets (CPU-only)
+            var offsets = BuildLandblockOffsetsStatic(chunk, terrainSystem);
+
+            return new PreparedChunkData {
+                Chunk = chunk,
+                Vertices = vertices,
+                Indices = indices,
+                ActualVertexCount = actualVertexCount,
+                ActualIndexCount = actualIndexCount,
+                LandblockOffsets = offsets
+            };
+        }
+
+        /// <summary>
+        /// Phase 2 (GL thread only): Uploads prepared geometry to GPU buffers.
+        /// </summary>
+        public void UploadChunkToGPU(PreparedChunkData prepared) {
+            var chunkId = prepared.Chunk.GetChunkId();
 
             // Dispose old resources if they exist
             if (_renderData.TryGetValue(chunkId, out var oldData)) {
@@ -46,48 +82,37 @@ namespace WorldBuilder.Editors.Landscape {
                 _renderData.Remove(chunkId);
             }
 
-            var maxVertexCount = (int)(chunk.ActualLandblockCountX * chunk.ActualLandblockCountY *
-                                       TerrainGeometryGenerator.VerticesPerLandblock);
-            var maxIndexCount = (int)(chunk.ActualLandblockCountX * chunk.ActualLandblockCountY *
-                                      TerrainGeometryGenerator.IndicesPerLandblock);
+            if (prepared.ActualVertexCount == 0 || prepared.ActualIndexCount == 0) return;
 
-            // Ensure chunk buffers are large enough
-            if (maxVertexCount > _chunkVertexBuffer.Length) {
-                _chunkVertexBuffer = new VertexLandscape[maxVertexCount];
-            }
-            if (maxIndexCount > _chunkIndexBuffer.Length) {
-                _chunkIndexBuffer = new uint[maxIndexCount];
-            }
-
-            // Generate geometry for entire chunk
-            TerrainGeometryGenerator.GenerateChunkGeometry(
-                chunk, terrainSystem,
-                _chunkVertexBuffer.AsSpan(0, maxVertexCount),
-                _chunkIndexBuffer.AsSpan(0, maxIndexCount),
-                out int actualVertexCount, out int actualIndexCount);
-
-            if (actualVertexCount == 0 || actualIndexCount == 0) return;
-
-            // Create GPU buffers with Dynamic usage for later updates
             var vb = _renderer.GraphicsDevice.CreateVertexBuffer(
-                VertexLandscape.Size * actualVertexCount,
+                VertexLandscape.Size * prepared.ActualVertexCount,
                 BufferUsage.Dynamic);
-            vb.SetData(_chunkVertexBuffer.AsSpan(0, actualVertexCount));
+            vb.SetData(prepared.Vertices.AsSpan(0, prepared.ActualVertexCount));
 
             var ib = _renderer.GraphicsDevice.CreateIndexBuffer(
-                sizeof(uint) * actualIndexCount,
+                sizeof(uint) * prepared.ActualIndexCount,
                 BufferUsage.Dynamic);
-            ib.SetData(_chunkIndexBuffer.AsSpan(0, actualIndexCount));
+            ib.SetData(prepared.Indices.AsSpan(0, prepared.ActualIndexCount));
 
             var va = _renderer.GraphicsDevice.CreateArrayBuffer(vb, VertexLandscape.Format);
 
-            var renderData = new ChunkRenderData(vb, ib, va, actualVertexCount, actualIndexCount);
+            var renderData = new ChunkRenderData(vb, ib, va, prepared.ActualVertexCount, prepared.ActualIndexCount);
 
-            // Track landblock offsets
-            BuildLandblockOffsets(chunk, terrainSystem, renderData);
+            // Apply pre-built landblock offsets
+            foreach (var (key, value) in prepared.LandblockOffsets) {
+                renderData.LandblockData[key] = value;
+            }
 
             _renderData[chunkId] = renderData;
-            chunk.ClearDirty();
+            prepared.Chunk.ClearDirty();
+        }
+
+        /// <summary>
+        /// Creates GPU resources for an entire chunk (synchronous, for fallback/dirty updates).
+        /// </summary>
+        public void CreateChunkResources(TerrainChunk chunk, TerrainSystem terrainSystem) {
+            var prepared = PrepareChunkGeometry(chunk, terrainSystem);
+            UploadChunkToGPU(prepared);
         }
 
         /// <summary>
@@ -159,10 +184,10 @@ namespace WorldBuilder.Editors.Landscape {
         }
 
         /// <summary>
-        /// Builds the landblock offset map for a newly created chunk
+        /// Builds the landblock offset map (CPU-only, thread-safe).
         /// </summary>
-        private void BuildLandblockOffsets(TerrainChunk chunk, TerrainSystem terrainSystem, ChunkRenderData renderData) {
-
+        private static Dictionary<uint, LandblockRenderData> BuildLandblockOffsetsStatic(TerrainChunk chunk, TerrainSystem terrainSystem) {
+            var offsets = new Dictionary<uint, LandblockRenderData>();
             int currentVertexOffset = 0;
             int currentIndexOffset = 0;
 
@@ -179,8 +204,7 @@ namespace WorldBuilder.Editors.Landscape {
 
                     if (landblockData == null) continue;
 
-                    // Each landblock has fixed geometry size
-                    var lbData = new LandblockRenderData {
+                    offsets[landblockID] = new LandblockRenderData {
                         LandblockId = landblockID,
                         VertexOffset = currentVertexOffset,
                         IndexOffset = currentIndexOffset,
@@ -188,12 +212,12 @@ namespace WorldBuilder.Editors.Landscape {
                         IndexCount = TerrainGeometryGenerator.IndicesPerLandblock
                     };
 
-                    renderData.LandblockData[landblockID] = lbData;
-
                     currentVertexOffset += TerrainGeometryGenerator.VerticesPerLandblock;
                     currentIndexOffset += TerrainGeometryGenerator.IndicesPerLandblock;
                 }
             }
+
+            return offsets;
         }
 
         public ChunkRenderData? GetRenderData(ulong chunkId) {

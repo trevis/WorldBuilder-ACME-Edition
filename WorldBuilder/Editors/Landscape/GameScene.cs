@@ -66,6 +66,13 @@ namespace WorldBuilder.Editors.Landscape {
         private readonly ConcurrentQueue<PreparedModelData> _preparedModelQueue = new();
         private readonly HashSet<uint> _modelsPreparing = new(); // IDs currently being prepared
 
+        // Two-phase terrain chunk loading: geometry on background thread, GPU upload on GL thread
+        private const int MaxChunkUploadsPerFrame = 4;
+        private readonly ConcurrentQueue<PreparedChunkData> _chunkUploadQueue = new();
+        private readonly ConcurrentQueue<TerrainChunk> _chunkGenQueue = new();
+        private readonly HashSet<ulong> _chunksInFlight = new(); // Chunks queued or being generated
+        private Task? _chunkGenTask; // Single background task for serialized chunk generation
+
         // Background loading pipeline
         private Task? _backgroundLoadTask;
         private readonly ConcurrentQueue<BackgroundLoadResult> _backgroundLoadResults = new();
@@ -340,15 +347,18 @@ namespace WorldBuilder.Editors.Landscape {
 
             long staticMs = sw.ElapsedMilliseconds;
 
+            // Queue missing chunks for background generation (non-blocking)
             foreach (var chunkId in requiredChunks) {
                 var chunkX = (uint)(chunkId >> 32);
                 var chunkY = (uint)(chunkId & 0xFFFFFFFF);
                 var chunk = DataManager.GetOrCreateChunk(chunkX, chunkY);
 
                 if (!GPUManager.HasRenderData(chunkId)) {
-                    GPUManager.CreateChunkResources(chunk, _terrainSystem);
+                    // Queue for background generation instead of blocking
+                    QueueChunkForGeneration(chunk);
                 }
                 else if (chunk.IsDirty) {
+                    // Dirty updates are small (single landblock) — keep synchronous
                     var dirtyLandblocks = chunk.DirtyLandblocks.ToList();
                     GPUManager.UpdateLandblocks(chunk, dirtyLandblocks, _terrainSystem);
 
@@ -363,9 +373,12 @@ namespace WorldBuilder.Editors.Landscape {
                 }
             }
 
+            // Upload prepared chunks to GPU (GL thread, limited per frame)
+            ProcessChunkUploads();
+
             long totalMs = sw.ElapsedMilliseconds;
             if (totalMs > 200) { // Log only significant frame delays
-                Console.WriteLine($"[GameScene.Update] {totalMs}ms total (statics: {staticMs}ms, terrain: {totalMs - staticMs}ms, warmup queue: {_renderDataWarmupQueue.Count})");
+                Console.WriteLine($"[GameScene.Update] {totalMs}ms total (statics: {staticMs}ms, terrain: {totalMs - staticMs}ms, warmup queue: {_renderDataWarmupQueue.Count}, chunk gen: {_chunkGenQueue.Count}, chunk upload: {_chunkUploadQueue.Count})");
             }
         }
 
@@ -523,8 +536,63 @@ namespace WorldBuilder.Editors.Landscape {
         private void UnloadDistantChunks(Vector3 cameraPosition) {
             var chunksToUnload = DataManager.GetChunksToUnload(cameraPosition);
             foreach (var chunkId in chunksToUnload) {
+                _chunksInFlight.Remove(chunkId);
                 GPUManager.DisposeChunkResources(chunkId);
                 DataManager.RemoveChunk(chunkId);
+            }
+        }
+
+        /// <summary>
+        /// Queues a terrain chunk for background geometry generation.
+        /// Chunks are processed one at a time on a single background thread
+        /// because LandSurfaceManager is not thread-safe.
+        /// </summary>
+        private void QueueChunkForGeneration(TerrainChunk chunk) {
+            var chunkId = chunk.GetChunkId();
+            if (_chunksInFlight.Contains(chunkId) || GPUManager.HasRenderData(chunkId)) return;
+
+            _chunksInFlight.Add(chunkId);
+            _chunkGenQueue.Enqueue(chunk);
+
+            // Start background worker if not already running
+            if (_chunkGenTask == null || _chunkGenTask.IsCompleted) {
+                var terrainSystem = _terrainSystem;
+                _chunkGenTask = Task.Run(() => ProcessChunkGenQueue(terrainSystem));
+            }
+        }
+
+        /// <summary>
+        /// Background worker that processes queued chunks sequentially.
+        /// Serialized to avoid concurrent access to LandSurfaceManager.
+        /// </summary>
+        private void ProcessChunkGenQueue(TerrainSystem terrainSystem) {
+            while (_chunkGenQueue.TryDequeue(out var chunk)) {
+                var chunkId = chunk.GetChunkId();
+                try {
+                    var prepared = TerrainGPUResourceManager.PrepareChunkGeometry(chunk, terrainSystem);
+                    _chunkUploadQueue.Enqueue(prepared);
+                }
+                catch (Exception ex) {
+                    Console.WriteLine($"[Terrain] Background chunk gen error for ({chunk.ChunkX},{chunk.ChunkY}): {ex.Message}");
+                    _chunksInFlight.Remove(chunkId);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Uploads prepared terrain chunks to the GPU (runs on GL thread).
+        /// Limited to MaxChunkUploadsPerFrame per call to avoid frame spikes.
+        /// </summary>
+        private void ProcessChunkUploads() {
+            int uploaded = 0;
+            while (uploaded < MaxChunkUploadsPerFrame && _chunkUploadQueue.TryDequeue(out var prepared)) {
+                try {
+                    GPUManager.UploadChunkToGPU(prepared);
+                    uploaded++;
+                }
+                catch (Exception ex) {
+                    Console.WriteLine($"[Terrain] Chunk upload error: {ex.Message}");
+                }
             }
         }
 
