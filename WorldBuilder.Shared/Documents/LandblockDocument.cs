@@ -318,6 +318,16 @@ namespace WorldBuilder.Shared.Documents {
             var rotationDelta = newBuildingRotation * Quaternion.Inverse(oldBuildingRotation);
             var hasRotation = Math.Abs(Quaternion.Dot(rotationDelta, Quaternion.Identity) - 1.0f) > 0.0001f;
 
+            // Compute outdoor cell delta for VisibleCells LandCell fixup (same as InstantiateBlueprint).
+            // LandCell references (0x0001-0x0040) are position-dependent: when a building moves
+            // across an outdoor cell boundary, stale references cause ACE's find_transit_cells
+            // to fail portal lookups, resulting in walk-through walls.
+            var (oldCellX, oldCellY) = PositionToOutdoorCell(oldBuildingOrigin);
+            var (newCellX, newCellY) = PositionToOutdoorCell(newBuildingOrigin);
+            int cellDeltaX = newCellX - oldCellX;
+            int cellDeltaY = newCellY - oldCellY;
+            bool needsLandCellFixup = cellDeltaX != 0 || cellDeltaY != 0;
+
             foreach (var cellNum in cellIds) {
                 uint fullCellId = (lbId << 16) | cellNum;
 
@@ -358,6 +368,26 @@ namespace WorldBuilder.Shared.Documents {
                     }
                 }
 
+                // Fix up LandCell references in VisibleCells when building crosses outdoor cell boundaries.
+                // This matches the same fixup that InstantiateBlueprint performs for new buildings.
+                if (needsLandCellFixup) {
+                    for (int v = 0; v < envCell.VisibleCells.Count; v++) {
+                        var vc = envCell.VisibleCells[v];
+                        if (vc >= 0x0001 && vc <= 0x0040) {
+                            var (vcCellX, vcCellY) = LandCellToXY(vc);
+                            int fixedX = Math.Clamp(vcCellX + cellDeltaX, 0, 7);
+                            int fixedY = Math.Clamp(vcCellY + cellDeltaY, 0, 7);
+                            ushort fixedLandCell = XYToLandCell(fixedX, fixedY);
+
+                            if (vc != fixedLandCell) {
+                                _logger.LogInformation("[LBDoc]     VisibleCell LandCell fixup: 0x{Old:X4} -> 0x{New:X4} (building moved from cell ({OX},{OY}) to ({NX},{NY}))",
+                                    vc, fixedLandCell, oldCellX, oldCellY, newCellX, newCellY);
+                            }
+                            envCell.VisibleCells[v] = fixedLandCell;
+                        }
+                    }
+                }
+
                 if (!datAccess.TrySave(envCell, iteration)) {
                     _logger.LogError("[LBDoc]     FAILED to save EnvCell 0x{CellId:X8}", fullCellId);
                 }
@@ -366,6 +396,32 @@ namespace WorldBuilder.Shared.Documents {
                         fullCellId, envCell.Position.Origin.X, envCell.Position.Origin.Y, envCell.Position.Origin.Z);
                 }
             }
+        }
+
+        /// <summary>
+        /// Converts a landblock-local position to outdoor cell grid coordinates (0-7, 0-7).
+        /// Each outdoor cell is 24x24 units within a 192x192 landblock.
+        /// </summary>
+        private static (int cellX, int cellY) PositionToOutdoorCell(Vector3 localPos) {
+            int cellX = Math.Clamp((int)(localPos.X / 24f), 0, 7);
+            int cellY = Math.Clamp((int)(localPos.Y / 24f), 0, 7);
+            return (cellX, cellY);
+        }
+
+        /// <summary>
+        /// Decomposes a LandCell ID (0x0001-0x0040) into grid coordinates.
+        /// Formula: landCellId = cellX * 8 + cellY + 1
+        /// </summary>
+        private static (int cellX, int cellY) LandCellToXY(ushort landCellId) {
+            int id = landCellId - 1;
+            return (id / 8, id % 8);
+        }
+
+        /// <summary>
+        /// Converts outdoor cell grid coordinates to a LandCell ID (0x0001-0x0040).
+        /// </summary>
+        private static ushort XYToLandCell(int cellX, int cellY) {
+            return (ushort)(cellX * 8 + cellY + 1);
         }
 
         public bool Apply(BaseDocumentEvent evt) {
