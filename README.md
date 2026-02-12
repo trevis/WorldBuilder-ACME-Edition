@@ -21,12 +21,17 @@ Objects
 - Lazy-loaded thumbnail cache that persists across sessions
 - Place on terrain with snap, move, rotate, delete
 - Multi-select with Ctrl+Click or marquee box select (drag to select)
+- Multi-object rotate: select multiple objects and rotate them as a group around their center
+- Marquee box select uses full bounding box testing (not just origin points)
+- Selection highlight spheres scale proportionally to object size
 - Right-click context menu (copy, paste, snap to terrain, delete)
 - Copy/paste with Ctrl+C/V, including multi-object paste
 - Properties panel with position, rotation, landcell, snap-to-terrain
 - Delete confirmation dialog
 - Static object height auto-adjustment when terrain changes underneath
+- Terrain snap on rotate: objects stay on the ground when rotated on sloped terrain
 - Building blueprint system for placing buildings with interior cells
+- Building move/rotate correctly updates interior cell VisibleCells references
 
 Layers
 - Full layer system with groups, visibility toggles, export toggles
@@ -69,6 +74,11 @@ Performance
 - Static object frustum culling (only visible objects rendered)
 - Background model loading with two-phase GPU upload
 - Texture disk cache for processed RGBA data
+- Camera-aware landblock streaming: 2D top-down loads the full visible rectangle, perspective uses proximity
+- Zoom-scaled scenery: trees and rocks only generate when zoomed in enough to see them, buildings load everywhere
+- Load/unload hysteresis prevents objects from flickering at view edges
+- Distance-prioritized loading: closest landblocks load first, distant ones stream in gradually
+- Capped batch sizes and max loaded landblocks to keep memory and frame times stable
 
 
 Controls

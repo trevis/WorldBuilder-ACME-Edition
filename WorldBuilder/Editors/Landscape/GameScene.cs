@@ -21,7 +21,10 @@ using WorldBuilder.Shared.Lib;
 
 namespace WorldBuilder.Editors.Landscape {
     public class GameScene : IDisposable {
-        private float ProximityThreshold = 500f; // 2D distance for loading
+        private const float PerspectiveProximityThreshold = 500f; // 2D distance for perspective camera
+        private const int MaxLoadedLandblocks = 200; // Cap to prevent memory explosion when zoomed out
+        private const float SceneryDistanceThreshold = 600f; // Beyond this, skip scenery (trees/rocks) — too small to see
+        private const int MaxBatchSize = 30; // Max landblocks to load per background batch
 
         private OpenGLRenderer _renderer => _terrainSystem.Renderer;
         private WorldBuilderSettings _settings => _terrainSystem.Settings;
@@ -53,8 +56,9 @@ namespace WorldBuilder.Editors.Landscape {
         private const int MaxIntegratePerFrame = 8; // Max background results to integrate per frame
         private const int MaxUnloadsPerFrame = 2; // Max landblocks to unload per frame
         private const int MaxGpuUploadsPerFrame = 4; // Max prepared models to upload to GPU per frame
-        private const float DocUpdateDistanceThreshold = 96f; // Re-check after camera moves ~4 cells
+        private const float DocUpdateDistanceThresholdBase = 96f; // Re-check after camera moves ~4 cells
         private Vector3 _lastDocUpdatePosition = new(float.MinValue);
+        private float _lastOrthoSize = -1f; // Track zoom level for ortho camera reload trigger
         private readonly Queue<(uint Id, bool IsSetup)> _renderDataWarmupQueue = new();
         private List<StaticObject>? _cachedStaticObjects;
         private bool _staticObjectsDirty = true;
@@ -338,12 +342,35 @@ namespace WorldBuilder.Editors.Landscape {
             ProcessPendingSceneryRegen();
 
             // Check if we need to kick off new background loads and unload distant data
+            // Triggers on: camera movement beyond threshold, zoom level change, or first frame
+            float docUpdateThreshold = DocUpdateDistanceThresholdBase;
+            bool zoomChanged = false;
+            if (CameraManager?.Current is OrthographicTopDownCamera ortho) {
+                // Adaptive threshold: when zoomed out, re-check more often
+                if (ortho.OrthographicSize > 1800f) {
+                    docUpdateThreshold = Math.Max(48f, DocUpdateDistanceThresholdBase * (1800f / ortho.OrthographicSize));
+                }
+                // Detect significant zoom changes (>10% difference triggers reload)
+                if (_lastOrthoSize > 0 && MathF.Abs(ortho.OrthographicSize - _lastOrthoSize) / _lastOrthoSize > 0.1f) {
+                    zoomChanged = true;
+                }
+                _lastOrthoSize = ortho.OrthographicSize;
+            }
             float distMoved = Vector3.Distance(cameraPosition, _lastDocUpdatePosition);
-            if (distMoved >= DocUpdateDistanceThreshold || _lastDocUpdatePosition.X == float.MinValue) {
+            if (distMoved >= docUpdateThreshold || zoomChanged || _lastDocUpdatePosition.X == float.MinValue) {
                 _lastDocUpdatePosition = cameraPosition;
                 KickOffBackgroundLoads(cameraPosition);
                 UnloadOutOfRangeLandblocks(cameraPosition);
                 UnloadDistantChunks(cameraPosition);
+
+                // Check if any loaded landblocks now deserve scenery that they didn't
+                // get (loaded at distance with scenery skipped). Runs on every re-check
+                // so panning back to an area also fills in scenery, not just zooming.
+                RefreshSceneryForNearbyLandblocks(cameraPosition);
+
+                // Process scenery regen immediately (don't wait for next frame's
+                // ProcessPendingSceneryRegen call which already ran earlier this frame)
+                ProcessPendingSceneryRegen();
             }
 
             // Incrementally warm up GPU render data (a few per frame, on main thread for GL context)
@@ -432,7 +459,23 @@ namespace WorldBuilder.Editors.Landscape {
 
             if (toLoad.Count == 0) return;
 
-            Console.WriteLine($"[Statics] {toLoad.Count} landblocks need loading, starting background task...");
+            // Sort by distance from camera — closest landblocks load first so the
+            // user sees nearby objects immediately while distant ones stream in
+            var camPos2D = new Vector2(cameraPosition.X, cameraPosition.Y);
+            toLoad.Sort((a, b) => {
+                float distA = Vector2.Distance(camPos2D, LandblockCenter(a));
+                float distB = Vector2.Distance(camPos2D, LandblockCenter(b));
+                return distA.CompareTo(distB);
+            });
+
+            // Limit batch size so the background task finishes quickly and we can
+            // kick off the next batch with updated camera position
+            if (toLoad.Count > MaxBatchSize) {
+                // Only mark the ones we'll actually load as pending
+                toLoad = toLoad.Take(MaxBatchSize).ToList();
+            }
+
+            Console.WriteLine($"[Statics] {toLoad.Count} landblocks queued for loading (of {visibleLandblocks.Count} visible)");
 
             // Mark them as pending so we don't double-load
             foreach (var lbKey in toLoad) {
@@ -445,6 +488,8 @@ namespace WorldBuilder.Editors.Landscape {
             var region = _region;
             var dats = _dats;
             var resultQueue = _backgroundLoadResults;
+            var sceneryThreshold = GetEffectiveSceneryThreshold();
+            var camPosCapture = cameraPosition;
 
             _backgroundLoadTask = Task.Run(() => {
                 var batchSw = Stopwatch.StartNew();
@@ -458,9 +503,23 @@ namespace WorldBuilder.Editors.Landscape {
                         long loadMs = loadSw.ElapsedMilliseconds;
 
                         if (doc != null) {
-                            var scenerySw = Stopwatch.StartNew();
-                            var scenery = GenerateSceneryThreadSafe(lbKey, doc, terrainSystem, region, dats);
-                            long sceneryMs = scenerySw.ElapsedMilliseconds;
+                            // Only generate scenery (trees, rocks) for nearby landblocks.
+                            // At distance, scenery objects are too small to see and are the
+                            // heaviest part of loading (hundreds of objects per landblock).
+                            var lbCenter2D = LandblockCenter(lbKey);
+                            float distFromCamera = Vector2.Distance(
+                                new Vector2(camPosCapture.X, camPosCapture.Y), lbCenter2D);
+
+                            List<StaticObject> scenery;
+                            long sceneryMs = 0;
+                            if (distFromCamera <= sceneryThreshold) {
+                                var scenerySw = Stopwatch.StartNew();
+                                scenery = GenerateSceneryThreadSafe(lbKey, doc, terrainSystem, region, dats);
+                                sceneryMs = scenerySw.ElapsedMilliseconds;
+                            }
+                            else {
+                                scenery = new List<StaticObject>(); // Skip scenery for distant landblocks
+                            }
 
                             // Collect unique object IDs
                             var uniqueIds = new HashSet<(uint, bool)>();
@@ -487,15 +546,30 @@ namespace WorldBuilder.Editors.Landscape {
         }
 
         /// <summary>
-        /// Unloads landblock documents and scenery that are out of camera range.
+        /// Returns the world-space center of a landblock given its key.
+        /// </summary>
+        private static Vector2 LandblockCenter(ushort lbKey) {
+            int lbX = (lbKey >> 8) & 0xFF;
+            int lbY = lbKey & 0xFF;
+            return new Vector2(
+                lbX * TerrainDataManager.LandblockLength + TerrainDataManager.LandblockLength / 2f,
+                lbY * TerrainDataManager.LandblockLength + TerrainDataManager.LandblockLength / 2f);
+        }
+
+        /// <summary>
+        /// Unloads landblock documents and scenery that are well outside camera range.
+        /// Uses a larger boundary than loading (hysteresis) to prevent thrashing at edges.
         /// Limited to MaxUnloadsPerFrame to avoid frame spikes.
         /// </summary>
         private void UnloadOutOfRangeLandblocks(Vector3 cameraPosition) {
-            var visibleLandblocks = _lastVisibleLandblocks ?? GetProximateLandblocks(cameraPosition);
+            // Compute a larger "keep loaded" set to prevent thrashing at boundaries.
+            // Landblocks in the buffer zone (between load and unload boundaries) stay loaded
+            // but won't be newly loaded — same principle as TerrainDataManager's LoadRange vs UnloadRange.
+            var keepLoadedSet = GetUnloadBoundaryLandblocks(cameraPosition);
             var currentLoaded = _documentManager.ActiveDocs.Keys.Where(k => k.StartsWith("landblock_")).ToHashSet();
 
             var toUnload = currentLoaded
-                .Where(docId => !visibleLandblocks.Contains(ushort.Parse(docId.Replace("landblock_", ""), System.Globalization.NumberStyles.HexNumber)))
+                .Where(docId => !keepLoadedSet.Contains(ushort.Parse(docId.Replace("landblock_", ""), System.Globalization.NumberStyles.HexNumber)))
                 .Take(MaxUnloadsPerFrame)
                 .ToList();
 
@@ -825,12 +899,105 @@ namespace WorldBuilder.Editors.Landscape {
         }
 
         private HashSet<ushort> GetProximateLandblocks(Vector3 cameraPosition) {
+            var currentCamera = CameraManager?.Current;
+
+            // Orthographic top-down: compute the exact visible rectangle and load landblocks within it
+            if (currentCamera is OrthographicTopDownCamera orthoCamera && orthoCamera.ScreenSize.X > 0) {
+                return GetVisibleLandblocksOrtho(cameraPosition, orthoCamera);
+            }
+
+            // Perspective camera: use fixed proximity radius
+            return GetProximateLandblocksRadius(cameraPosition, PerspectiveProximityThreshold);
+        }
+
+        /// <summary>
+        /// Computes visible landblocks for orthographic top-down camera using the exact visible rectangle.
+        /// Adds a one-landblock margin for smooth panning and caps total to prevent memory explosion.
+        /// </summary>
+        private HashSet<ushort> GetVisibleLandblocksOrtho(Vector3 cameraPosition, OrthographicTopDownCamera orthoCamera) {
+            float aspectRatio = orthoCamera.ScreenSize.X / orthoCamera.ScreenSize.Y;
+            float halfWidth = orthoCamera.OrthographicSize * aspectRatio / 2f;
+            float halfHeight = orthoCamera.OrthographicSize / 2f;
+
+            // Add one-landblock margin for smooth panning (objects don't pop in at edges)
+            float margin = TerrainDataManager.LandblockLength;
+
+            float visMinX = cameraPosition.X - halfWidth - margin;
+            float visMaxX = cameraPosition.X + halfWidth + margin;
+            float visMinY = cameraPosition.Y - halfHeight - margin;
+            float visMaxY = cameraPosition.Y + halfHeight + margin;
+
+            // Convert to landblock grid
+            int lbMinX = Math.Clamp((int)(visMinX / TerrainDataManager.LandblockLength), 0, (int)TerrainDataManager.MapSize - 1);
+            int lbMaxX = Math.Clamp((int)(visMaxX / TerrainDataManager.LandblockLength), 0, (int)TerrainDataManager.MapSize - 1);
+            int lbMinY = Math.Clamp((int)(visMinY / TerrainDataManager.LandblockLength), 0, (int)TerrainDataManager.MapSize - 1);
+            int lbMaxY = Math.Clamp((int)(visMaxY / TerrainDataManager.LandblockLength), 0, (int)TerrainDataManager.MapSize - 1);
+
+            // If the visible area would load too many landblocks, shrink to a capped radius
+            int gridWidth = lbMaxX - lbMinX + 1;
+            int gridHeight = lbMaxY - lbMinY + 1;
+            if (gridWidth * gridHeight > MaxLoadedLandblocks) {
+                // Fall back to radius-based with a cap derived from max landblocks
+                float cappedRadius = MathF.Sqrt(MaxLoadedLandblocks) * TerrainDataManager.LandblockLength / 2f;
+                return GetProximateLandblocksRadius(cameraPosition, cappedRadius);
+            }
+
+            var proximate = new HashSet<ushort>();
+            for (int lbX = lbMinX; lbX <= lbMaxX; lbX++) {
+                for (int lbY = lbMinY; lbY <= lbMaxY; lbY++) {
+                    proximate.Add((ushort)((lbX << 8) | lbY));
+                }
+            }
+
+            return proximate;
+        }
+
+        /// <summary>
+        /// Computes a larger "keep loaded" boundary for unloading decisions.
+        /// Uses a bigger margin than the load set to prevent thrashing at edges.
+        /// </summary>
+        private HashSet<ushort> GetUnloadBoundaryLandblocks(Vector3 cameraPosition) {
+            var currentCamera = CameraManager?.Current;
+
+            if (currentCamera is OrthographicTopDownCamera orthoCamera && orthoCamera.ScreenSize.X > 0) {
+                // Use 3× landblock margin instead of 1× for unloading
+                float aspectRatio = orthoCamera.ScreenSize.X / orthoCamera.ScreenSize.Y;
+                float halfWidth = orthoCamera.OrthographicSize * aspectRatio / 2f;
+                float halfHeight = orthoCamera.OrthographicSize / 2f;
+                float unloadMargin = TerrainDataManager.LandblockLength * 3f;
+
+                float visMinX = cameraPosition.X - halfWidth - unloadMargin;
+                float visMaxX = cameraPosition.X + halfWidth + unloadMargin;
+                float visMinY = cameraPosition.Y - halfHeight - unloadMargin;
+                float visMaxY = cameraPosition.Y + halfHeight + unloadMargin;
+
+                int lbMinX = Math.Clamp((int)(visMinX / TerrainDataManager.LandblockLength), 0, (int)TerrainDataManager.MapSize - 1);
+                int lbMaxX = Math.Clamp((int)(visMaxX / TerrainDataManager.LandblockLength), 0, (int)TerrainDataManager.MapSize - 1);
+                int lbMinY = Math.Clamp((int)(visMinY / TerrainDataManager.LandblockLength), 0, (int)TerrainDataManager.MapSize - 1);
+                int lbMaxY = Math.Clamp((int)(visMaxY / TerrainDataManager.LandblockLength), 0, (int)TerrainDataManager.MapSize - 1);
+
+                var keepLoaded = new HashSet<ushort>();
+                for (int lbX = lbMinX; lbX <= lbMaxX; lbX++) {
+                    for (int lbY = lbMinY; lbY <= lbMaxY; lbY++) {
+                        keepLoaded.Add((ushort)((lbX << 8) | lbY));
+                    }
+                }
+                return keepLoaded;
+            }
+
+            // Perspective: 50% larger radius for unloading than loading
+            return GetProximateLandblocksRadius(cameraPosition, PerspectiveProximityThreshold * 1.5f);
+        }
+
+        /// <summary>
+        /// Computes landblocks within a 2D distance radius of the camera (used for perspective and as fallback).
+        /// </summary>
+        private HashSet<ushort> GetProximateLandblocksRadius(Vector3 cameraPosition, float threshold) {
             var proximate = new HashSet<ushort>();
             var camLbX = (ushort)(cameraPosition.X / TerrainDataManager.LandblockLength);
             var camLbY = (ushort)(cameraPosition.Y / TerrainDataManager.LandblockLength);
 
-            // Simple 2D grid search around camera (e.g., +/- 3 landblocks)
-            var lbd = (int)Math.Ceiling(ProximityThreshold / 192f / 2f);
+            var lbd = (int)Math.Ceiling(threshold / TerrainDataManager.LandblockLength / 2f);
             for (int dx = -lbd; dx <= lbd; dx++) {
                 for (int dy = -lbd; dy <= lbd; dy++) {
                     var lbX = (ushort)Math.Clamp(camLbX + dx, 0, TerrainDataManager.MapSize - 1);
@@ -840,7 +1007,7 @@ namespace WorldBuilder.Editors.Landscape {
                         lbX * TerrainDataManager.LandblockLength + TerrainDataManager.LandblockLength / 2,
                         lbY * TerrainDataManager.LandblockLength + TerrainDataManager.LandblockLength / 2);
                     var dist2D = Vector2.Distance(new Vector2(cameraPosition.X, cameraPosition.Y), lbCenter);
-                    if (dist2D <= ProximityThreshold) {
+                    if (dist2D <= threshold) {
                         proximate.Add(lbKey);
                     }
                 }
@@ -892,6 +1059,46 @@ namespace WorldBuilder.Editors.Landscape {
                     GPUManager.UpdateLandblocks(chunk, kvp.Value, _terrainSystem);
                 }
             }
+        }
+
+        /// <summary>
+        /// Checks loaded landblocks that are now within scenery distance but were loaded
+        /// without scenery (because they were distant at the time). Queues them for
+        /// background scenery regeneration so trees/rocks appear when zooming in.
+        /// </summary>
+        private void RefreshSceneryForNearbyLandblocks(Vector3 cameraPosition) {
+            float effectiveThreshold = GetEffectiveSceneryThreshold();
+            if (effectiveThreshold < 100f) return; // Too zoomed out for scenery to matter
+
+            var camPos2D = new Vector2(cameraPosition.X, cameraPosition.Y);
+
+            foreach (var kvp in _sceneryObjects) {
+                // Skip landblocks that already have scenery or are pending regen
+                if (kvp.Value.Count > 0 || _pendingSceneryRegen.Contains(kvp.Key) || _pendingLoadLandblocks.Contains(kvp.Key))
+                    continue;
+
+                // Check if this landblock is now within scenery distance
+                var lbCenter = LandblockCenter(kvp.Key);
+                float dist = Vector2.Distance(camPos2D, lbCenter);
+                if (dist <= effectiveThreshold) {
+                    _pendingSceneryRegen.Add(kvp.Key);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Returns the effective scenery distance threshold scaled by zoom level.
+        /// When zoomed out, scenery objects (trees, rocks) are sub-pixel and not worth generating.
+        /// At default ortho zoom (1800), returns the full threshold. Scales down proportionally.
+        /// </summary>
+        private float GetEffectiveSceneryThreshold() {
+            if (CameraManager?.Current is OrthographicTopDownCamera ortho && ortho.OrthographicSize > 0) {
+                // At orthoSize 1800 (default): full threshold
+                // At orthoSize 3600 (2x zoom out): half threshold
+                // At orthoSize 9000+ : near zero — trees are invisible
+                return SceneryDistanceThreshold * Math.Clamp(1800f / ortho.OrthographicSize, 0f, 1f);
+            }
+            return SceneryDistanceThreshold; // Perspective: always full threshold
         }
 
         /// <summary>
