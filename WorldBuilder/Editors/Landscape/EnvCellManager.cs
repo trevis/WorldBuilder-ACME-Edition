@@ -133,8 +133,10 @@ namespace WorldBuilder.Editors.Landscape {
                     }
 
                     // Extract static objects (furniture, torches, etc.) from inside this EnvCell.
-                    // Stab positions are in landblock-local space (already account for cell
-                    // position and rotation), so we just add the landblock world offset.
+                    // Stab Frame.Origin is in landblock-local space (confirmed by diagnostic:
+                    // dist_to_cell is always small, matching ACE's add_obj_to_cell which uses
+                    // the stab frame directly with no cell transform).
+                    // World position = stab.Frame.Origin + landblock offset.
                     if (envCell.StaticObjects != null && envCell.StaticObjects.Count > 0) {
                         foreach (var stab in envCell.StaticObjects) {
                             batch.DungeonStaticObjects.Add(new StaticObject {
@@ -156,6 +158,7 @@ namespace WorldBuilder.Editors.Landscape {
 
             return batch.Cells.Count > 0 || batch.DungeonStaticObjects.Count > 0 ? batch : null;
         }
+
 
         private PreparedEnvCell? PrepareEnvCell(EnvCell envCell, Vector3 lbOffset, ushort lbKey = 0) {
             // Load Environment from portal.dat

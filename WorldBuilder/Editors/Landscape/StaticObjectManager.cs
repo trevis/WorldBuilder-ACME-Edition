@@ -118,15 +118,31 @@ namespace WorldBuilder.Editors.Landscape {
             }
         }
 
+        /// <summary>
+        /// Gets the correct placement frame for a Setup, matching ACE's logic:
+        /// try Resting (0x65) first, then Default (0), then first available.
+        /// ACE uses SetPlacementFrame(0x65) as the standard "resting in world" pose.
+        /// </summary>
+        private static AnimationFrame? GetDefaultPlacementFrame(Setup setup) {
+            if (setup.PlacementFrames.TryGetValue(Placement.Resting, out var resting))
+                return resting;
+            if (setup.PlacementFrames.TryGetValue(Placement.Default, out var def))
+                return def;
+            // Last resort: first available entry
+            foreach (var kvp in setup.PlacementFrames)
+                return kvp.Value;
+            return null;
+        }
+
         private StaticObjectRenderData CreateSetupRenderData(uint id, Setup setup) {
             var parts = new List<(uint GfxObjId, Matrix4x4 Transform)>();
-            var placementFrame = setup.PlacementFrames[0];
+            var placementFrame = GetDefaultPlacementFrame(setup);
 
             for (int i = 0; i < setup.Parts.Count; i++) {
                 var partId = setup.Parts[i];
                 var transform = Matrix4x4.Identity;
 
-                if (placementFrame.Frames != null && i < placementFrame.Frames.Count) {
+                if (placementFrame?.Frames != null && i < placementFrame.Frames.Count) {
                     transform = Matrix4x4.CreateFromQuaternion(placementFrame.Frames[i].Orientation)
                         * Matrix4x4.CreateTranslation(placementFrame.Frames[i].Origin);
                 }
@@ -154,11 +170,11 @@ namespace WorldBuilder.Editors.Landscape {
                 if (isSetup) {
                     if (!_dats.TryGet<Setup>(id, out var setup)) return null;
                     var parts = new List<(uint GfxObjId, Matrix4x4 Transform)>();
-                    var placementFrame = setup.PlacementFrames[0];
+                    var placementFrame = GetDefaultPlacementFrame(setup);
                     for (int i = 0; i < setup.Parts.Count; i++) {
                         var partId = setup.Parts[i];
                         var transform = Matrix4x4.Identity;
-                        if (placementFrame.Frames != null && i < placementFrame.Frames.Count) {
+                        if (placementFrame?.Frames != null && i < placementFrame.Frames.Count) {
                             transform = Matrix4x4.CreateFromQuaternion(placementFrame.Frames[i].Orientation) *
                                         Matrix4x4.CreateTranslation(placementFrame.Frames[i].Origin);
                         }
@@ -398,11 +414,11 @@ namespace WorldBuilder.Editors.Landscape {
                 if (isSetup) {
                     if (!_dats.TryGet<Setup>(id, out var setup)) return null;
                     var parts = new List<(uint GfxObjId, Matrix4x4 Transform)>();
-                    var placementFrame = setup.PlacementFrames[0];
+                    var placementFrame = GetDefaultPlacementFrame(setup);
                     for (int i = 0; i < setup.Parts.Count; i++) {
                         var partId = setup.Parts[i];
                         var transform = Matrix4x4.Identity;
-                        if (placementFrame.Frames != null && i < placementFrame.Frames.Count) {
+                        if (placementFrame?.Frames != null && i < placementFrame.Frames.Count) {
                             transform = Matrix4x4.CreateFromQuaternion(placementFrame.Frames[i].Orientation)
                                 * Matrix4x4.CreateTranslation(placementFrame.Frames[i].Origin);
                         }
