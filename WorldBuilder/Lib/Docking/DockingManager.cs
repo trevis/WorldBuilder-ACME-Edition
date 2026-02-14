@@ -70,7 +70,7 @@ namespace WorldBuilder.Lib.Docking {
             var panel = _allPanels.FirstOrDefault(p => p.Id == panelId);
             if (panel != null) {
                 panel.IsVisible = !panel.IsVisible;
-                UpdatePanelLocation(panel);
+                // Property setter will call UpdatePanelLocation
             }
         }
 

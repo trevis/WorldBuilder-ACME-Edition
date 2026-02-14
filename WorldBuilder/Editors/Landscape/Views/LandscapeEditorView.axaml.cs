@@ -166,8 +166,9 @@ namespace WorldBuilder.Editors.Landscape.Views {
             else if (e.Action == NotifyCollectionChangedAction.Remove && e.OldItems != null) {
                 foreach (IDockable panel in e.OldItems) {
                     if (_floatingWindows.TryGetValue(panel, out var window)) {
-                        window.Close();
+                        // Remove from map BEFORE closing to prevent Closing event handler from setting IsVisible=false
                         _floatingWindows.Remove(panel);
+                        window.Close();
                     }
                 }
             }
