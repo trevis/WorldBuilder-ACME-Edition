@@ -340,11 +340,54 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
             var orthoCam = TerrainSystem.Scene.TopDownCamera;
 
             if (source == pCam) {
-                // Sync Ortho to Perspective (X, Y only)
-                orthoCam.SetPosition(new Vector3(pCam.Position.X, pCam.Position.Y, orthoCam.Position.Z));
+                // Sync Ortho to Perspective (Focus point)
+                // Raycast from perspective camera to ground to find focal point
+                var forward = pCam.GetForwardVector();
+
+                // Plane intersection with Z = current ortho view height (approximate terrain level if we don't have exact raycast)
+                // Or simply intersect with Z=0 plane if Z is absolute.
+                // Assuming terrain is somewhat around Z=0 or we raycast against terrain?
+                // Let's assume ground plane at Z = GetHeightAt(pCam.X, pCam.Y)? No, that's under camera.
+
+                // Simple Plane Z=0 intersection:
+                // P = O + D * t
+                // P.z = 0 => O.z + D.z * t = 0 => t = -O.z / D.z
+
+                if (Math.Abs(forward.Z) > 0.001f) {
+                    // Find ground Z near the camera to be more accurate than 0?
+                    float groundZ = TerrainSystem.Scene.DataManager.GetHeightAtPosition(pCam.Position.X, pCam.Position.Y);
+
+                    float t = (groundZ - pCam.Position.Z) / forward.Z;
+                    if (t > 0) {
+                        var intersect = pCam.Position + forward * t;
+                        orthoCam.SetPosition(new Vector3(intersect.X, intersect.Y, orthoCam.Position.Z));
+                    }
+                }
             }
             else if (source == orthoCam) {
-                // Sync Perspective to Ortho (X, Y only)
+                // Sync Perspective to Ortho (X, Y only, keep offset)
+                // We want pCam to look at orthoCam.Position.X, Y
+                // But we don't want to change pCam's rotation/height necessarily, just slide it.
+                // Or do we?
+                // If we slide pCam, we keep its relative offset to the ground?
+
+                // Current P pos
+                var currentP = pCam.Position;
+
+                // We want the new "LookAt" on ground to be Ortho.X, Ortho.Y
+                // But calculating new position requires knowing the offset.
+
+                // Simplest: Just move X/Y to match. This moves the camera body.
+                // If camera is looking straight down, this is perfect.
+                // If looking at angle, it shifts the view.
+
+                // Let's stick to simple position sync for Ortho->Persp to avoid disorientation
+                // But adjust for the fact we sync'd TO the focal point before.
+                // If we sync'd Ortho to Focal Point, then Ortho.Pos IS the Focal Point (in X,Y).
+                // So if we move Persp.Pos to Ortho.Pos, we are moving the camera ON TOP of the focal point.
+                // Which is fine for TopDown behavior, but if angled, might feel weird?
+                // Actually, standard behavior for "Go To" is centering camera.
+                // Let's keep the simple sync for Ortho->Persp for now as it's predictable.
                 pCam.SetPosition(new Vector3(orthoCam.Position.X, orthoCam.Position.Y, pCam.Position.Z));
             }
         }
