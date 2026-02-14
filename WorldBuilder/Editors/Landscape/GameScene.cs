@@ -1327,9 +1327,9 @@ namespace WorldBuilder.Editors.Landscape {
                 if (ShowScenery) {
                     statics.AddRange(_sceneryObjects.Values.SelectMany(x => x));
                 }
-                // Building interior statics (furniture inside shops, etc.) always show
-                // alongside regular outdoor statics — they're at surface level.
-                if (ShowStaticObjects) {
+                // Building interior statics show when Dungeons toggle is on
+                // (same toggle that reveals interior EnvCell geometry).
+                if (ShowDungeons) {
                     statics.AddRange(_buildingStaticObjects.Values.SelectMany(x => x));
                 }
                 // Dungeon statics only show when a specific dungeon is focused,
@@ -1388,8 +1388,13 @@ namespace WorldBuilder.Editors.Landscape {
             var frustum = new Frustum(viewProjection);
             var renderableChunks = GetRenderableChunks(frustum);
 
-            // Render terrain (with brush preview)
+            // Render terrain (with brush preview).
+            // Polygon offset pushes terrain slightly back so building interior floors
+            // (+0.05 Z offset) and dungeon geometry always win the depth test.
+            _gl.Enable(EnableCap.PolygonOffsetFill);
+            _gl.PolygonOffset(1f, 1f);
             RenderTerrain(renderableChunks, model, camera, cameraDistance, width, height, editingContext);
+            _gl.Disable(EnableCap.PolygonOffsetFill);
 
             // Render active vertex spheres (used by road line preview and non-brush tools)
             if (editingContext.ActiveVertices.Count > 0) {

@@ -95,8 +95,9 @@ namespace WorldBuilder.Editors.Landscape {
         private int _instanceBufferCapacity;
         private float[] _instanceUploadBuffer = Array.Empty<float>();
 
-        // Reusable cell grouping buffer (avoids per-frame dictionary allocation in Render)
+        // Reusable cell grouping buffers (avoids per-frame dictionary allocation in Render)
         private readonly Dictionary<EnvCellGpuKey, List<Matrix4x4>> _cellGroupBuffer = new();
+        private readonly Dictionary<EnvCellGpuKey, List<Matrix4x4>> _buildingCellGroupBuffer = new();
 
         public EnvCellManager(OpenGLRenderer renderer, IDatReaderWriter dats, IShader objectShader, TextureDiskCache? textureCache = null) {
             _renderer = renderer;
@@ -207,10 +208,12 @@ namespace WorldBuilder.Editors.Landscape {
             }
 
             // Build the world transform from EnvCell position + landblock offset.
-            // For underground dungeons, apply depth bump to push well below terrain/water.
-            // For building interiors, small +0.05 avoids z-fighting with floors (matches ACViewer).
+            // Dungeon cells get -50 Z bump to push below terrain/water.
+            // Building cells get no offset — terrain PolygonOffset(1,1) handles
+            // floor vs terrain, and zero offset keeps interior geometry aligned
+            // with the exterior model so it doesn't bleed through walls/dome.
             var cellOrigin = envCell.Position.Origin + lbOffset;
-            cellOrigin.Z += dungeonZBump != 0f ? dungeonZBump : 0.05f;
+            cellOrigin.Z += dungeonZBump;
             var worldTransform = Matrix4x4.CreateFromQuaternion(envCell.Position.Orientation)
                 * Matrix4x4.CreateTranslation(cellOrigin);
 
@@ -624,40 +627,57 @@ namespace WorldBuilder.Editors.Landscape {
             _shader.SetUniform("uAmbientIntensity", ambientIntensity);
             _shader.SetUniform("uSpecularPower", specularPower);
 
-            // Group visible cells by GpuKey to batch draw calls (frustum cull per cell)
-            const float cellBoundsRadius = 50f; // Approximate bounding radius for a dungeon room
+            // Group visible cells by GpuKey, separated into building vs dungeon batches.
+            // Building interiors get polygon offset to win over terrain/exterior floors.
+            // Dungeon cells already have a -50 Z bump and don't need offset.
+            const float cellBoundsRadius = 50f;
             foreach (var list in _cellGroupBuffer.Values) list.Clear();
+            foreach (var list in _buildingCellGroupBuffer.Values) list.Clear();
 
             foreach (var kvp in _loadedCells) {
                 bool isDungeon = _dungeonOnlyLandblocks.Contains(kvp.Key);
 
-                // Building interior cells always render.
-                // Dungeon cells require ShowDungeonCells and respect the focus filter.
                 if (isDungeon) {
+                    // Dungeon cells: require ShowDungeonCells + respect focus filter
                     if (!ShowDungeonCells) continue;
                     if (FocusedDungeonLB.HasValue && kvp.Key != FocusedDungeonLB.Value) continue;
+                } else {
+                    // Building interior cells: require ShowDungeonCells
+                    if (!ShowDungeonCells) continue;
                 }
 
+                var targetBuffer = isDungeon ? _cellGroupBuffer : _buildingCellGroupBuffer;
+
                 foreach (var cell in kvp.Value) {
-                    // Frustum cull: skip cells whose bounding box is entirely outside the view
                     var cellBounds = new Chorizite.Core.Lib.BoundingBox(
                         cell.WorldPosition - new Vector3(cellBoundsRadius),
                         cell.WorldPosition + new Vector3(cellBoundsRadius));
                     if (!frustum.IntersectsBoundingBox(cellBounds)) continue;
 
-                    if (!_cellGroupBuffer.TryGetValue(cell.GpuKey, out var list)) {
+                    if (!targetBuffer.TryGetValue(cell.GpuKey, out var list)) {
                         list = new List<Matrix4x4>();
-                        _cellGroupBuffer[cell.GpuKey] = list;
+                        targetBuffer[cell.GpuKey] = list;
                     }
                     list.Add(cell.WorldTransform);
                 }
             }
 
+            // Draw building interiors (no polygon offset — exterior models are
+            // drawn first as static objects and win the depth test at overlapping
+            // walls. Terrain is already pushed back by PolygonOffset(1,1) so
+            // interior floors naturally win over terrain.)
+            foreach (var (gpuKey, transforms) in _buildingCellGroupBuffer) {
+                if (transforms.Count == 0) continue;
+                if (!_gpuCache.TryGetValue(gpuKey, out var renderData)) continue;
+                if (renderData.Batches.Count == 0) continue;
+                RenderBatchedEnvCell(gl, renderData, transforms);
+            }
+
+            // Draw dungeon cells (no offset needed — already -50 Z below terrain)
             foreach (var (gpuKey, transforms) in _cellGroupBuffer) {
                 if (transforms.Count == 0) continue;
                 if (!_gpuCache.TryGetValue(gpuKey, out var renderData)) continue;
                 if (renderData.Batches.Count == 0) continue;
-
                 RenderBatchedEnvCell(gl, renderData, transforms);
             }
 
