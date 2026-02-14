@@ -14,7 +14,7 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
         private readonly WorldBuilderSettings _settings;
 
         [ObservableProperty]
-        private ObservableCollection<InputBindingViewModel> _bindings = new();
+        private ObservableCollection<ActionInputViewModel> _actions = new();
 
         [ObservableProperty]
         private InputBindingViewModel? _selectedBinding;
@@ -29,15 +29,33 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
         }
 
         private void LoadBindings() {
-            Bindings.Clear();
+            Actions.Clear();
             var allBindings = _inputManager.GetAllBindings();
 
-            // Group by category if desired, but for now flat list sorted by category/action
-            var sorted = allBindings.OrderBy(b => b.Category).ThenBy(b => b.ActionName);
+            // Group bindings by action
+            var groups = allBindings.GroupBy(b => b.ActionName)
+                                    .OrderBy(g => g.First().Category)
+                                    .ThenBy(g => g.Key);
 
-            foreach (var b in sorted) {
-                Bindings.Add(new InputBindingViewModel(b));
+            foreach (var group in groups) {
+                var first = group.First();
+                var actionVM = new ActionInputViewModel(first.Category, first.Description);
+
+                foreach (var binding in group) {
+                    actionVM.Bindings.Add(new InputBindingViewModel(binding));
+                }
+
+                // Ensure at least 2 slots? Or just display what we have?
+                // Request was "put the alts on the same line (so it would just be like 2 input boxes)"
+                // If we have only 1 binding, maybe add a placeholder?
+                // For now, let's just list existing bindings. If user wants to ADD a binding, that's a different feature.
+                // But typically "Primary" and "Alternate" implies 2 slots.
+                // The current data model supports N bindings.
+
+                Actions.Add(actionVM);
             }
+
+            CheckConflicts();
         }
 
         [RelayCommand]
@@ -49,26 +67,53 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
 
         public void HandleKeyPress(Key key, KeyModifiers modifiers) {
             if (IsListening && SelectedBinding != null) {
-                // Ignore modifier-only presses if we want?
-                // Usually we wait for a non-modifier key, unless we want to bind "Ctrl" (rare).
-                // But Avalonia passes modifiers separately.
-                // If key is Key.LeftCtrl, modifiers might be None or Control.
-                // We typically bind "Action" to "Key + Modifiers".
-                // If the user presses "Ctrl+C", Key is C, Modifiers is Control.
-
-                // If Key is a modifier key, we might want to wait?
                 if (IsModifierKey(key)) return;
 
                 SelectedBinding.Key = key;
                 SelectedBinding.Modifiers = modifiers;
 
-                // Commit to the actual binding object
                 SelectedBinding.Commit();
-
-                // Update manager
                 _inputManager.SaveBinding(SelectedBinding.Source);
 
+                CheckConflicts();
                 StopRebind();
+            }
+        }
+
+        private void CheckConflicts() {
+            var allBindings = Actions.SelectMany(a => a.Bindings).ToList();
+
+            foreach (var binding in allBindings) {
+                binding.IsConflicting = false;
+            }
+
+            for (int i = 0; i < allBindings.Count; i++) {
+                var b1 = allBindings[i];
+                if (b1.Key == Key.None) continue; // Ignore unbound?
+
+                for (int j = i + 1; j < allBindings.Count; j++) {
+                    var b2 = allBindings[j];
+                    if (b2.Key == Key.None) continue;
+
+                    // Conflict if keys match AND modifiers match
+                    // What about "IgnoreModifiers"?
+                    // If b1 ignores modifiers, it conflicts with b2 if b2.Key == b1.Key
+                    // If b2 ignores modifiers, it conflicts with b1 if b1.Key == b2.Key
+                    // If neither ignores, they must match exactly.
+
+                    bool conflict = false;
+                    if (b1.Source.IgnoreModifiers || b2.Source.IgnoreModifiers) {
+                        if (b1.Key == b2.Key) conflict = true;
+                    }
+                    else {
+                        if (b1.Key == b2.Key && b1.Modifiers == b2.Modifiers) conflict = true;
+                    }
+
+                    if (conflict) {
+                        b1.IsConflicting = true;
+                        b2.IsConflicting = true;
+                    }
+                }
             }
         }
 
@@ -93,8 +138,10 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
             _settings.Save();
 
             // Mark all bindings as saved (unmodified)
-            foreach (var binding in Bindings) {
-                binding.MarkAsSaved();
+            foreach (var action in Actions) {
+                foreach (var binding in action.Bindings) {
+                    binding.MarkAsSaved();
+                }
             }
         }
 
@@ -108,6 +155,19 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
         private void ResetToDefaults() {
             _inputManager.ResetToDefaults();
             LoadBindings();
+        }
+    }
+
+    public partial class ActionInputViewModel : ObservableObject {
+        public string Category { get; }
+        public string Description { get; }
+
+        [ObservableProperty]
+        private ObservableCollection<InputBindingViewModel> _bindings = new();
+
+        public ActionInputViewModel(string category, string description) {
+            Category = category;
+            Description = description;
         }
     }
 
@@ -132,6 +192,9 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
 
         [ObservableProperty]
         private bool _isModified;
+
+        [ObservableProperty]
+        private bool _isConflicting;
 
         public InputBindingViewModel(InputBinding source) {
             Source = source;
