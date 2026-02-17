@@ -1,0 +1,43 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:vm="using:WorldBuilder.Editors.Landscape.ViewModels"
+             mc:Ignorable="d" d:DesignWidth="300" d:DesignHeight="400"
+             x:Class="WorldBuilder.Editors.Landscape.Views.StampLibraryPanel"
+             x:DataType="vm:PasteSubToolViewModel">
+    <DockPanel>
+        <TextBlock DockPanel.Dock="Top" Text="Stamp Library" FontWeight="Bold" Margin="0,0,0,8"/>
+
+        <StackPanel DockPanel.Dock="Bottom" Spacing="4">
+            <StackPanel Orientation="Horizontal" Spacing="4">
+                <Button Content="Rotate ↻" Command="{Binding RotateClockwiseCommand}" />
+                <Button Content="Rotate ↺" Command="{Binding RotateCounterClockwiseCommand}" />
+            </StackPanel>
+            <StackPanel Orientation="Horizontal" Spacing="4">
+                <CheckBox Content="Include Objects" IsChecked="{Binding IncludeObjects}" />
+                <CheckBox Content="Blend Edges" IsChecked="{Binding BlendEdges}" />
+            </StackPanel>
+        </StackPanel>
+
+        <ListBox ItemsSource="{Binding AvailableStamps}"
+                 SelectedItem="{Binding SelectedStamp}">
+            <ListBox.ItemTemplate>
+                <DataTemplate>
+                    <StackPanel>
+                        <TextBlock Text="{Binding Name}" FontWeight="Bold"/>
+                        <TextBlock Text="{Binding Description}" FontSize="10"/>
+                        <TextBlock>
+                            <Run Text="{Binding WidthInVertices}"/>
+                            <Run Text="x"/>
+                            <Run Text="{Binding HeightInVertices}"/>
+                            <Run Text=" vertices"/>
+                        </TextBlock>
+                        <TextBlock Text="{Binding Created, StringFormat='Created: {0:g}'}"
+                                   FontSize="10" Foreground="Gray"/>
+                    </StackPanel>
+                </DataTemplate>
+            </ListBox.ItemTemplate>
+        </ListBox>
+    </DockPanel>
+</UserControl>

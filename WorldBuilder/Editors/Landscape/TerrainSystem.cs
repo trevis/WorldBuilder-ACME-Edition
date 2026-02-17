@@ -14,6 +14,7 @@ using WorldBuilder.Lib.History;
 using WorldBuilder.Lib.Settings;
 using WorldBuilder.Shared.Documents;
 using WorldBuilder.Shared.Lib;
+using WorldBuilder.Services;
 using WorldBuilder.Shared.Models;
 using WorldBuilder.ViewModels;
 using static Microsoft.EntityFrameworkCore.DbLoggerCategory;
@@ -66,6 +67,9 @@ namespace WorldBuilder.Editors.Landscape {
             collection.AddSingleton<SelectSubToolViewModel>();
             collection.AddSingleton<MoveObjectSubToolViewModel>();
             collection.AddSingleton<RotateObjectSubToolViewModel>();
+            collection.AddSingleton<CloneSubToolViewModel>();
+            collection.AddSingleton<PasteSubToolViewModel>();
+            collection.AddSingleton<StampLibraryManager>();
             collection.AddSingleton<SelectorToolViewModel>();
             collection.AddSingleton(TerrainDoc ?? throw new ArgumentNullException(nameof(TerrainDoc)));
             collection.AddSingleton(dats);

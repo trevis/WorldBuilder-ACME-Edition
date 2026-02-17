@@ -18,11 +18,15 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
             TerrainEditingContext context,
             SelectSubToolViewModel selectSubTool,
             MoveObjectSubToolViewModel moveSubTool,
-            RotateObjectSubToolViewModel rotateSubTool) {
+            RotateObjectSubToolViewModel rotateSubTool,
+            CloneSubToolViewModel cloneSubTool,
+            PasteSubToolViewModel pasteSubTool) {
             _context = context;
             SubTools.Add(selectSubTool);
             SubTools.Add(moveSubTool);
             SubTools.Add(rotateSubTool);
+            SubTools.Add(cloneSubTool);
+            SubTools.Add(pasteSubTool);
         }
 
         public override void OnActivated() {
