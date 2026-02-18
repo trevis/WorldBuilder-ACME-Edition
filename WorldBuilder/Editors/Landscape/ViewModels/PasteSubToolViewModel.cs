@@ -122,6 +122,11 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
                 270 => StampTransforms.Rotate270Clockwise(SelectedStamp.Stamp),
                 _ => SelectedStamp.Stamp
             };
+
+            // Force preview update immediately
+            if (_rotatedStamp != null) {
+                Context.TerrainSystem.Scene.SetStampPreview(_rotatedStamp, _previewPosition, _autoZOffset + _manualZOffset);
+            }
         }
 
         public override void OnActivated() {
@@ -169,7 +174,8 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
             else if (_currentStage == PlacementStage.Blending) {
                 // Adjust manual Z offset based on vertical mouse movement
                 float deltaY = _dragStartMousePos.Y - mouseState.Position.Y;
-                _manualZOffset = _dragStartZOffset + (deltaY * 0.1f); // Sensitivity scaling
+                // Increased sensitivity and smoother accumulation
+                _manualZOffset = _dragStartZOffset + (deltaY * 0.05f);
             }
 
             // Update preview
@@ -212,6 +218,7 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
         }
 
         public override bool HandleKeyDown(KeyEventArgs e) {
+            // Console.WriteLine($"[PasteTool] Key Down: {e.Key}");
             // [ = Rotate Left (CCW)
             if (e.Key == Key.OemOpenBrackets) {
                 RotateCounterClockwise();
