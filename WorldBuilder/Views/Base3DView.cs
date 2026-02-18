@@ -567,7 +567,7 @@ namespace WorldBuilder.Views {
             }
         }
 
-        public Vector2 InputScale { get; private set; }
+        public Vector2 InputScale { get; private set; } = Vector2.One;
 
         #endregion
 

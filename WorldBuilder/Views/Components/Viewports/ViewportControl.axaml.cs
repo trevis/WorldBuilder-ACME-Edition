@@ -96,8 +96,11 @@ namespace WorldBuilder.Views.Components.Viewports {
         protected override void UpdateMouseState(Point position, PointerPointProperties properties) {
             if (_viewModel?.TerrainSystem == null || _viewModel.Camera == null) return;
 
-            var width = (int)(Bounds.Width * InputScale.X);
-            var height = (int)(Bounds.Height * InputScale.Y);
+            var scale = InputScale;
+            if (scale == Vector2.Zero) scale = Vector2.One;
+
+            var width = (int)(Bounds.Width * scale.X);
+            var height = (int)(Bounds.Height * scale.Y);
             if (width == 0) width = (int)Bounds.Width;
             if (height == 0) height = (int)Bounds.Height;
 
@@ -106,7 +109,7 @@ namespace WorldBuilder.Views.Components.Viewports {
                 properties,
                 width,
                 height,
-                InputScale,
+                scale,
                 _viewModel.Camera,
                 _viewModel.TerrainSystem
             );
