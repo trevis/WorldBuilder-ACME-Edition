@@ -17,6 +17,8 @@ namespace WorldBuilder.Shared.Models {
         public int WidthInVertices { get; set; }
         public int HeightInVertices { get; set; }
 
+        public string? Filename { get; set; }
+
         // Height data (byte indices into LandHeightTable)
         public byte[] Heights { get; set; } = Array.Empty<byte>();
 

@@ -2,18 +2,22 @@ using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.IO;
+using System.Linq;
 using System.Numerics;
+using WorldBuilder.Lib.Settings;
 using WorldBuilder.Shared.Documents;
 using WorldBuilder.Shared.Models;
 
 namespace WorldBuilder.Services {
     public class StampLibraryManager {
         private const string StampDirectory = "Stamps";
+        private readonly WorldBuilderSettings _settings;
         private readonly ObservableCollection<TerrainStamp> _stamps = new();
 
         public ObservableCollection<TerrainStamp> Stamps => _stamps;
 
-        public StampLibraryManager() {
+        public StampLibraryManager(WorldBuilderSettings settings) {
+            _settings = settings;
             LoadStampsFromDisk();
         }
 
@@ -21,39 +25,57 @@ namespace WorldBuilder.Services {
             Directory.CreateDirectory(StampDirectory);
             var path = Path.Combine(StampDirectory, $"{filename}.stamp");
 
-            using var writer = new BinaryWriter(File.OpenWrite(path));
+            // Set filename on the stamp object so we can delete it later
+            stamp.Filename = path;
 
-            // Add to memory
-            _stamps.Add(stamp);
+            using (var writer = new BinaryWriter(File.OpenWrite(path))) {
+                // Header
+                writer.Write("ACSTAMP"); // Magic bytes
+                writer.Write((byte)1);   // Version
 
-            // Header
-            writer.Write("ACSTAMP"); // Magic bytes
-            writer.Write((byte)1);   // Version
+                // Metadata
+                writer.Write(stamp.Name);
+                writer.Write(stamp.Description);
+                writer.Write(stamp.Created.ToBinary());
+                writer.Write((ushort)stamp.WidthInVertices);
+                writer.Write((ushort)stamp.HeightInVertices);
+                writer.Write(stamp.OriginalWorldPosition.X);
+                writer.Write(stamp.OriginalWorldPosition.Y);
+                writer.Write(stamp.SourceLandblockId);
 
-            // Metadata
-            writer.Write(stamp.Name);
-            writer.Write(stamp.Description);
-            writer.Write(stamp.Created.ToBinary());
-            writer.Write((ushort)stamp.WidthInVertices);
-            writer.Write((ushort)stamp.HeightInVertices);
-            writer.Write(stamp.OriginalWorldPosition.X);
-            writer.Write(stamp.OriginalWorldPosition.Y);
-            writer.Write(stamp.SourceLandblockId);
+                // Height data
+                writer.Write(stamp.Heights.Length);
+                writer.Write(stamp.Heights);
 
-            // Height data
-            writer.Write(stamp.Heights.Length);
-            writer.Write(stamp.Heights);
+                // Terrain type data
+                writer.Write(stamp.TerrainTypes.Length);
+                foreach (var terrain in stamp.TerrainTypes) {
+                    writer.Write(terrain);
+                }
 
-            // Terrain type data
-            writer.Write(stamp.TerrainTypes.Length);
-            foreach (var terrain in stamp.TerrainTypes) {
-                writer.Write(terrain);
+                // Objects (optional)
+                writer.Write(stamp.Objects.Count);
+                foreach (var obj in stamp.Objects) {
+                    WriteStaticObject(writer, obj);
+                }
             }
 
-            // Objects (optional)
-            writer.Write(stamp.Objects.Count);
-            foreach (var obj in stamp.Objects) {
-                WriteStaticObject(writer, obj);
+            // Add to memory at the top
+            _stamps.Insert(0, stamp);
+
+            // Enforce limit
+            while (_stamps.Count > _settings.Landscape.Stamps.MaxStamps) {
+                var oldest = _stamps[_stamps.Count - 1];
+                _stamps.RemoveAt(_stamps.Count - 1);
+
+                if (!string.IsNullOrEmpty(oldest.Filename) && File.Exists(oldest.Filename)) {
+                    try {
+                        File.Delete(oldest.Filename);
+                    }
+                    catch (Exception ex) {
+                        Console.WriteLine($"[StampLibrary] Failed to delete old stamp {oldest.Filename}: {ex.Message}");
+                    }
+                }
             }
         }
 
@@ -83,6 +105,9 @@ namespace WorldBuilder.Services {
                 SourceLandblockId = reader.ReadUInt16()
             };
 
+            // Set filename so we can delete it later if needed
+            stamp.Filename = path;
+
             // Read height data
             int heightCount = reader.ReadInt32();
             stamp.Heights = reader.ReadBytes(heightCount);
@@ -106,12 +131,20 @@ namespace WorldBuilder.Services {
         private void LoadStampsFromDisk() {
             if (!Directory.Exists(StampDirectory)) return;
 
+            var loadedStamps = new List<TerrainStamp>();
             foreach (var file in Directory.GetFiles(StampDirectory, "*.stamp")) {
                 var filename = Path.GetFileNameWithoutExtension(file);
                 var stamp = LoadStamp(filename);
                 if (stamp != null) {
-                    _stamps.Add(stamp);
+                    loadedStamps.Add(stamp);
                 }
+            }
+
+            // Sort by creation date descending (newest first)
+            loadedStamps.Sort((a, b) => b.Created.CompareTo(a.Created));
+
+            foreach (var stamp in loadedStamps) {
+                _stamps.Add(stamp);
             }
         }
 

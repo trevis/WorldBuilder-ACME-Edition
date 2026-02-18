@@ -1614,7 +1614,18 @@ namespace WorldBuilder.Editors.Landscape {
             // Bounds are (MinX, MinY, MaxX, MaxY)
             // We want to draw spheres at the 4 corners at terrain height
             var corners = new Vector4[4];
-            float radius = 1.0f; // Small markers
+
+            // Calculate scale based on camera distance or ortho size
+            float scaleFactor = 1.0f;
+            if (camera is OrthographicTopDownCamera ortho) {
+                scaleFactor = Math.Max(1.0f, ortho.OrthographicSize * 0.005f);
+            }
+            else {
+                float dist = MathF.Abs(camera.Position.Z); // Simple approximation
+                scaleFactor = Math.Max(1.0f, dist * 0.005f);
+            }
+
+            float radius = 1.0f * scaleFactor;
 
             // Corner 1: MinX, MinY
             float h1 = editingContext.GetHeightAtPosition(bounds.X, bounds.Y);

@@ -20,11 +20,24 @@ namespace WorldBuilder.Lib.Settings {
         private SelectionSettings _selection = new();
         public SelectionSettings Selection { get => _selection; set => SetProperty(ref _selection, value); }
 
+        private StampSettings _stamps = new();
+        public StampSettings Stamps { get => _stamps; set => SetProperty(ref _stamps, value); }
+
         private UIStateSettings _uiState = new();
         public UIStateSettings UIState { get => _uiState; set => SetProperty(ref _uiState, value); }
 
         public LandscapeEditorSettings() {
         }
+    }
+
+    [SettingCategory("Stamps", ParentCategory = "Landscape Editor", Order = 5)]
+    public partial class StampSettings : ObservableObject {
+        [SettingDescription("Maximum number of stamps to keep in the library")]
+        [SettingRange(1, 50, 1, 5)]
+        [SettingFormat("{0:F0}")]
+        [SettingOrder(0)]
+        private int _maxStamps = 10;
+        public int MaxStamps { get => _maxStamps; set => SetProperty(ref _maxStamps, value); }
     }
 
     [SettingCategory("Camera", ParentCategory = "Landscape Editor", Order = 0)]
