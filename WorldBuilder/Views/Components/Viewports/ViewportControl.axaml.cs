@@ -84,11 +84,14 @@ namespace WorldBuilder.Views.Components.Viewports {
         }
 
         protected override void OnGlPointerPressed(PointerPressedEventArgs e) {
+            // Force update mouse state with pressed button flags before invoking command
+            UpdateMouseState(e.GetPosition(this), e.GetCurrentPoint(this).Properties);
             _viewModel?.PointerPressedAction?.Invoke(e);
             e.Pointer.Capture(this);
         }
 
         protected override void OnGlPointerReleased(PointerReleasedEventArgs e) {
+            UpdateMouseState(e.GetPosition(this), e.GetCurrentPoint(this).Properties);
             _viewModel?.PointerReleasedAction?.Invoke(e);
             e.Pointer.Capture(null);
         }
