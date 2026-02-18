@@ -107,8 +107,8 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
             var pCam = TerrainSystem.Scene.PerspectiveCamera;
             var orthoCam = TerrainSystem.Scene.TopDownCamera;
 
-            var pViewport = new ViewportViewModel(pCam) { Title = "Perspective", IsActive = true };
-            var orthoViewport = new ViewportViewModel(orthoCam) { Title = "Top Down", IsActive = false };
+            var pViewport = new ViewportViewModel(pCam) { Title = "Perspective", IsActive = true, TerrainSystem = TerrainSystem };
+            var orthoViewport = new ViewportViewModel(orthoCam) { Title = "Top Down", IsActive = false, TerrainSystem = TerrainSystem };
 
             // Wire up rendering and input
             pViewport.RenderAction = (dt, size, input) => RenderViewport(pViewport, dt, size, input);
@@ -281,8 +281,9 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
             // Keyboard movement
             // Logic copied from View
             bool shiftHeld = inputState.IsKeyDown(Avalonia.Input.Key.LeftShift) || inputState.IsKeyDown(Avalonia.Input.Key.RightShift);
+            bool ctrlHeld = inputState.IsKeyDown(Avalonia.Input.Key.LeftCtrl) || inputState.IsKeyDown(Avalonia.Input.Key.RightCtrl);
 
-            if (shiftHeld && camera is PerspectiveCamera perspCam) {
+            if ((shiftHeld || ctrlHeld) && camera is PerspectiveCamera perspCam) {
                 float rotateSpeed = 60f * (float)deltaTime;
                 if (inputState.IsKeyDown(Avalonia.Input.Key.Left)) perspCam.ProcessKeyboardRotation(rotateSpeed, 0);
                 if (inputState.IsKeyDown(Avalonia.Input.Key.Right)) perspCam.ProcessKeyboardRotation(-rotateSpeed, 0);
@@ -290,13 +291,13 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
                 if (inputState.IsKeyDown(Avalonia.Input.Key.Down)) perspCam.ProcessKeyboardRotation(0, -rotateSpeed);
             }
 
-            if (inputState.IsKeyDown(Avalonia.Input.Key.W) || (!shiftHeld && inputState.IsKeyDown(Avalonia.Input.Key.Up)))
+            if (inputState.IsKeyDown(Avalonia.Input.Key.W) || ((!shiftHeld && !ctrlHeld) && inputState.IsKeyDown(Avalonia.Input.Key.Up)))
                 camera.ProcessKeyboard(CameraMovement.Forward, deltaTime);
-            if (inputState.IsKeyDown(Avalonia.Input.Key.S) || (!shiftHeld && inputState.IsKeyDown(Avalonia.Input.Key.Down)))
+            if (inputState.IsKeyDown(Avalonia.Input.Key.S) || ((!shiftHeld && !ctrlHeld) && inputState.IsKeyDown(Avalonia.Input.Key.Down)))
                 camera.ProcessKeyboard(CameraMovement.Backward, deltaTime);
-            if (inputState.IsKeyDown(Avalonia.Input.Key.A) || (!shiftHeld && inputState.IsKeyDown(Avalonia.Input.Key.Left)))
+            if (inputState.IsKeyDown(Avalonia.Input.Key.A) || ((!shiftHeld && !ctrlHeld) && inputState.IsKeyDown(Avalonia.Input.Key.Left)))
                 camera.ProcessKeyboard(CameraMovement.Left, deltaTime);
-            if (inputState.IsKeyDown(Avalonia.Input.Key.D) || (!shiftHeld && inputState.IsKeyDown(Avalonia.Input.Key.Right)))
+            if (inputState.IsKeyDown(Avalonia.Input.Key.D) || ((!shiftHeld && !ctrlHeld) && inputState.IsKeyDown(Avalonia.Input.Key.Right)))
                 camera.ProcessKeyboard(CameraMovement.Right, deltaTime);
 
             // Vertical Movement (Space = Up, Shift = Down)

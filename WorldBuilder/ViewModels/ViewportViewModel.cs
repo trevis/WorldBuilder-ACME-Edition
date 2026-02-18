@@ -5,6 +5,7 @@ using System;
 using Avalonia;
 using Avalonia.Input;
 using System.Numerics;
+using WorldBuilder.Editors.Landscape;
 
 namespace WorldBuilder.ViewModels {
     public partial class ViewportViewModel : ViewModelBase {
@@ -16,6 +17,8 @@ namespace WorldBuilder.ViewModels {
 
         [ObservableProperty]
         private ICamera _camera;
+
+        public TerrainSystem? TerrainSystem { get; set; }
 
         private OpenGLRenderer? _renderer;
         public OpenGLRenderer? Renderer {

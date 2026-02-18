@@ -8,6 +8,7 @@ using System;
 using System.Numerics;
 using WorldBuilder.Lib;
 using WorldBuilder.ViewModels;
+using WorldBuilder.Editors.Landscape;
 
 namespace WorldBuilder.Views.Components.Viewports {
     public partial class ViewportControl : Base3DView {
@@ -88,6 +89,20 @@ namespace WorldBuilder.Views.Components.Viewports {
 
         protected override void OnGlPointerReleased(PointerReleasedEventArgs e) {
             _viewModel?.PointerReleasedAction?.Invoke(e);
+        }
+
+        protected override void UpdateMouseState(Point position, PointerPointProperties properties) {
+            if (_viewModel?.TerrainSystem == null || _viewModel.Camera == null) return;
+
+            InputState.UpdateMouseState(
+                position,
+                properties,
+                (int)Bounds.Width,
+                (int)Bounds.Height,
+                InputScale,
+                _viewModel.Camera,
+                _viewModel.TerrainSystem
+            );
         }
     }
 }
