@@ -1,3 +1,4 @@
+using Avalonia.Input;
 ﻿using Chorizite.Core.Render;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -31,6 +32,11 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
         public abstract bool HandleMouseDown(MouseState mouseState);
         public abstract bool HandleMouseUp(MouseState mouseState);
         public abstract bool HandleMouseMove(MouseState mouseState);
+
+        // Keyboard interaction methods
+        public virtual bool HandleKeyDown(KeyEventArgs e) {
+            return false;
+        }
 
         // Per-frame update
         public abstract void Update(double deltaTime);

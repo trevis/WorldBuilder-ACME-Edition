@@ -3,6 +3,7 @@ using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.Linq;
 using System.Numerics;
+using Avalonia.Input;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using WorldBuilder.Editors.Landscape.Commands;
@@ -208,6 +209,18 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
 
         public override bool HandleMouseUp(MouseState mouseState) {
              return false;
+        }
+
+        public override bool HandleKeyDown(KeyEventArgs e) {
+            if (e.Key == Key.RightBracket || (e.Key == Key.R && !e.KeyModifiers.HasFlag(KeyModifiers.Shift))) {
+                RotateClockwise();
+                return true;
+            }
+            if (e.Key == Key.LeftBracket || (e.Key == Key.R && e.KeyModifiers.HasFlag(KeyModifiers.Shift))) {
+                RotateCounterClockwise();
+                return true;
+            }
+            return false;
         }
 
         [RelayCommand]

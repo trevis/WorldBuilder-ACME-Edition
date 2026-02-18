@@ -186,6 +186,11 @@ public partial class LandscapeEditorView : Base3DView {
     protected override void OnGlKeyDown(KeyEventArgs e) {
         if (!_didInit || _viewModel?.TerrainSystem == null) return;
 
+        // Check active tool first
+        if (_currentActiveTool != null && _currentActiveTool.HandleKeyDown(e)) {
+            return;
+        }
+
         // Go to Landblock (Ctrl+G)
         if (e.Key == Key.G && e.KeyModifiers.HasFlag(KeyModifiers.Control)) {
             _ = _viewModel.GotoLandblockCommand.ExecuteAsync(null);

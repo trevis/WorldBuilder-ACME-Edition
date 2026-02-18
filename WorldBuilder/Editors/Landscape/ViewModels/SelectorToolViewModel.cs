@@ -52,6 +52,10 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
             return SelectedSubTool?.HandleMouseMove(mouseState) ?? false;
         }
 
+        public override bool HandleKeyDown(KeyEventArgs e) {
+            return SelectedSubTool?.HandleKeyDown(e) ?? false;
+        }
+
         public override void Update(double deltaTime) {
             SelectedSubTool?.Update(deltaTime);
         }
