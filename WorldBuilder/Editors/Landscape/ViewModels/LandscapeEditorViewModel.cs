@@ -9,6 +9,7 @@ using DialogHostAvalonia;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using System;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Globalization;
 using System.Linq;
@@ -124,6 +125,9 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
 
             pViewport.PointerWheelAction = (e, inputState) => HandleViewportWheel(pViewport, e);
             orthoViewport.PointerWheelAction = (e, inputState) => HandleViewportWheel(orthoViewport, e);
+
+            pViewport.KeyAction = (e, isDown) => { if (isDown) HandleViewportKeyDown(e); };
+            orthoViewport.KeyAction = (e, isDown) => { if (isDown) HandleViewportKeyDown(e); };
 
             pViewport.PointerPressedAction = (e, inputState) => HandleViewportPressed(pViewport, e, inputState);
             orthoViewport.PointerPressedAction = (e, inputState) => HandleViewportPressed(orthoViewport, e, inputState);
@@ -264,6 +268,46 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
             SelectedTool?.RenderOverlay(viewport.Renderer, viewport.Camera, (float)canvasSize.Width / canvasSize.Height);
         }
 
+        private void HandleViewportKeyDown(KeyEventArgs e) {
+            bool ctrl = e.KeyModifiers.HasFlag(KeyModifiers.Control);
+            bool shift = e.KeyModifiers.HasFlag(KeyModifiers.Shift);
+
+            if (ctrl) {
+                switch (e.Key) {
+                    case Avalonia.Input.Key.G:
+                        _ = GotoLandblockCommand.ExecuteAsync(null);
+                        return;
+                    case Avalonia.Input.Key.Z:
+                        if (shift)
+                            TerrainSystem?.History?.Redo();
+                        else
+                            TerrainSystem?.History?.Undo();
+                        TerrainSystem?.Scene.InvalidateStaticObjectsCache();
+                        return;
+                    case Avalonia.Input.Key.Y:
+                        TerrainSystem?.History?.Redo();
+                        TerrainSystem?.Scene.InvalidateStaticObjectsCache();
+                        return;
+                    case Avalonia.Input.Key.C:
+                        CopySelectedObject();
+                        return;
+                    case Avalonia.Input.Key.V:
+                        PasteObject();
+                        return;
+                }
+            }
+
+            switch (e.Key) {
+                case Avalonia.Input.Key.Delete:
+                    DeleteSelectedObject();
+                    break;
+                case Avalonia.Input.Key.Escape:
+                    TerrainSystem?.EditingContext.ObjectSelection.Deselect();
+                    TerrainSystem?.Scene.InvalidateStaticObjectsCache();
+                    break;
+            }
+        }
+
         private void HandleViewportPressed(ViewportViewModel viewport, PointerPressedEventArgs e, AvaloniaInputState inputState) {
             foreach (var v in Viewports) {
                 v.IsActive = v == viewport;
@@ -333,14 +377,6 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
                 }
                 else {
                     camera.ProcessKeyboard(zoomIn ? CameraMovement.Forward : CameraMovement.Backward, deltaTime * 2);
-                }
-            }
-
-            // Ctrl+key shortcuts — handled here because the GL viewport swallows
-            // key events before Avalonia's menu InputGesture bindings can see them.
-            if (ctrlHeld) {
-                if (inputState.IsKeyDown(Avalonia.Input.Key.G) && !inputState.WasKeyDownLastFrame(Avalonia.Input.Key.G)) {
-                    _ = GotoLandblockCommand.ExecuteAsync(null);
                 }
             }
 
@@ -490,6 +526,56 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
                 persp.SetPosition(centerX, centerY, height + 500f);
                 persp.LookAt(new Vector3(centerX, centerY, height));
             }
+        }
+
+        private StaticObject? _copiedObject;
+        private ushort _copiedObjectLandblock;
+
+        private void CopySelectedObject() {
+            var sel = TerrainSystem?.EditingContext.ObjectSelection;
+            if (sel == null || !sel.HasSelection || sel.SelectedObject == null) return;
+            _copiedObject = sel.SelectedObject.Value;
+            _copiedObjectLandblock = sel.SelectedLandblockKey;
+        }
+
+        private void PasteObject() {
+            if (_copiedObject == null || TerrainSystem == null) return;
+            var src = _copiedObject.Value;
+            var sel = TerrainSystem.EditingContext.ObjectSelection;
+            var duplicate = new StaticObject {
+                Id = src.Id,
+                Origin = src.Origin + new Vector3(24f, 24f, 0),
+                Orientation = src.Orientation,
+                Scale = src.Scale,
+                IsSetup = src.IsSetup
+            };
+            var cmd = new Commands.AddObjectCommand(TerrainSystem.EditingContext, _copiedObjectLandblock, duplicate);
+            TerrainSystem.History?.ExecuteCommand(cmd);
+            TerrainSystem.Scene.InvalidateStaticObjectsCache();
+            sel.Select(duplicate, _copiedObjectLandblock, cmd.AddedIndex, false);
+        }
+
+        private void DeleteSelectedObject() {
+            var sel = TerrainSystem?.EditingContext.ObjectSelection;
+            if (sel == null || !sel.HasSelection || sel.SelectedObject == null || sel.IsScenery) return;
+            if (sel.HasEnvCellSelection) return;
+
+            var commands = new List<Lib.History.ICommand>();
+            foreach (var entry in sel.SelectedEntries.OrderByDescending(e => e.ObjectIndex)) {
+                if (entry.IsScenery) continue;
+                commands.Add(new Commands.RemoveObjectCommand(TerrainSystem!.EditingContext, entry.LandblockKey, entry.ObjectIndex));
+            }
+            if (commands.Count == 0) return;
+
+            if (commands.Count == 1) {
+                TerrainSystem!.History?.ExecuteCommand(commands[0]);
+            } else {
+                var composite = new Lib.History.CompositeCommand();
+                composite.Commands.AddRange(commands);
+                TerrainSystem!.History?.ExecuteCommand(composite);
+            }
+            sel.Deselect();
+            TerrainSystem!.Scene.InvalidateStaticObjectsCache();
         }
 
         [RelayCommand]
