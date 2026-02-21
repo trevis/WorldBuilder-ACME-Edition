@@ -305,7 +305,7 @@ namespace WorldBuilder.Editors.Landscape {
 
         private void ProcessPendingUploads(SceneContext context) {
             WarmUpRenderData(context);
-            context.EnvCellManager.ProcessUploads(maxPerFrame: 2);
+            context.EnvCellManager.ProcessUploads(maxPerFrame: 4);
             ProcessChunkUploads(context);
         }
 

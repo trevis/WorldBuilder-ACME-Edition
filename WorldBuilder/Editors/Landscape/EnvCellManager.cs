@@ -25,7 +25,7 @@ namespace WorldBuilder.Editors.Landscape {
     /// geometry (vertices + polygons), and carries its own surface texture list and world transform.
     /// </summary>
     public class EnvCellManager : IDisposable {
-        private const int MaxLoadedDungeonCells = 500; // Hard cap on total loaded dungeon cells to prevent memory/GPU explosion
+        private const int MaxLoadedDungeonCells = 10000; // Hard cap on dungeon-only cells (building interior cells are exempt)
 
         private readonly OpenGLRenderer _renderer;
         private readonly IDatReaderWriter _dats;
@@ -120,9 +120,17 @@ namespace WorldBuilder.Editors.Landscape {
         public int LoadedLandblockCount => _loadedCells.Count;
 
         /// <summary>
-        /// Returns the total number of loaded dungeon cells across all landblocks.
+        /// Returns the total number of loaded cells across all landblocks (dungeon + building).
         /// </summary>
         public int LoadedCellCount => _loadedCells.Values.Sum(list => list.Count);
+
+        /// <summary>
+        /// Returns the number of loaded cells in dungeon-only landblocks (excludes building interiors).
+        /// Used for cap enforcement -- building interior cells are small and always allowed.
+        /// </summary>
+        public int LoadedDungeonCellCount => _loadedCells
+            .Where(kvp => _dungeonOnlyLandblocks.Contains(kvp.Key))
+            .Sum(kvp => kvp.Value.Count);
 
         #region CPU Preparation (background thread safe)
 
@@ -225,9 +233,9 @@ namespace WorldBuilder.Editors.Landscape {
             // Dungeon cells get -50 Z bump; building cells get +0.2 Z so floor wins over terrain.
             var cellOrigin = envCell.Position.Origin + lbOffset;
             cellOrigin.Z += dungeonZBump;
-            // Match AC Frame::localtoglobal: world = R*local + origin (translation after rotation).
-            var worldTransform = Matrix4x4.CreateTranslation(cellOrigin)
-                * Matrix4x4.CreateFromQuaternion(envCell.Position.Orientation);
+            // AC Frame::localtoglobal: world = R*local + origin (rotate first, then translate).
+            var worldTransform = Matrix4x4.CreateFromQuaternion(envCell.Position.Orientation)
+                * Matrix4x4.CreateTranslation(cellOrigin);
 
             // Resolve surface IDs (EnvCell surfaces are not fully qualified, OR with 0x08000000)
             var surfaceIds = new List<uint>();
@@ -542,12 +550,12 @@ namespace WorldBuilder.Editors.Landscape {
         /// Processes queued GPU uploads. Must be called on the GL thread (e.g. during Update).
         /// Returns the number of batches processed. Skips uploads if at the cell cap.
         /// </summary>
-        public int ProcessUploads(int maxPerFrame = 2) {
+        public int ProcessUploads(int maxPerFrame = 4) {
             int processed = 0;
             while (processed < maxPerFrame && _uploadQueue.TryDequeue(out var batch)) {
-                // Skip if we're already at the cell cap
-                if (LoadedCellCount >= MaxLoadedDungeonCells) {
-                    Console.WriteLine($"[EnvCellMgr] Cell cap ({MaxLoadedDungeonCells}) reached, skipping upload for LB 0x{batch.LandblockKey:X4}");
+                // Building interior cells are small and always needed; only cap dungeon-only landblocks
+                if (batch.IsDungeonOnly && LoadedDungeonCellCount >= MaxLoadedDungeonCells) {
+                    Console.WriteLine($"[EnvCellMgr] Dungeon cell cap ({MaxLoadedDungeonCells}) reached ({LoadedDungeonCellCount} loaded), skipping upload for LB 0x{batch.LandblockKey:X4}");
                     continue;
                 }
                 FinalizeGpuUpload(batch);
