@@ -46,6 +46,14 @@ namespace WorldBuilder.Editors.Landscape {
         // Track which landblocks are dungeon-only (vs building interiors)
         private readonly HashSet<ushort> _dungeonOnlyLandblocks = new();
 
+        // Fast lookup from full cell ID to LoadedEnvCell (for portal traversal neighbor lookups)
+        private readonly Dictionary<uint, LoadedEnvCell> _cellLookup = new();
+
+        // Portal visibility traversal state
+        private LoadedEnvCell? _lastCameraCell;
+        private int _cellSwitchGraceFrames;
+        private int _diagThrottle;
+
         /// <summary>
         /// When set, only render dungeon cells from this landblock. Null = show all.
         /// </summary>
@@ -162,6 +170,7 @@ namespace WorldBuilder.Editors.Landscape {
                     if (envCell.StaticObjects != null && envCell.StaticObjects.Count > 0) {
                         var stabZOffset = new Vector3(0, 0, dungeonZBump);
                         var targetList = isDungeonOnly ? batch.DungeonStaticObjects : batch.BuildingStaticObjects;
+                        var parentCellList = isDungeonOnly ? batch.DungeonStaticParentCells : batch.BuildingStaticParentCells;
                         foreach (var stab in envCell.StaticObjects) {
                             targetList.Add(new StaticObject {
                                 Id = stab.Id,
@@ -170,6 +179,7 @@ namespace WorldBuilder.Editors.Landscape {
                                 Orientation = stab.Frame.Orientation,
                                 Scale = Vector3.One
                             });
+                            parentCellList.Add(envCell.Id);
                         }
                     }
                 }
@@ -230,6 +240,51 @@ namespace WorldBuilder.Editors.Landscape {
             var meshData = PrepareCellStructMesh(cellStruct, surfaceIds);
             if (meshData == null) return null;
 
+            // Extract portal connectivity and clip planes from CellPortals
+            var portals = new List<CellPortalInfo>();
+            var clipPlanes = new List<PortalClipPlane>();
+
+            if (envCell.CellPortals != null) {
+                foreach (var cp in envCell.CellPortals) {
+                    int portalSide = ((int)cp.Flags & 2) == 0 ? 1 : 0;
+
+                    portals.Add(new CellPortalInfo {
+                        OtherCellId = cp.OtherCellId,
+                        PolygonId = (ushort)cp.PolygonId,
+                        PortalSide = portalSide
+                    });
+
+                    // Compute portal plane from the referenced polygon's vertices
+                    if (cellStruct.Polygons.TryGetValue((ushort)cp.PolygonId, out var portalPoly) &&
+                        portalPoly.VertexIds.Count >= 3) {
+                        var v0Pos = GetVertexPosition(cellStruct, portalPoly.VertexIds[0]);
+                        var v1Pos = GetVertexPosition(cellStruct, portalPoly.VertexIds[1]);
+                        var v2Pos = GetVertexPosition(cellStruct, portalPoly.VertexIds[2]);
+
+                        if (v0Pos.HasValue && v1Pos.HasValue && v2Pos.HasValue) {
+                            var edge1 = v1Pos.Value - v0Pos.Value;
+                            var edge2 = v2Pos.Value - v0Pos.Value;
+                            var normal = Vector3.Normalize(Vector3.Cross(edge1, edge2));
+                            float d = -Vector3.Dot(normal, v0Pos.Value);
+
+                            clipPlanes.Add(new PortalClipPlane {
+                                Normal = normal,
+                                D = d,
+                                InsideSide = portalSide
+                            });
+                        }
+                    }
+                }
+            }
+
+            // Compute local-space AABB from CellStruct vertices for point-in-cell testing
+            var boundsMin = new Vector3(float.MaxValue);
+            var boundsMax = new Vector3(float.MinValue);
+            foreach (var vtx in cellStruct.VertexArray.Vertices.Values) {
+                boundsMin = Vector3.Min(boundsMin, vtx.Origin);
+                boundsMax = Vector3.Max(boundsMax, vtx.Origin);
+            }
+
             return new PreparedEnvCell {
                 GpuKey = gpuKey,
                 WorldTransform = worldTransform,
@@ -238,8 +293,18 @@ namespace WorldBuilder.Editors.Landscape {
                 CellId = envCell.Id,
                 EnvironmentId = envFileId,
                 SurfaceCount = surfaceIds.Count,
-                LoadedLandblockKey = lbKey
+                LoadedLandblockKey = lbKey,
+                Portals = portals,
+                ClipPlanes = clipPlanes,
+                LocalBoundsMin = boundsMin,
+                LocalBoundsMax = boundsMax
             };
+        }
+
+        private static Vector3? GetVertexPosition(CellStruct cellStruct, int vertexId) {
+            if (cellStruct.VertexArray.Vertices.TryGetValue((ushort)vertexId, out var vertex))
+                return vertex.Origin;
+            return null;
         }
 
         private PreparedCellStructMesh? PrepareCellStructMesh(CellStruct cellStruct, List<uint> surfaceIds) {
@@ -501,15 +566,24 @@ namespace WorldBuilder.Editors.Landscape {
                     _gpuCache[prepared.GpuKey] = renderData;
                 }
 
-                cells.Add(new LoadedEnvCell {
+                Matrix4x4.Invert(prepared.WorldTransform, out var inverseTransform);
+
+                var loadedCell = new LoadedEnvCell {
                     GpuKey = prepared.GpuKey,
                     WorldTransform = prepared.WorldTransform,
                     WorldPosition = prepared.WorldPosition,
                     CellId = prepared.CellId,
                     EnvironmentId = prepared.EnvironmentId,
                     SurfaceCount = prepared.SurfaceCount,
-                    LoadedLandblockKey = prepared.LoadedLandblockKey
-                });
+                    LoadedLandblockKey = prepared.LoadedLandblockKey,
+                    Portals = prepared.Portals,
+                    ClipPlanes = prepared.ClipPlanes,
+                    InverseWorldTransform = inverseTransform,
+                    LocalBoundsMin = prepared.LocalBoundsMin,
+                    LocalBoundsMax = prepared.LocalBoundsMax
+                };
+                cells.Add(loadedCell);
+                _cellLookup[prepared.CellId] = loadedCell;
             }
 
             if (cells.Count > 0) {
@@ -519,6 +593,17 @@ namespace WorldBuilder.Editors.Landscape {
                 else
                     _dungeonOnlyLandblocks.Remove(batch.LandblockKey);
                 Console.WriteLine($"[EnvCellMgr] GPU upload LB 0x{batch.LandblockKey:X4}: {cells.Count} cells, {_gpuCache.Count} unique GPU entries total");
+
+                if (!batch.IsDungeonOnly && cells.Count > 0) {
+                    var first = cells[0];
+                    var worldMin = Vector3.Transform(first.LocalBoundsMin, first.WorldTransform);
+                    var worldMax = Vector3.Transform(first.LocalBoundsMax, first.WorldTransform);
+                    Console.WriteLine($"[EnvCellMgr] BUILDING cells in LB 0x{batch.LandblockKey:X4}: " +
+                        $"first cell 0x{first.CellId:X8} worldPos=({first.WorldPosition.X:F1},{first.WorldPosition.Y:F1},{first.WorldPosition.Z:F1}) " +
+                        $"localBounds=({first.LocalBoundsMin.X:F1},{first.LocalBoundsMin.Y:F1},{first.LocalBoundsMin.Z:F1})->({first.LocalBoundsMax.X:F1},{first.LocalBoundsMax.Y:F1},{first.LocalBoundsMax.Z:F1}) " +
+                        $"worldBoundsApprox=({worldMin.X:F1},{worldMin.Y:F1},{worldMin.Z:F1})->({worldMax.X:F1},{worldMax.Y:F1},{worldMax.Z:F1}) " +
+                        $"portals={first.Portals.Count}");
+                }
             }
         }
 
@@ -612,12 +697,13 @@ namespace WorldBuilder.Editors.Landscape {
             var gl = _renderer.GraphicsDevice.GL;
             var frustum = new Frustum(viewProjection);
 
+            // Run portal visibility traversal
+            var visibility = GetVisibleCells(camera.Position, frustum);
+            LastVisibilityResult = visibility;
+
             gl.Enable(EnableCap.DepthTest);
             gl.Enable(EnableCap.Blend);
             gl.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
-            // Disable face culling for EnvCell geometry — AC's CellStruct polygon winding
-            // doesn't match OpenGL's default CCW front-face convention, so walls/ceilings
-            // get culled if we enable it. ACViewer also uses CullMode.None for CellStructs.
             gl.Disable(EnableCap.CullFace);
 
             _shader.Bind();
@@ -627,32 +713,43 @@ namespace WorldBuilder.Editors.Landscape {
             _shader.SetUniform("uAmbientIntensity", ambientIntensity);
             _shader.SetUniform("uSpecularPower", specularPower);
 
-            // Group visible cells by GpuKey, separated into building vs dungeon batches.
-            // Building interiors get polygon offset to win over terrain/exterior floors.
-            // Dungeon cells already have a -50 Z bump and don't need offset.
-            const float cellBoundsRadius = 50f;
             foreach (var list in _cellGroupBuffer.Values) list.Clear();
             foreach (var list in _buildingCellGroupBuffer.Values) list.Clear();
+
+            // Determine which landblock the camera is inside (if any) for scoped portal filtering
+            ushort? cameraLbKey = visibility?.CameraCell?.LoadedLandblockKey;
+            bool cameraInDungeon = cameraLbKey.HasValue && _dungeonOnlyLandblocks.Contains(cameraLbKey.Value);
 
             foreach (var kvp in _loadedCells) {
                 bool isDungeon = _dungeonOnlyLandblocks.Contains(kvp.Key);
 
                 if (isDungeon) {
-                    // Dungeon cells: require ShowDungeonCells + respect focus filter
                     if (!ShowDungeonCells) continue;
                     if (FocusedDungeonLB.HasValue && kvp.Key != FocusedDungeonLB.Value) continue;
                 } else {
-                    // Building interior cells: require ShowDungeonCells
+                    // Building interiors: only render when camera is inside a building cell
+                    // in this landblock. When camera is outside all cells, or inside a dungeon,
+                    // the exterior GfxObj model handles it.
+                    bool cameraInThisBuilding = visibility != null && !cameraInDungeon && kvp.Key == cameraLbKey;
+                    if (!cameraInThisBuilding) continue;
                     if (!ShowDungeonCells) continue;
                 }
+
+                // Portal filtering only applies to the landblock the camera is in.
+                // Other landblocks (dungeon or building) use normal frustum culling.
+                bool usePortalFilter = visibility != null && kvp.Key == cameraLbKey;
 
                 var targetBuffer = isDungeon ? _cellGroupBuffer : _buildingCellGroupBuffer;
 
                 foreach (var cell in kvp.Value) {
-                    var cellBounds = new Chorizite.Core.Lib.BoundingBox(
-                        cell.WorldPosition - new Vector3(cellBoundsRadius),
-                        cell.WorldPosition + new Vector3(cellBoundsRadius));
-                    if (!frustum.IntersectsBoundingBox(cellBounds)) continue;
+                    if (usePortalFilter) {
+                        if (!visibility!.VisibleCellIds.Contains(cell.CellId)) continue;
+                    } else {
+                        var cellBounds = new BoundingBox(
+                            cell.WorldPosition - new Vector3(CellBoundsRadius),
+                            cell.WorldPosition + new Vector3(CellBoundsRadius));
+                        if (!frustum.IntersectsBoundingBox(cellBounds)) continue;
+                    }
 
                     if (!targetBuffer.TryGetValue(cell.GpuKey, out var list)) {
                         list = new List<Matrix4x4>();
@@ -662,10 +759,7 @@ namespace WorldBuilder.Editors.Landscape {
                 }
             }
 
-            // Draw building interiors pushed BACK so exterior GfxObj always wins
-            // at overlapping walls/ceilings. Through door/window openings, interior
-            // renders fine since there's no exterior geometry competing.
-            // Terrain uses PolygonOffset(2,2) so interior floors still win over terrain.
+            // Draw building interiors with polygon offset so exterior GfxObj wins at overlaps
             gl.Enable(EnableCap.PolygonOffsetFill);
             gl.PolygonOffset(1f, 1f);
             foreach (var (gpuKey, transforms) in _buildingCellGroupBuffer) {
@@ -785,6 +879,13 @@ namespace WorldBuilder.Editors.Landscape {
                 keysToRemove.Add(cell.GpuKey);
             }
 
+            // Remove cells from the fast lookup
+            foreach (var cell in cells) {
+                _cellLookup.Remove(cell.CellId);
+                if (_lastCameraCell?.CellId == cell.CellId)
+                    _lastCameraCell = null;
+            }
+
             _loadedCells.Remove(lbKey);
             _dungeonOnlyLandblocks.Remove(lbKey);
 
@@ -818,9 +919,177 @@ namespace WorldBuilder.Editors.Landscape {
         public bool HasLoadedCells(ushort lbKey) => _loadedCells.ContainsKey(lbKey);
 
         /// <summary>
+        /// Returns true if the given landblock is a dungeon-only landblock (vs building interiors).
+        /// </summary>
+        public bool IsDungeonLandblock(ushort lbKey) => _dungeonOnlyLandblocks.Contains(lbKey);
+
+        /// <summary>
         /// Returns all landblock keys that currently have loaded dungeon cells.
         /// </summary>
         public IEnumerable<ushort> GetLoadedLandblockKeys() => _loadedCells.Keys.ToList();
+
+        #endregion
+
+        #region Portal Visibility
+
+        private const float PointInCellEpsilon = 0.01f;
+        private const int CellSwitchGraceFrameCount = 3;
+
+        /// <summary>
+        /// Tests whether a world-space point is inside a loaded cell using the cell's
+        /// local-space AABB computed from CellStruct vertices. The point is transformed
+        /// into cell-local space and checked against the vertex bounding box.
+        /// </summary>
+        public static bool PointInCell(Vector3 worldPoint, LoadedEnvCell cell) {
+            if (cell.LocalBoundsMin.X >= cell.LocalBoundsMax.X) return false;
+
+            var localPoint = Vector3.Transform(worldPoint, cell.InverseWorldTransform);
+
+            return localPoint.X >= cell.LocalBoundsMin.X - PointInCellEpsilon &&
+                   localPoint.X <= cell.LocalBoundsMax.X + PointInCellEpsilon &&
+                   localPoint.Y >= cell.LocalBoundsMin.Y - PointInCellEpsilon &&
+                   localPoint.Y <= cell.LocalBoundsMax.Y + PointInCellEpsilon &&
+                   localPoint.Z >= cell.LocalBoundsMin.Z - PointInCellEpsilon &&
+                   localPoint.Z <= cell.LocalBoundsMax.Z + PointInCellEpsilon;
+        }
+
+        /// <summary>
+        /// Finds the cell the camera is currently inside, with hysteresis to avoid flicker.
+        /// Returns null if the camera is not inside any loaded cell.
+        /// </summary>
+        public LoadedEnvCell? FindCameraCell(Vector3 cameraPos) {
+            // Fast path: check cached cell first
+            if (_lastCameraCell != null && PointInCell(cameraPos, _lastCameraCell))
+                return _lastCameraCell;
+
+            // Check neighbors of the last cell (one-hop through portals)
+            if (_lastCameraCell != null) {
+                uint lbMask = _lastCameraCell.CellId & 0xFFFF0000;
+                foreach (var portal in _lastCameraCell.Portals) {
+                    if (portal.OtherCellId == 0xFFFF) continue;
+                    uint neighborId = lbMask | portal.OtherCellId;
+                    if (_cellLookup.TryGetValue(neighborId, out var neighbor) && PointInCell(cameraPos, neighbor)) {
+                        _lastCameraCell = neighbor;
+                        _cellSwitchGraceFrames = CellSwitchGraceFrameCount;
+                        return neighbor;
+                    }
+                }
+            }
+
+            // Brute force: check all loaded cells
+            foreach (var kvp in _loadedCells) {
+                bool isDungeon = _dungeonOnlyLandblocks.Contains(kvp.Key);
+                if (isDungeon && FocusedDungeonLB.HasValue && kvp.Key != FocusedDungeonLB.Value) continue;
+
+                foreach (var cell in kvp.Value) {
+                    if (PointInCell(cameraPos, cell)) {
+                        _lastCameraCell = cell;
+                        _cellSwitchGraceFrames = CellSwitchGraceFrameCount;
+                        return cell;
+                    }
+                }
+            }
+
+            // Grace period: keep previous cell for a few frames to prevent pop-in
+            if (_lastCameraCell != null && _cellSwitchGraceFrames > 0) {
+                _cellSwitchGraceFrames--;
+                return _lastCameraCell;
+            }
+
+            // Diagnostic: log the nearest building cell when camera is close but not inside
+            if (++_diagThrottle % 120 == 0) {
+                LoadedEnvCell? nearest = null;
+                float nearestDist = float.MaxValue;
+                foreach (var kvp in _loadedCells) {
+                    if (_dungeonOnlyLandblocks.Contains(kvp.Key)) continue;
+                    foreach (var cell in kvp.Value) {
+                        float dist = Vector3.Distance(cameraPos, cell.WorldPosition);
+                        if (dist < nearestDist) {
+                            nearestDist = dist;
+                            nearest = cell;
+                        }
+                    }
+                }
+                if (nearest != null && nearestDist < 50f) {
+                    var localCam = Vector3.Transform(cameraPos, nearest.InverseWorldTransform);
+                    Console.WriteLine($"[EnvCellMgr] DIAG: cam=({cameraPos.X:F1},{cameraPos.Y:F1},{cameraPos.Z:F1}) " +
+                        $"nearestBuildingCell=0x{nearest.CellId:X8} dist={nearestDist:F1} " +
+                        $"cellWorldPos=({nearest.WorldPosition.X:F1},{nearest.WorldPosition.Y:F1},{nearest.WorldPosition.Z:F1}) " +
+                        $"camLocal=({localCam.X:F1},{localCam.Y:F1},{localCam.Z:F1}) " +
+                        $"localAABB=({nearest.LocalBoundsMin.X:F1},{nearest.LocalBoundsMin.Y:F1},{nearest.LocalBoundsMin.Z:F1})->({nearest.LocalBoundsMax.X:F1},{nearest.LocalBoundsMax.Y:F1},{nearest.LocalBoundsMax.Z:F1})");
+                }
+            }
+
+            _lastCameraCell = null;
+            return null;
+        }
+
+        /// <summary>
+        /// Performs portal-based visibility traversal from the camera position.
+        /// Returns a VisibilityResult if the camera is inside a cell, or null if the
+        /// camera is outside all cells (caller should fall back to frustum culling).
+        /// </summary>
+        public VisibilityResult? GetVisibleCells(Vector3 cameraPos, Frustum frustum) {
+            var cameraCell = FindCameraCell(cameraPos);
+            if (cameraCell == null) return null;
+
+            var result = new VisibilityResult { CameraCell = cameraCell };
+            var visited = new HashSet<uint>();
+            var queue = new Queue<LoadedEnvCell>();
+
+            visited.Add(cameraCell.CellId);
+            result.VisibleCellIds.Add(cameraCell.CellId);
+            queue.Enqueue(cameraCell);
+
+            uint lbMask = cameraCell.CellId & 0xFFFF0000;
+
+            while (queue.Count > 0) {
+                var cell = queue.Dequeue();
+
+                for (int i = 0; i < cell.Portals.Count; i++) {
+                    var portal = cell.Portals[i];
+
+                    if (portal.OtherCellId == 0xFFFF) {
+                        result.HasExitPortalVisible = true;
+                        continue;
+                    }
+
+                    uint neighborId = lbMask | portal.OtherCellId;
+                    if (visited.Contains(neighborId)) continue;
+
+                    if (!_cellLookup.TryGetValue(neighborId, out var neighbor)) continue;
+
+                    // Portal-side test: check if camera is on the correct side to see through
+                    if (i < cell.ClipPlanes.Count) {
+                        var plane = cell.ClipPlanes[i];
+                        var localCam = Vector3.Transform(cameraPos, cell.InverseWorldTransform);
+                        float dot = Vector3.Dot(plane.Normal, localCam) + plane.D;
+
+                        // Camera must be on the InsideSide to look through this portal
+                        if (plane.InsideSide == 0 && dot < -PointInCellEpsilon) continue;
+                        if (plane.InsideSide == 1 && dot > PointInCellEpsilon) continue;
+                    }
+
+                    // Frustum test: check if the neighbor cell's bounding box is visible
+                    var neighborBounds = new BoundingBox(
+                        neighbor.WorldPosition - new Vector3(CellBoundsRadius),
+                        neighbor.WorldPosition + new Vector3(CellBoundsRadius));
+                    if (!frustum.IntersectsBoundingBox(neighborBounds)) continue;
+
+                    visited.Add(neighborId);
+                    result.VisibleCellIds.Add(neighborId);
+                    queue.Enqueue(neighbor);
+                }
+            }
+
+            return result;
+        }
+
+        /// <summary>
+        /// Exposes the last visibility result for external consumers (e.g. GameScene static filtering).
+        /// Updated each frame by the Render method.
+        /// </summary>
+        public VisibilityResult? LastVisibilityResult { get; private set; }
 
         #endregion
 
@@ -925,6 +1194,8 @@ namespace WorldBuilder.Editors.Landscape {
             _gpuCache.Clear();
             _loadedCells.Clear();
             _dungeonOnlyLandblocks.Clear();
+            _cellLookup.Clear();
+            _lastCameraCell = null;
             _environmentCache.Clear();
             if (_instanceVBO != 0) gl.DeleteBuffer(_instanceVBO);
         }
@@ -981,6 +1252,55 @@ namespace WorldBuilder.Editors.Landscape {
         public int SurfaceCount { get; set; }
         /// <summary>Landblock key this cell was loaded under (from GameScene, always correct).</summary>
         public ushort LoadedLandblockKey { get; set; }
+
+        /// <summary>Portal connections to neighboring cells (extracted from EnvCell.CellPortals).</summary>
+        public List<CellPortalInfo> Portals { get; set; } = new();
+        /// <summary>Clip planes derived from portal polygons, used for portal-side visibility checks.</summary>
+        public List<PortalClipPlane> ClipPlanes { get; set; } = new();
+        /// <summary>Inverse of WorldTransform, cached for world-to-local transforms.</summary>
+        public Matrix4x4 InverseWorldTransform { get; set; }
+        /// <summary>Local-space AABB min, computed from CellStruct vertices for point-in-cell.</summary>
+        public Vector3 LocalBoundsMin { get; set; }
+        /// <summary>Local-space AABB max, computed from CellStruct vertices for point-in-cell.</summary>
+        public Vector3 LocalBoundsMax { get; set; }
+    }
+
+    /// <summary>
+    /// Portal connection info stored per LoadedEnvCell, extracted from dat CellPortal data.
+    /// </summary>
+    public struct CellPortalInfo {
+        /// <summary>Connected cell ID (lower 16 bits within landblock). 0xFFFF = exit to outdoors.</summary>
+        public ushort OtherCellId;
+        /// <summary>Polygon ID in the CellStruct that forms the portal opening.</summary>
+        public ushort PolygonId;
+        /// <summary>Which side of the portal plane is "outward" from this cell (0 or 1).</summary>
+        public int PortalSide;
+    }
+
+    /// <summary>
+    /// A clip plane derived from a portal polygon, used for point-in-cell containment testing.
+    /// The plane equation is in cell-local space: Normal.X*x + Normal.Y*y + Normal.Z*z + D = 0.
+    /// </summary>
+    public struct PortalClipPlane {
+        public Vector3 Normal;
+        public float D;
+        /// <summary>
+        /// The side of the plane that is "inside" the cell.
+        /// 0 = positive half-space (dot >= 0), 1 = negative half-space (dot &lt;= 0).
+        /// </summary>
+        public int InsideSide;
+    }
+
+    /// <summary>
+    /// Result of portal-based visibility traversal.
+    /// </summary>
+    public class VisibilityResult {
+        /// <summary>Set of full cell IDs (e.g. 0x01D90105) that should be rendered.</summary>
+        public HashSet<uint> VisibleCellIds { get; set; } = new();
+        /// <summary>True if any exit portal (OtherCellId == 0xFFFF) was visible — outdoor terrain should render.</summary>
+        public bool HasExitPortalVisible { get; set; }
+        /// <summary>The cell the camera is currently inside.</summary>
+        public LoadedEnvCell? CameraCell { get; set; }
     }
 
     /// <summary>
@@ -1000,6 +1320,14 @@ namespace WorldBuilder.Editors.Landscape {
         /// Always shown alongside regular outdoor statics.
         /// </summary>
         public List<StaticObject> BuildingStaticObjects { get; set; } = new();
+        /// <summary>
+        /// Parallel to DungeonStaticObjects: the full cell ID each static belongs to.
+        /// </summary>
+        public List<uint> DungeonStaticParentCells { get; set; } = new();
+        /// <summary>
+        /// Parallel to BuildingStaticObjects: the full cell ID each static belongs to.
+        /// </summary>
+        public List<uint> BuildingStaticParentCells { get; set; } = new();
     }
 
     /// <summary>
@@ -1015,6 +1343,14 @@ namespace WorldBuilder.Editors.Landscape {
         public uint EnvironmentId { get; set; }
         public int SurfaceCount { get; set; }
         public ushort LoadedLandblockKey { get; set; }
+        /// <summary>Portal connections extracted during CPU preparation.</summary>
+        public List<CellPortalInfo> Portals { get; set; } = new();
+        /// <summary>Clip planes extracted during CPU preparation.</summary>
+        public List<PortalClipPlane> ClipPlanes { get; set; } = new();
+        /// <summary>Local-space AABB min, computed from CellStruct vertices.</summary>
+        public Vector3 LocalBoundsMin { get; set; }
+        /// <summary>Local-space AABB max, computed from CellStruct vertices.</summary>
+        public Vector3 LocalBoundsMax { get; set; }
     }
 
     /// <summary>

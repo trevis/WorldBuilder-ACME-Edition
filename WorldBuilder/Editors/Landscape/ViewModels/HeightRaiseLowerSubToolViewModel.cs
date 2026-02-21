@@ -1,7 +1,6 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Numerics;
 using WorldBuilder.Editors.Landscape.Commands;
 using WorldBuilder.Lib;
@@ -25,10 +24,12 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
         private TerrainRaycast.TerrainRaycastHit _lastHitPosition;
         private readonly CommandHistory _commandHistory;
         private readonly Dictionary<ushort, List<(int VertexIndex, byte OriginalValue, byte NewValue)>> _pendingChanges;
+        private readonly Dictionary<ushort, HashSet<int>> _processedVertices;
 
         public HeightRaiseLowerSubToolViewModel(TerrainEditingContext context, CommandHistory commandHistory) : base(context) {
             _commandHistory = commandHistory ?? throw new ArgumentNullException(nameof(commandHistory));
             _pendingChanges = new Dictionary<ushort, List<(int, byte, byte)>>();
+            _processedVertices = new Dictionary<ushort, HashSet<int>>();
         }
 
         partial void OnBrushRadiusChanged(float value) {
@@ -47,6 +48,7 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
             Context.BrushRadius = BrushRadius;
             _lastHitPosition = _currentHitPosition = new TerrainRaycast.TerrainRaycastHit();
             _pendingChanges.Clear();
+            _processedVertices.Clear();
         }
 
         public override void OnDeactivated() {
@@ -92,6 +94,7 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
             _isPainting = true;
             _isLowering = mouseState.ShiftPressed;
             _pendingChanges.Clear();
+            _processedVertices.Clear();
             var hitResult = mouseState.TerrainHit.Value;
             ApplyPreviewChanges(hitResult.NearestVertice);
 
@@ -112,12 +115,16 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
                     landblockDataCache[lbId] = data;
                 }
 
+                if (!_processedVertices.TryGetValue(lbId, out var processed)) {
+                    processed = new HashSet<int>();
+                    _processedVertices[lbId] = processed;
+                }
+                if (!processed.Add(vIndex)) continue;
+
                 if (!_pendingChanges.TryGetValue(lbId, out var list)) {
                     list = new List<(int, byte, byte)>();
                     _pendingChanges[lbId] = list;
                 }
-
-                if (list.Any(c => c.VertexIndex == vIndex)) continue;
 
                 byte original = data[vIndex].Height;
                 byte newHeight = (byte)Math.Clamp(original + delta, 0, 255);
@@ -148,6 +155,7 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
             _commandHistory.ExecuteCommand(command);
 
             _pendingChanges.Clear();
+            _processedVertices.Clear();
         }
     }
 }

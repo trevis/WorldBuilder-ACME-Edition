@@ -57,6 +57,8 @@ namespace WorldBuilder.Editors.Landscape {
         private readonly Dictionary<ushort, List<StaticObject>> _sceneryObjects = new();
         private readonly Dictionary<ushort, List<StaticObject>> _dungeonStaticObjects = new();
         private readonly Dictionary<ushort, List<StaticObject>> _buildingStaticObjects = new();
+        private readonly Dictionary<ushort, List<uint>> _dungeonStaticParentCells = new();
+        private readonly Dictionary<ushort, List<uint>> _buildingStaticParentCells = new();
         internal readonly TerrainSystem _terrainSystem;
 
         private const float WarmUpTimeBudgetMs = 12f;
@@ -67,6 +69,8 @@ namespace WorldBuilder.Editors.Landscape {
         private Vector3 _lastDocUpdatePosition = new(float.MinValue);
         private float _lastOrthoSize = -1f;
         private List<StaticObject>? _cachedStaticObjects;
+        private List<StaticObject>? _cachedNonDungeonStatics;
+        private List<StaticObject>? _cachedDungeonStatics;
         private bool _staticObjectsDirty = true;
         private bool _cachedShowStaticObjects = true;
         private bool _cachedShowScenery = true;
@@ -327,6 +331,7 @@ namespace WorldBuilder.Editors.Landscape {
                     // Add dungeon static objects (only shown when dungeon is focused)
                     if (result.EnvCellBatch.DungeonStaticObjects.Count > 0) {
                         _dungeonStaticObjects[result.LbKey] = result.EnvCellBatch.DungeonStaticObjects;
+                        _dungeonStaticParentCells[result.LbKey] = result.EnvCellBatch.DungeonStaticParentCells;
                         foreach (var context in _contexts.Values) {
                             foreach (var obj in result.EnvCellBatch.DungeonStaticObjects) {
                                 if (context.ObjectManager.TryGetCachedRenderData(obj.Id) == null && !context.ObjectManager.IsKnownFailure(obj.Id)) {
@@ -339,6 +344,7 @@ namespace WorldBuilder.Editors.Landscape {
                     // Add building interior static objects (always shown with regular statics)
                     if (result.EnvCellBatch.BuildingStaticObjects.Count > 0) {
                         _buildingStaticObjects[result.LbKey] = result.EnvCellBatch.BuildingStaticObjects;
+                        _buildingStaticParentCells[result.LbKey] = result.EnvCellBatch.BuildingStaticParentCells;
                         foreach (var context in _contexts.Values) {
                             foreach (var obj in result.EnvCellBatch.BuildingStaticObjects) {
                                 if (context.ObjectManager.TryGetCachedRenderData(obj.Id) == null && !context.ObjectManager.IsKnownFailure(obj.Id)) {
@@ -512,6 +518,7 @@ namespace WorldBuilder.Editors.Landscape {
                             }
                         }
                         _dungeonStaticObjects.Remove(lbKey);
+                        _dungeonStaticParentCells.Remove(lbKey);
                     }
                     if (_buildingStaticObjects.TryGetValue(lbKey, out var buildingObjs)) {
                         foreach (var obj in buildingObjs) {
@@ -520,6 +527,7 @@ namespace WorldBuilder.Editors.Landscape {
                             }
                         }
                         _buildingStaticObjects.Remove(lbKey);
+                        _buildingStaticParentCells.Remove(lbKey);
                     }
 
                     _ = _documentManager.CloseDocumentAsync(docId);
@@ -568,6 +576,7 @@ namespace WorldBuilder.Editors.Landscape {
                         }
                     }
                     _dungeonStaticObjects.Remove(lbKey);
+                    _dungeonStaticParentCells.Remove(lbKey);
                 }
                 if (_buildingStaticObjects.TryGetValue(lbKey, out var buildingObjs2)) {
                     foreach (var obj in buildingObjs2) {
@@ -576,6 +585,7 @@ namespace WorldBuilder.Editors.Landscape {
                         }
                     }
                     _buildingStaticObjects.Remove(lbKey);
+                    _buildingStaticParentCells.Remove(lbKey);
                 }
                 _staticObjectsDirty = true;
             }
@@ -1090,11 +1100,15 @@ namespace WorldBuilder.Editors.Landscape {
 
         public IEnumerable<StaticObject> GetAllStaticObjects() {
             var focusedLB = _contexts.Values.FirstOrDefault()?.EnvCellManager.FocusedDungeonLB;
+            var visibility = _envCellManager?.LastVisibilityResult;
+
+            // Portal visibility changes every frame, so always rebuild when active
             if (_staticObjectsDirty || _cachedStaticObjects == null
                 || _cachedShowStaticObjects != ShowStaticObjects
                 || _cachedShowScenery != ShowScenery
                 || _cachedShowDungeons != ShowDungeons
-                || _cachedFocusedDungeonLB != focusedLB) {
+                || _cachedFocusedDungeonLB != focusedLB
+                || visibility != null) {
                 var statics = new List<StaticObject>();
                 if (ShowStaticObjects) {
                     foreach (var doc in _documentManager.ActiveDocs.Values.OfType<LandblockDocument>()) {
@@ -1104,17 +1118,41 @@ namespace WorldBuilder.Editors.Landscape {
                 if (ShowScenery) {
                     statics.AddRange(_sceneryObjects.Values.SelectMany(x => x));
                 }
-                // Building interior statics show when Dungeons toggle is on
-                // (same toggle that reveals interior EnvCell geometry).
+
                 if (ShowDungeons) {
-                    statics.AddRange(_buildingStaticObjects.Values.SelectMany(x => x));
-                }
-                // Dungeon statics only show when a specific dungeon is focused,
-                // otherwise they render as floating objects in the overworld view.
-                if (ShowDungeons && focusedLB.HasValue) {
-                    foreach (var kvp in _dungeonStaticObjects) {
-                        if (kvp.Key != focusedLB.Value) continue;
-                        statics.AddRange(kvp.Value);
+                    ushort? cameraLbKey = visibility?.CameraCell?.LoadedLandblockKey;
+                    bool cameraInDungeon = _envCellManager != null && cameraLbKey.HasValue &&
+                        _contexts.Values.Any(c => c.EnvCellManager.IsDungeonLandblock(cameraLbKey.Value));
+
+                    // Building interior statics: only shown when camera is inside a building cell
+                    // (not a dungeon cell). When outside or in a dungeon, the exterior model handles it.
+                    if (visibility != null && !cameraInDungeon) {
+                        foreach (var kvp in _buildingStaticObjects) {
+                            bool filterByPortal = kvp.Key == cameraLbKey;
+                            var parentCells = filterByPortal ? _buildingStaticParentCells.GetValueOrDefault(kvp.Key) : null;
+                            for (int i = 0; i < kvp.Value.Count; i++) {
+                                if (filterByPortal && parentCells != null && i < parentCells.Count) {
+                                    if (!visibility.VisibleCellIds.Contains(parentCells[i])) continue;
+                                }
+                                statics.Add(kvp.Value[i]);
+                            }
+                        }
+                    }
+
+                    // Dungeon statics: always shown when focused, filtered by
+                    // portal visibility only in the camera's own landblock
+                    if (focusedLB.HasValue) {
+                        foreach (var kvp in _dungeonStaticObjects) {
+                            if (kvp.Key != focusedLB.Value) continue;
+                            bool filterByPortal = visibility != null && kvp.Key == cameraLbKey;
+                            var parentCells = filterByPortal ? _dungeonStaticParentCells.GetValueOrDefault(kvp.Key) : null;
+                            for (int i = 0; i < kvp.Value.Count; i++) {
+                                if (filterByPortal && parentCells != null && i < parentCells.Count) {
+                                    if (!visibility!.VisibleCellIds.Contains(parentCells[i])) continue;
+                                }
+                                statics.Add(kvp.Value[i]);
+                            }
+                        }
                     }
                 }
                 _cachedStaticObjects = statics;
