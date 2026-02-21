@@ -336,14 +336,14 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
                 }
             }
 
-            // Tool input
-            // SelectedTool?.Update(deltaTime); // Tools update globally?
-            // Mouse handling for tools should be via Pointer events actions on ViewportViewModel
-            // But for now, Tools use `InputState.MouseState`?
-            // `SelectedTool.HandleMouseMove(inputState.MouseState)`?
-            // The View called `_currentActiveTool?.HandleMouseMove`.
-            // I should call it here or in response to Pointer events.
-            // Since this runs every frame, we can use InputState.
+            // Ctrl+key shortcuts — handled here because the GL viewport swallows
+            // key events before Avalonia's menu InputGesture bindings can see them.
+            if (ctrlHeld) {
+                if (inputState.IsKeyDown(Avalonia.Input.Key.G) && !inputState.WasKeyDownLastFrame(Avalonia.Input.Key.G)) {
+                    _ = GotoLandblockCommand.ExecuteAsync(null);
+                }
+            }
+
             SelectedTool?.HandleMouseMove(inputState.MouseState);
             SelectedTool?.Update(deltaTime);
 
