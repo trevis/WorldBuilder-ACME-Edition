@@ -238,11 +238,20 @@ namespace WorldBuilder.Editors.Landscape {
             }
         }
 
-        public void Dispose() {
+        /// <summary>
+        /// Releases all GPU chunk resources and clears the cache.
+        /// The manager remains usable -- new chunks will be created on demand.
+        /// Must be called on the GL thread.
+        /// </summary>
+        public void ClearAll() {
             foreach (var data in _renderData.Values) {
                 data.Dispose();
             }
             _renderData.Clear();
+        }
+
+        public void Dispose() {
+            ClearAll();
         }
     }
 }

@@ -725,7 +725,12 @@ namespace WorldBuilder.Editors.Landscape {
             return (min, max);
         }
 
-        public void Dispose() {
+        /// <summary>
+        /// Releases all GPU resources and clears all caches without disposing shared infrastructure (shaders, renderer).
+        /// The manager remains usable after this call -- new data will be loaded on demand.
+        /// Must be called on the GL thread.
+        /// </summary>
+        public void ClearAll() {
             var gl = _renderer.GraphicsDevice.GL;
             foreach (var data in _renderData.Values) {
                 if (data.VAO != 0) gl.DeleteVertexArray(data.VAO);
@@ -738,6 +743,12 @@ namespace WorldBuilder.Editors.Landscape {
                 }
             }
             _renderData.Clear();
+            _usageCount.Clear();
+            _failedIds.Clear();
+        }
+
+        public void Dispose() {
+            ClearAll();
         }
     }
 

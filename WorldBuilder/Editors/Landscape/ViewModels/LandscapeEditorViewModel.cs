@@ -528,6 +528,12 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
             }
         }
 
+        [RelayCommand]
+        private void ClearCache() {
+            if (TerrainSystem == null) return;
+            TerrainSystem.Scene.ClearAllCaches();
+        }
+
         private StaticObject? _copiedObject;
         private ushort _copiedObjectLandblock;
 

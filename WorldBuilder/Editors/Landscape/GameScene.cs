@@ -103,6 +103,7 @@ namespace WorldBuilder.Editors.Landscape {
         private record BackgroundLoadResult(ushort LbKey, string DocId, List<StaticObject> Scenery, HashSet<(uint Id, bool IsSetup)> UniqueObjectIds, long LoadMs, long SceneryMs, int SceneryCount, PreparedEnvCellBatch? EnvCellBatch = null);
 
         private bool _disposed = false;
+        private volatile bool _clearingCaches = false;
         private float _aspectRatio;
 
         // Rendering properties
@@ -247,6 +248,8 @@ namespace WorldBuilder.Editors.Landscape {
         }
 
         public void Update(Vector3 cameraPosition, Matrix4x4 viewProjectionMatrix) {
+            if (_clearingCaches) return;
+
             var sw = Stopwatch.StartNew();
 
             var frustum = new Frustum(viewProjectionMatrix);
@@ -1258,6 +1261,81 @@ namespace WorldBuilder.Editors.Landscape {
             _staticObjectsDirty = true;
         }
 
+        /// <summary>
+        /// Clears all disk and in-memory caches (textures, terrain, GPU resources) and forces a full reload.
+        /// Must be called on the GL thread.
+        /// </summary>
+        public void ClearAllCaches() {
+            _clearingCaches = true;
+            try {
+                Console.WriteLine("[Cache] Clearing all caches...");
+
+                _textureCache.Clear();
+                Console.WriteLine("[Cache] Texture disk cache cleared.");
+
+                var cacheDir = _documentManager.CacheDirectory;
+                if (!string.IsNullOrWhiteSpace(cacheDir)) {
+                    var terrainCachePath = System.IO.Path.Combine(cacheDir, "terrain.dat");
+                    try {
+                        if (File.Exists(terrainCachePath)) {
+                            File.Delete(terrainCachePath);
+                            Console.WriteLine("[Cache] Deleted terrain.dat cache.");
+                        }
+                    }
+                    catch (Exception ex) {
+                        Console.WriteLine($"[Cache] Error deleting terrain.dat: {ex.Message}");
+                    }
+                }
+
+                foreach (var context in _contexts.Values) {
+                    context.ObjectManager.ClearAll();
+                    context.EnvCellManager.ClearAll();
+                    context.GPUManager.ClearAll();
+
+                    context.ChunkUploadQueue.Clear();
+                    context.ModelUploadQueue.Clear();
+                    context.ModelWarmupQueue.Clear();
+                    context.ModelsPreparing.Clear();
+                    context.ChunksInFlight.Clear();
+                }
+                Console.WriteLine("[Cache] GPU resources cleared.");
+
+                _sceneryObjects.Clear();
+                _dungeonStaticObjects.Clear();
+                _buildingStaticObjects.Clear();
+                _dungeonStaticParentCells.Clear();
+                _buildingStaticParentCells.Clear();
+                _pendingLoadLandblocks.Clear();
+                _pendingSceneryRegen.Clear();
+
+                _cachedStaticObjects = null;
+                _cachedNonDungeonStatics = null;
+                _cachedDungeonStatics = null;
+                _staticObjectsDirty = true;
+
+                DataManager.ClearChunks();
+
+                while (_backgroundLoadResults.TryDequeue(out _)) { }
+
+                var landblockDocs = _documentManager.ActiveDocs.Keys
+                    .Where(k => k.StartsWith("landblock_"))
+                    .ToList();
+                foreach (var docId in landblockDocs) {
+                    _ = _documentManager.CloseDocumentAsync(docId);
+                }
+                Console.WriteLine($"[Cache] Closed {landblockDocs.Count} landblock documents.");
+
+                _lastVisibleLandblocks = null;
+                _lastDocUpdatePosition = new Vector3(float.MinValue);
+                _lastOrthoSize = -1f;
+
+                Console.WriteLine("[Cache] All caches cleared. Scene will reload from DAT files.");
+            }
+            finally {
+                _clearingCaches = false;
+            }
+        }
+
         private SceneContext GetContext(OpenGLRenderer renderer) {
             var context = _contexts.GetOrAdd(renderer, r => {
                 SurfaceManager.RegisterRenderer(r);
@@ -1288,6 +1366,8 @@ namespace WorldBuilder.Editors.Landscape {
             TerrainEditingContext editingContext,
             float width,
             float height) {
+
+            if (_clearingCaches) return;
 
             var context = GetContext(renderer);
             var gl = renderer.GraphicsDevice.GL;

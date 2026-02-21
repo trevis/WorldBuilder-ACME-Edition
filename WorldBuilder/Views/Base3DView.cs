@@ -108,7 +108,7 @@ namespace WorldBuilder.Views {
                 InputState.Modifiers = e.KeyModifiers;
                 InputState.SetKey(e.Key, true);
                 OnGlKeyDown(e);
-                e.Handled = true; // Mark as handled to prevent bubbling
+                e.Handled = true;
             }
             catch (Exception ex) {
                 Console.WriteLine($"Error in OnKeyDown: {ex}");

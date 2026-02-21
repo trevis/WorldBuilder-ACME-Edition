@@ -98,6 +98,13 @@ namespace WorldBuilder.Editors.Landscape {
         }
 
         /// <summary>
+        /// Removes all chunks from the data manager so they will be re-created on demand.
+        /// </summary>
+        public void ClearChunks() {
+            _chunks.Clear();
+        }
+
+        /// <summary>
         /// Gets or creates chunk metadata
         /// </summary>
         public TerrainChunk GetOrCreateChunk(uint chunkX, uint chunkY) {

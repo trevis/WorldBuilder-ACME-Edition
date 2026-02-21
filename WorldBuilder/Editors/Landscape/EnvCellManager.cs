@@ -1192,7 +1192,12 @@ namespace WorldBuilder.Editors.Landscape {
 
         #endregion
 
-        public void Dispose() {
+        /// <summary>
+        /// Releases all GPU resources and clears all caches without disposing shared infrastructure (instance VBO, shaders).
+        /// The manager remains usable after this call -- new data will be loaded on demand.
+        /// Must be called on the GL thread.
+        /// </summary>
+        public void ClearAll() {
             var gl = _renderer.GraphicsDevice.GL;
             foreach (var renderData in _gpuCache.Values) {
                 if (renderData.VAO != 0) gl.DeleteVertexArray(renderData.VAO);
@@ -1210,6 +1215,11 @@ namespace WorldBuilder.Editors.Landscape {
             _cellLookup.Clear();
             _lastCameraCell = null;
             _environmentCache.Clear();
+        }
+
+        public void Dispose() {
+            ClearAll();
+            var gl = _renderer.GraphicsDevice.GL;
             if (_instanceVBO != 0) gl.DeleteBuffer(_instanceVBO);
         }
     }

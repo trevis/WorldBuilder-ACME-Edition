@@ -31,6 +31,7 @@ namespace WorldBuilder.Shared.Documents {
         private record DocumentUpdate(string DocumentId, BaseDocument Document, DateTime Timestamp);
 
         private string? _cacheDirectory;
+        public string? CacheDirectory => _cacheDirectory;
 
         public DocumentManager(IDocumentStorageService documentService, ILogger<DocumentManager> logger) {
             DocumentStorageService = documentService;

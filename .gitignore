@@ -459,3 +459,6 @@ $RECYCLE.BIN/
 
 # Cursor editor backup files
 *.final
+
+# User-generated stamp data
+Stamps/
