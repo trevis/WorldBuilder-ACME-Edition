@@ -1,4 +1,4 @@
-﻿using Avalonia.Controls;
+using Avalonia.Controls;
 using Avalonia.Platform.Storage;
 using CommunityToolkit.Mvvm.ComponentModel;
 using Microsoft.Extensions.Logging;
@@ -12,7 +12,7 @@ namespace WorldBuilder.Lib.Settings {
         private readonly ILogger<WorldBuilderSettings>? _log;
 
         [JsonIgnore]
-        public string AppDataDirectory => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "WorldBuilder");
+        public string AppDataDirectory => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ACME WorldBuilder");
 
         [JsonIgnore]
         public string SettingsFilePath => Path.Combine(AppDataDirectory, "settings.json");

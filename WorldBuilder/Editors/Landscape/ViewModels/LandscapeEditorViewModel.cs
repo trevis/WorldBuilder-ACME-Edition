@@ -157,7 +157,7 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
             LayersPanel = new LayersViewModel(TerrainSystem);
             ObjectBrowser = new ObjectBrowserViewModel(
                 TerrainSystem.EditingContext, _dats,
-                TerrainSystem.Scene.ThumbnailService);
+                () => TerrainSystem.Scene.ThumbnailService);
             ObjectBrowser.PlacementRequested += OnPlacementRequested;
 
             TexturePalette = new TerrainTexturePaletteViewModel(TerrainSystem.Scene.SurfaceManager);

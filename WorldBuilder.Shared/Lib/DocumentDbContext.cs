@@ -1,4 +1,4 @@
-﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Generic;
@@ -110,7 +110,7 @@ namespace WorldBuilder.Shared.Documents {
         protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder) {
             if (!optionsBuilder.IsConfigured) {
                 // Fallback connection string for design-time operations (e.g., migrations)
-                string dbPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WorldBuilder", "worldbuilder.db");
+                string dbPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ACME WorldBuilder", "worldbuilder.db");
                 Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!); // Ensure directory exists
                 optionsBuilder.UseSqlite($"Data Source={dbPath}");
                 optionsBuilder.EnableServiceProviderCaching();

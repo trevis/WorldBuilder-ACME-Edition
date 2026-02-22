@@ -17,7 +17,7 @@ namespace WorldBuilder.Lib {
         public ThumbnailCache() {
             _cacheDir = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "WorldBuilder", "thumbnails");
+                "ACME WorldBuilder", "thumbnails");
 
             try {
                 Directory.CreateDirectory(_cacheDir);

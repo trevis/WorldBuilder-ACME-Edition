@@ -220,7 +220,7 @@ namespace WorldBuilder.Editors.Landscape {
 
             var textureCacheDir = System.IO.Path.Combine(
                 System.Environment.GetFolderPath(System.Environment.SpecialFolder.LocalApplicationData),
-                "WorldBuilder", "TextureCache");
+                "ACME WorldBuilder", "TextureCache");
             _textureCache = new TextureDiskCache(textureCacheDir);
         }
 

@@ -6,9 +6,9 @@
 
 ;-------------------------------- ; Custom Variables
 
-!define PRODUCT "WorldBuilder"
+!define PRODUCT "ACME WorldBuilder"
 !define ICON "acme-wblogo.ico"
-!define COMPANY "Thrungus"
+!define COMPANY "ACME"
 !define MUI_ICON "${ICON}"
 !define MUI_UNICON "${ICON}"
 

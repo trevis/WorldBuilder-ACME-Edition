@@ -8,11 +8,11 @@
     </PropertyGroup>
 
     <PropertyGroup>
-        <AssemblyTitle>WorldBuilder</AssemblyTitle>
-        <Description>WorldBuilder</Description>
-        <Company>Thrungus</Company>
-        <Product>WorldBuilder</Product>
-        <Copyright>2025 Thrungus</Copyright>
+        <AssemblyTitle>ACME WorldBuilder</AssemblyTitle>
+        <Description>ACME WorldBuilder</Description>
+        <Company>ACME</Company>
+        <Product>ACME WorldBuilder</Product>
+        <Copyright>2026 ACME</Copyright>
         <ApplicationManifest>app.manifest</ApplicationManifest>
         <ApplicationIcon>..\acme-wblogo.ico</ApplicationIcon>
         <UpdateAssemblyInfo>false</UpdateAssemblyInfo>

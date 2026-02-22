@@ -22,9 +22,10 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
         private readonly TerrainEditingContext _context;
         private readonly IDatReaderWriter _dats;
         private readonly ObjectTagIndex _tagIndex = new();
-        private readonly ThumbnailRenderService? _thumbnailService;
+        private readonly Func<ThumbnailRenderService?> _getThumbnailService;
         private readonly ThumbnailCache _thumbnailCache;
         private bool _thumbnailsReady; // Deferred: don't request thumbnails until after startup
+        private bool _subscribedToThumbnailReady;
         private uint[] _allSetupIds = Array.Empty<uint>();
         private uint[] _allGfxObjIds = Array.Empty<uint>();
         private HashSet<uint> _buildingIds = new();
@@ -50,16 +51,11 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
         public ObjectTagIndex TagIndex => _tagIndex;
 
         public ObjectBrowserViewModel(TerrainEditingContext context, IDatReaderWriter dats,
-            ThumbnailRenderService? thumbnailService = null, ThumbnailCache? thumbnailCache = null) {
+            Func<ThumbnailRenderService?>? getThumbnailService = null, ThumbnailCache? thumbnailCache = null) {
             _context = context;
             _dats = dats;
-            _thumbnailService = thumbnailService;
+            _getThumbnailService = getThumbnailService ?? (() => null);
             _thumbnailCache = thumbnailCache ?? new ThumbnailCache();
-
-            // Subscribe to thumbnail ready events from the render service
-            if (_thumbnailService != null) {
-                _thumbnailService.ThumbnailReady += OnThumbnailReady;
-            }
 
             // Load keyword tag index for name-based search
             _tagIndex.LoadFromEmbeddedResource();
@@ -80,12 +76,17 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
             Task.Run(LoadBuildingIds);
             Task.Run(LoadSceneryIds);
 
-            // Defer thumbnail loading until the app has fully initialized.
-            // This avoids competing with terrain/DAT loading during startup.
+            // Defer thumbnail loading until the render service is available.
+            // The service is created lazily on the first render frame, so we poll
+            // until it exists before requesting thumbnails.
             _ = Task.Run(async () => {
                 await Task.Delay(2000);
+                for (int i = 0; i < 30; i++) {
+                    if (_getThumbnailService() != null) break;
+                    await Task.Delay(500);
+                }
                 _thumbnailsReady = true;
-                Console.WriteLine($"[ObjectBrowser] Thumbnail loading ready, requesting for {FilteredItems.Count} items");
+                Console.WriteLine($"[ObjectBrowser] Thumbnail loading ready (service={(_getThumbnailService() != null ? "available" : "unavailable")}), requesting for {FilteredItems.Count} items");
                 Dispatcher.UIThread.Post(() => RequestThumbnails(FilteredItems));
             });
         }
@@ -300,6 +301,13 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
         /// If not cached, queue for rendering via the ThumbnailRenderService.
         /// </summary>
         private void RequestThumbnails(ObservableCollection<ObjectBrowserItem> items) {
+            var service = _getThumbnailService();
+
+            if (service != null && !_subscribedToThumbnailReady) {
+                service.ThumbnailReady += OnThumbnailReady;
+                _subscribedToThumbnailReady = true;
+            }
+
             int cached = 0, queued = 0, skipped = 0;
             foreach (var item in items) {
                 if (item.Thumbnail != null) { skipped++; continue; }
@@ -312,11 +320,14 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
                     continue;
                 }
 
-                // Queue for rendering
-                _thumbnailService?.RequestThumbnail(item.Id, item.IsSetup);
-                queued++;
+                // Queue for rendering (only if service is available)
+                if (service != null) {
+                    service.RequestThumbnail(item.Id, item.IsSetup);
+                    queued++;
+                }
             }
-            Console.WriteLine($"[ObjectBrowser] RequestThumbnails: {items.Count} items, {cached} from cache, {queued} queued for render, {skipped} already have thumbnails");
+            Console.WriteLine($"[ObjectBrowser] RequestThumbnails: {items.Count} items, {cached} from cache, {queued} queued for render, {skipped} already have thumbnails" +
+                (service == null ? " (WARNING: render service not yet available)" : ""));
         }
 
         private void ApplyFilter() {

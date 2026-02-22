@@ -1,4 +1,4 @@
-﻿using CommunityToolkit.Mvvm.ComponentModel;
+using CommunityToolkit.Mvvm.ComponentModel;
 using Microsoft.Extensions.Logging;
 using System;
 using System.IO;
@@ -11,7 +11,7 @@ namespace WorldBuilder.Lib.Settings {
         [SettingOrder(0)]
         private string _projectsDirectory = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.Personal),
-            "WorldBuilder",
+            "ACME WorldBuilder",
             "Projects"
         );
         public string ProjectsDirectory { get => _projectsDirectory; set => SetProperty(ref _projectsDirectory, value); }
