@@ -1,123 +1,192 @@
-WorldBuilder - ACME Edition
+# ACME WorldBuilder
 
-Landscape and world building tool for Asheron's Call. Terrain editing, object placement, texture painting, road drawing, and DAT export.
+Landscape and world building tool for Asheron's Call. Edit terrain, place objects, paint textures, draw roads, manage layers, and export directly to DAT files.
 
-Maintained by Vanquish. Built on foundational work by the Chorizite team.
+> **First run note:** The initial launch will be slower than usual. ACME WorldBuilder builds several caches on first run (textures, thumbnails, terrain data) that persist across sessions. Subsequent launches will be significantly faster.
 
+---
 
-Whats Working
+## Features
 
-Terrain
-- Raise/lower height, set height, smooth
-- Texture brush with shader-based WYSIWYG preview inside the brush circle
-- Bucket fill with live texture + scenery preview (constrained to visible landblocks)
-- Texture thumbnail palette that swaps in when terrain tools are active
-- Road point/line placement and removal
-- Slope overlay for seeing unwalkable areas
+### Terrain Editing
 
-Objects
-- Browse and search the full object catalog from the DATs (setups and gfxobjs)
-- Search by hex ID or keyword, filter by buildings/scenery
-- Lazy-loaded thumbnail cache that persists across sessions
-- Place on terrain with snap, move, rotate, delete
-- Multi-select with Ctrl+Click or marquee box select (drag to select)
-- Multi-object rotate: select multiple objects and rotate them as a group around their center
-- Marquee box select uses full bounding box testing (not just origin points)
-- Selection highlight spheres scale proportionally to object size
-- Right-click context menu (copy, paste, snap to terrain, delete)
-- Copy/paste with Ctrl+C/V, including multi-object paste
-- Properties panel with position, rotation, landcell, snap-to-terrain
-- Delete confirmation dialog
-- Static object height auto-adjustment when terrain changes underneath
-- Terrain snap on rotate: objects stay on the ground when rotated on sloped terrain
-- Building blueprint system for placing buildings with interior cells
-- Building move/rotate correctly updates interior cell VisibleCells references
+- **Raise / Lower** — left-click to raise, shift+left-click to lower. Adjustable brush radius (0.5–200) and strength (1–50)
+- **Set Height** — paint vertices to a target height (0–255)
+- **Smooth** — blend height differences across vertices
+- **Texture Brush** — paint terrain textures with a shader-based WYSIWYG preview inside the brush circle
+- **Bucket Fill** — flood-fill terrain textures with live preview, constrained to visible landblocks
+- **Texture Palette** — visual thumbnail palette that activates with terrain tools
+- **Slope Overlay** — highlight unwalkable slopes with configurable threshold (default 45°)
 
-Layers
-- Full layer system with groups, visibility toggles, export toggles
-- Each layer tracks its own height/texture/road/scenery changes independently
-- Reorder and nest however you want, drag-and-drop
-- Base layer always at bottom, cant be deleted or reordered
+### Roads
+
+- **Point placement** — click individual vertices to set road flags
+- **Line drawing** — draw road lines between points
+- **Remove** — clear road flags from vertices
+
+### Objects
+
+- **Object Browser** — browse and search the full DAT object catalog (Setups and GfxObjs)
+- **Search** — by hex ID or keyword, filter by buildings or scenery
+- **Thumbnail previews** — rendered on the GPU, cached to disk across sessions
+- **Placement** — click terrain to place, with terrain snap
+- **Move / Rotate / Delete** — drag to move, drag to rotate, Delete key to remove
+- **Multi-select** — Ctrl+Click or drag a marquee box (full bounding-box testing)
+- **Multi-object rotate** — rotate a group of objects around their shared center
+- **Copy / Paste** — Ctrl+C / Ctrl+V, supports multi-object paste with offset
+- **Right-click context menu** — copy, paste, snap to terrain, delete
+- **Properties panel** — edit position (X, Y, Z), rotation (Euler angles), view landcell, snap to terrain
+- **Auto height adjustment** — objects stay on the ground when terrain changes beneath them
+- **Terrain snap on rotate** — objects maintain ground contact when rotated on slopes
+- **Selection highlights** — spheres scale proportionally to object size
+
+### Buildings
+
+- **Building blueprint system** — place buildings with interior cells
+- **Move / Rotate** — correctly updates interior cell VisibleCells references
+- **Interior toggle** — show or hide building interiors in the viewport
+
+### Terrain Stamps (Clone & Paste)
+
+- **Clone tool** — drag a rectangle to capture terrain heights, textures, and objects
+- **Stamp library** — stores up to 10 stamps (configurable, max 50)
+- **Paste with rotation** — 0°, 90°, 180°, 270° via `[` and `]` keys
+- **Edge blending** — optional smooth blending at stamp borders
+- **Include objects** — optionally stamp objects along with terrain
+- **Grid snapping** — snaps to the 24-unit cell grid
+
+### Layers
+
+- Full layer system with groups, visibility toggles, and export toggles
+- Each layer tracks height, texture, road, and scenery changes independently
+- Drag-and-drop reordering and nesting
+- Base layer always at bottom (cannot be deleted or reordered)
 - Layer compositing for export (top-to-bottom, first non-null wins)
 
-History / Snapshots
-- Undo/redo for everything (50 entry limit, configurable)
-- History panel lets you jump to any previous state
-- Forward entries dimmed, Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z
+### History & Snapshots
+
+- Undo / redo for all operations (default 50 entries, configurable 5–10,000)
+- History panel — click any entry to jump to that state
 - Named snapshots that persist between sessions
+- Forward entries shown dimmed in the history panel
 
-DAT Export
-- Exports to client_cell_1.dat, client_portal.dat, client_highres.dat, and client_local_English.dat
-- Configurable portal iteration, layer-based export control, overwrite protection
+### DAT Export
 
-Camera / Navigation
-- Perspective and top-down ortho cameras, WASD + mouse look
-- Ctrl+G to go to a landblock by hex ID or X,Y coords
-- Camera reset button in viewport toolbar
-- Position HUD and grid overlay for landblock/cell boundaries
-- All overlay toggles: grid, static objects, scenery, unwalkable slopes
-- Camera position and mode persisted across sessions
+- Exports to `client_cell_1.dat`, `client_portal.dat`, `client_highres.dat`, and `client_local_English.dat`
+- Configurable portal iteration
+- Layer-based export control (toggle which layers are included)
+- Overwrite protection
 
-UI / Settings
-- UI state persistence (selected tool, panel widths) saved on exit
-- File > Exit menu item with graceful shutdown
-- Settings saved via MainWindow.Closing and ShutdownRequested
-- Splash screen with loading state
+### Camera & Navigation
 
-Projects
-- Point it at your base DAT directory, give it a name, and go
-- Recent projects list, everything stored in a local SQLite db
+- **Perspective camera** — WASD + mouse look, Space to go up, Shift to go down
+- **Top-down orthographic camera** — pan and zoom, ideal for large-scale editing
+- **Toggle** — press Q to switch between modes
+- **Go To Landblock** — Ctrl+G, enter a hex ID or X,Y coordinates
+- **Position HUD** — shows current coordinates in the viewport
+- **Grid overlay** — landblock boundaries (magenta) and cell boundaries (cyan)
+- **Overlay toggles** — grid, static objects, scenery, dungeons, unwalkable slopes
+- Camera position and mode saved between sessions
 
-Performance
-- Streaming terrain chunks (only nearby chunks loaded, distant ones unloaded)
-- Background terrain chunk geometry generation (no frame stalls on load)
-- Static object frustum culling (only visible objects rendered)
-- Background model loading with two-phase GPU upload
-- Texture disk cache for processed RGBA data
-- Camera-aware landblock streaming: 2D top-down loads the full visible rectangle, perspective uses proximity
-- Zoom-scaled scenery: trees and rocks only generate when zoomed in enough to see them, buildings load everywhere
-- Load/unload hysteresis prevents objects from flickering at view edges
-- Distance-prioritized loading: closest landblocks load first, distant ones stream in gradually
+### Projects
+
+- Point at your base DAT directory, name your project, and go
+- Recent projects list on the splash screen
+- All project data stored in a local SQLite database
+
+### Performance
+
+- Streaming terrain chunks — only nearby chunks loaded, distant ones unloaded
+- Background geometry generation — no frame stalls during terrain loading
+- Frustum culling — only visible static objects are rendered
+- Two-phase GPU upload — models load in background, upload to GPU in batches
+- Texture disk cache — processed RGBA data cached to disk after first load
+- Camera-aware streaming — top-down loads the visible rectangle, perspective uses proximity
+- Zoom-scaled scenery — trees and rocks appear at appropriate zoom levels, buildings load everywhere
+- Load/unload hysteresis — prevents objects flickering at view distance edges
+- Distance-prioritized loading — closest landblocks load first
 - Capped batch sizes and max loaded landblocks to keep memory and frame times stable
 
+---
 
-Controls
+## Controls
 
-WASD or Arrow Keys - move camera
-Shift + Arrow Keys - rotate camera (perspective)
-Q - toggle between perspective and top-down camera
-+/- - zoom in/out
-Mouse look for camera rotation, scroll wheel for zoom
+### Camera
 
-Ctrl+G - go to landblock (hex ID or X,Y)
-Ctrl+Z - undo
-Ctrl+Shift+Z or Ctrl+Y - redo
-Ctrl+C - copy selected object(s)
-Ctrl+V - paste / enter placement mode
-Ctrl+Click - multi-select objects
-Delete - delete selected object(s) (with confirmation)
-Escape - cancel placement or deselect
-Right-click - context menu on selected objects, paste when clipboard has content
+| Action | Key |
+|---|---|
+| Move forward / back / left / right | W / S / A / D or Arrow Keys |
+| Rotate camera (perspective) | Shift + Arrow Keys, or mouse look |
+| Move up | Space |
+| Move down | Shift (held) |
+| Toggle perspective / top-down | Q |
+| Zoom in / out | Mouse wheel, or + / - |
 
+### Editing
 
-Building
+| Action | Key |
+|---|---|
+| Go to landblock | Ctrl+G |
+| Undo | Ctrl+Z |
+| Redo | Ctrl+Shift+Z or Ctrl+Y |
+| Copy | Ctrl+C |
+| Paste | Ctrl+V |
+| Delete | Delete |
+| Cancel / deselect | Escape |
+| Multi-select | Ctrl+Click |
+| Box select | Click and drag |
+| Rotate stamp | [ / ] |
+| Lower terrain (with raise tool) | Shift+Left-Click |
+| Context menu | Right-Click |
+
+---
+
+## Default Settings
+
+| Setting | Default |
+|---|---|
+| Projects directory | `Documents/ACME WorldBuilder/Projects` |
+| History limit | 50 |
+| Max draw distance | 4,000 units |
+| Field of view | 60° |
+| Mouse sensitivity | 1.0 |
+| Movement speed | 1,000 units/sec |
+| Light intensity | 0.45 |
+| Grid visible | Yes |
+| Grid opacity | 40% |
+| Static objects visible | Yes |
+| Scenery visible | Yes |
+| Dungeons visible | Yes |
+| Building interiors visible | No |
+| Slope highlight | Off (threshold 45°) |
+| Stamp library size | 10 |
+
+All settings are configurable in the Settings panel and persist between sessions.
+
+---
+
+## Building
 
 Requires .NET 8.0 SDK or later.
 
+```
 dotnet build WorldBuilder.slnx
+```
 
+## Running
 
-Running
+```
+dotnet run --project WorldBuilder.Windows
+```
 
-dotnet run --project WorldBuilder.Desktop
+Platform-specific projects are also available: `WorldBuilder.Windows` (recommended), `WorldBuilder.Mac`, `WorldBuilder.Linux`.
 
-There are also platform-specific projects: WorldBuilder.Windows, WorldBuilder.Mac, WorldBuilder.Linux.
+---
 
+## Thanks
 
-Thanks
-
-Big thanks to everyone who made this possible:
-
-Trevis - original vision and groundwork/DatReadWriter/Worldbuilder 
-Gmriggs - foundational tooling and research
-and everyone else in the AC community whos contributed, tested, reported bugs, or just kept Dereth going. If you helped and arent listed, you know who you are.
+- **Trevis** — original WorldBuilder vision and groundwork (DatReaderWriter + the base that this all grew from, before the big refactor...)
+- **Gmriggs** — testing, research, and invaluable AC knowledge
+- **Advan** — testing and bug reports
+- **Vermino** — PRs and code contributions
+- **The AC community** — everyone who has contributed, tested, reported bugs, or just kept Dereth going. If you helped and aren't listed, you know who you are.
