@@ -49,16 +49,22 @@
                 </Border.Background>
                 <DockPanel>
                     <StackPanel Orientation="Horizontal" DockPanel.Dock="Right" Spacing="1">
-                        <Border Name="DockDragHandle"
-                                Background="Transparent"
-                                Padding="4,2"
-                                Cursor="SizeAll"
-                                ToolTip.Tip="Drag to Dock">
-                            <TextBlock Text="&#x2630;" FontSize="11" Foreground="#5a4a6e" VerticalAlignment="Center" />
-                        </Border>
+                        <Button Classes="panel-btn" ToolTip.Tip="Move to Dock" Foreground="#5a4a6e">
+                            <TextBlock Text="&#x2630;" FontSize="11" />
+                            <Button.Flyout>
+                                <MenuFlyout Placement="BottomEdgeAlignedRight">
+                                    <MenuItem Header="Dock Left"   Command="{Binding DockToCommand}" CommandParameter="Left" />
+                                    <MenuItem Header="Dock Right"  Command="{Binding DockToCommand}" CommandParameter="Right" />
+                                    <MenuItem Header="Dock Top"    Command="{Binding DockToCommand}" CommandParameter="Top" />
+                                    <MenuItem Header="Dock Bottom" Command="{Binding DockToCommand}" CommandParameter="Bottom" />
+                                    <Separator />
+                                    <MenuItem Header="Center"      Command="{Binding DockToCommand}" CommandParameter="Center" />
+                                    <MenuItem Header="Float"       Command="{Binding FloatCommand}" />
+                                </MenuFlyout>
+                            </Button.Flyout>
+                        </Button>
                         <Button Classes="panel-btn" Content="&#x25C0;" ToolTip.Tip="Move Up/Left" Command="{Binding MoveUpCommand}" />
                         <Button Classes="panel-btn" Content="&#x25B6;" ToolTip.Tip="Move Down/Right" Command="{Binding MoveDownCommand}" />
-                        <Button Classes="panel-btn" Content="&#x25A2;" ToolTip.Tip="Float" Command="{Binding FloatCommand}" />
                         <Button Classes="panel-btn panel-btn-close" Content="&#x2715;" ToolTip.Tip="Close" Command="{Binding CloseCommand}" />
                     </StackPanel>
                     <TextBlock Text="{Binding Title}"
