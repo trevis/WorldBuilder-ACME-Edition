@@ -23,8 +23,8 @@ namespace WorldBuilder.Editors.Dungeon {
         public List<ushort> PortalPolygonIds { get; set; } = new();
         public List<ushort> DefaultSurfaces { get; set; } = new();
 
-        public string DisplayName => $"Env {EnvironmentFileId:X8} / Cell {CellStructureIndex}";
-        public string DetailText => $"{PortalCount} portals, {PolygonCount} polys, {VertexCount} verts";
+        public string DisplayName => $"0x{EnvironmentFileId:X8} / #{CellStructureIndex}";
+        public string DetailText => $"{PortalCount} portal{(PortalCount != 1 ? "s" : "")}, {PolygonCount} poly, {VertexCount} vert";
     }
 
     public partial class RoomPaletteViewModel : ViewModelBase {

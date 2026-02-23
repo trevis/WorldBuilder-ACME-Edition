@@ -47,6 +47,7 @@ namespace WorldBuilder.Editors.Dungeon {
         public DungeonScene? Scene => _scene;
         public DungeonDocument? Document => _document;
         public RoomPaletteViewModel? RoomPalette { get; private set; }
+        public DungeonCommandHistory CommandHistory { get; } = new();
 
         public DungeonEditorViewModel(WorldBuilderSettings settings) {
             Settings = settings;
@@ -131,12 +132,48 @@ namespace WorldBuilder.Editors.Dungeon {
         }
 
         internal void HandleKeyDown(KeyEventArgs e) {
-            if (e.KeyModifiers.HasFlag(KeyModifiers.Control) && e.Key == Key.G) {
+            bool ctrl = e.KeyModifiers.HasFlag(KeyModifiers.Control);
+            bool shift = e.KeyModifiers.HasFlag(KeyModifiers.Shift);
+
+            if (ctrl && e.Key == Key.G) {
                 _ = OpenLandblockCommand.ExecuteAsync(null);
+                return;
+            }
+            if (ctrl && e.Key == Key.Z) {
+                if (shift) UndoRedoRedo();
+                else UndoRedoUndo();
+                return;
+            }
+            if (ctrl && e.Key == Key.Y) {
+                UndoRedoRedo();
+                return;
+            }
+            if (e.Key == Key.Delete) {
+                DeleteSelectedCellCommand.Execute(null);
+                return;
             }
             if (e.Key == Key.Escape) {
-                DeselectCell();
+                if (IsPlacementMode) CancelPlacement();
+                else DeselectCell();
             }
+        }
+
+        private void UndoRedoUndo() {
+            if (_document == null || !CommandHistory.CanUndo) return;
+            CommandHistory.Undo(_document);
+            DeselectCell();
+            RefreshRendering();
+            CellCount = _document.Cells.Count;
+            StatusText = $"LB {_document.LandblockKey:X4}: {CellCount} cells (Undo: {CommandHistory.LastCommandDescription ?? "none"})";
+        }
+
+        private void UndoRedoRedo() {
+            if (_document == null || !CommandHistory.CanRedo) return;
+            CommandHistory.Redo(_document);
+            DeselectCell();
+            RefreshRendering();
+            CellCount = _document.Cells.Count;
+            StatusText = $"LB {_document.LandblockKey:X4}: {CellCount} cells";
         }
 
         internal void HandlePointerWheel(PointerWheelEventArgs e) {
@@ -195,26 +232,93 @@ namespace WorldBuilder.Editors.Dungeon {
         private void SelectCell(LoadedEnvCell cell) {
             _selectedCell = cell;
             HasSelectedCell = true;
+            if (_scene != null) _scene.SelectedCell = cell;
 
-            ushort cellNum = (ushort)(cell.CellId & 0xFFFF);
-            ushort lbKey = (ushort)(cell.CellId >> 16);
             int portalCount = cell.Portals?.Count ?? 0;
-            int openPortals = 0;
-
+            int connectedPortals = 0;
             if (cell.Portals != null) {
                 foreach (var p in cell.Portals) {
-                    if (p.OtherCellId == 0 || p.OtherCellId == 0xFFFF) openPortals++;
+                    if (p.OtherCellId != 0 && p.OtherCellId != 0xFFFF) connectedPortals++;
                 }
             }
 
-            SelectedCellInfo = $"Cell {cell.CellId:X8}  |  Env: {cell.EnvironmentId:X8}  |  Portals: {portalCount} ({openPortals} open)  |  Surfaces: {cell.SurfaceCount}";
+            SelectedCellInfo = $"Cell {cell.CellId:X8}  |  Env: {cell.EnvironmentId:X8}\n" +
+                $"Portals: {connectedPortals}/{portalCount} connected  |  Surfaces: {cell.SurfaceCount}\n" +
+                $"Pos: ({cell.WorldPosition.X:F1}, {cell.WorldPosition.Y:F1}, {cell.WorldPosition.Z:F1})";
         }
 
         private void DeselectCell() {
             _selectedCell = null;
             HasSelectedCell = false;
             SelectedCellInfo = "";
+            if (_scene != null) _scene.SelectedCell = null;
         }
+
+        #region Cell Editing
+
+        [RelayCommand]
+        private void DeleteSelectedCell() {
+            if (_selectedCell == null || _document == null) return;
+
+            var cellNum = (ushort)(_selectedCell.CellId & 0xFFFF);
+            CommandHistory.Execute(new RemoveCellCommand(cellNum), _document);
+            DeselectCell();
+            RefreshRendering();
+            CellCount = _document.Cells.Count;
+            StatusText = $"LB {_document.LandblockKey:X4}: {CellCount} cells";
+        }
+
+        [RelayCommand] private void NudgeCellXPos() => NudgeSelectedCell(new Vector3(1, 0, 0));
+        [RelayCommand] private void NudgeCellXNeg() => NudgeSelectedCell(new Vector3(-1, 0, 0));
+        [RelayCommand] private void NudgeCellYPos() => NudgeSelectedCell(new Vector3(0, 1, 0));
+        [RelayCommand] private void NudgeCellYNeg() => NudgeSelectedCell(new Vector3(0, -1, 0));
+        [RelayCommand] private void NudgeCellZPos() => NudgeSelectedCell(new Vector3(0, 0, 1));
+        [RelayCommand] private void NudgeCellZNeg() => NudgeSelectedCell(new Vector3(0, 0, -1));
+
+        [RelayCommand] private void RotateCellCW() => RotateSelectedCell(-90);
+        [RelayCommand] private void RotateCellCW45() => RotateSelectedCell(-45);
+        [RelayCommand] private void RotateCellCCW45() => RotateSelectedCell(45);
+        [RelayCommand] private void RotateCellCCW() => RotateSelectedCell(90);
+
+        private void RotateSelectedCell(float degrees) {
+            if (_selectedCell == null || _document == null) return;
+            var cellNum = (ushort)(_selectedCell.CellId & 0xFFFF);
+            CommandHistory.Execute(new RotateCellCommand(cellNum, degrees), _document);
+            RefreshRendering();
+            _needsCameraFocus = false;
+        }
+
+        private void NudgeSelectedCell(Vector3 offset) {
+            if (_selectedCell == null || _document == null) return;
+            var cellNum = (ushort)(_selectedCell.CellId & 0xFFFF);
+            CommandHistory.Execute(new NudgeCellCommand(cellNum, offset), _document);
+            RefreshRendering();
+            _needsCameraFocus = false;
+        }
+
+        [RelayCommand]
+        private void DisconnectPortal() {
+            if (_selectedCell == null || _document == null) return;
+
+            var cellNum = (ushort)(_selectedCell.CellId & 0xFFFF);
+            var dc = _document.GetCell(cellNum);
+            if (dc == null || dc.CellPortals.Count == 0) return;
+
+            var lastPortal = dc.CellPortals[^1];
+            var otherCellNum = lastPortal.OtherCellId;
+
+            dc.CellPortals.RemoveAt(dc.CellPortals.Count - 1);
+
+            var otherCell = _document.GetCell(otherCellNum);
+            if (otherCell != null) {
+                otherCell.CellPortals.RemoveAll(cp => cp.OtherCellId == cellNum);
+            }
+
+            RefreshRendering();
+            SelectCell(_selectedCell);
+        }
+
+        #endregion
 
         #region Placement
 
@@ -275,12 +379,10 @@ namespace WorldBuilder.Editors.Dungeon {
             if (_pendingRoom == null || _document == null || _scene == null || _dats == null) return;
 
             var surfaces = GetSurfacesForRoom(_pendingRoom);
-            var cellNum = _document.AddCell(
-                _pendingRoom.EnvironmentId,
-                _pendingRoom.CellStructureIndex,
-                Vector3.Zero,
-                Quaternion.Identity,
-                surfaces);
+            var cmd = new AddCellCommand(
+                _pendingRoom.EnvironmentId, _pendingRoom.CellStructureIndex,
+                Vector3.Zero, Quaternion.Identity, surfaces);
+            CommandHistory.Execute(cmd, _document);
 
             RefreshRendering();
             _needsCameraFocus = true;
@@ -357,17 +459,13 @@ namespace WorldBuilder.Editors.Dungeon {
             var (newOrigin, newOrientation) = PortalSnapper.ComputeSnapTransform(
                 targetCentroidWorld, targetNormalWorld, sourcePortalLocal.Value);
 
-            // Add the new cell
+            // Add the new cell with portal connection via command history
             var surfaces = GetSurfacesForRoom(_pendingRoom);
-            var newCellNum = _document.AddCell(
-                _pendingRoom.EnvironmentId,
-                _pendingRoom.CellStructureIndex,
-                newOrigin,
-                newOrientation,
-                surfaces);
-
-            // Connect portals
-            _document.ConnectPortals(targetCellNum, openPortalId.Value, newCellNum, sourcePortalId);
+            var cmd = new AddCellCommand(
+                _pendingRoom.EnvironmentId, _pendingRoom.CellStructureIndex,
+                newOrigin, newOrientation, surfaces,
+                connectToCellNum: targetCellNum, connectToPolyId: openPortalId.Value, sourcePolyId: sourcePortalId);
+            CommandHistory.Execute(cmd, _document);
 
             RefreshRendering();
 
