@@ -32,6 +32,8 @@ namespace WorldBuilder.Editors.Dungeon {
         [ObservableProperty] private bool _hasSelectedCell;
         [ObservableProperty] private bool _isPlacementMode;
         [ObservableProperty] private string _placementStatusText = "";
+        [ObservableProperty] private bool _isObjectPlacementMode;
+        [ObservableProperty] private string _objectIdInput = "";
 
         private LoadedEnvCell? _selectedCell;
         private bool _needsCameraFocus;
@@ -212,7 +214,13 @@ namespace WorldBuilder.Editors.Dungeon {
             var rayOrigin = new Vector3(nearW.X, nearW.Y, nearW.Z);
             var rayDir = Vector3.Normalize(new Vector3(farW.X, farW.Y, farW.Z) - rayOrigin);
 
-            // In placement mode, try to snap to an open portal
+            // Object placement mode
+            if (IsObjectPlacementMode && _pendingObjectId != null && _document != null) {
+                TryPlaceObject(rayOrigin, rayDir);
+                return;
+            }
+
+            // Room placement mode - snap to portal
             if (IsPlacementMode && _pendingRoom != null && _document != null) {
                 TrySnapToPortal(rayOrigin, rayDir);
                 return;
@@ -242,9 +250,17 @@ namespace WorldBuilder.Editors.Dungeon {
                 }
             }
 
+            int staticCount = 0;
+            var dc = _document?.GetCell((ushort)(cell.CellId & 0xFFFF));
+            if (dc != null) staticCount = dc.StaticObjects.Count;
+
             SelectedCellInfo = $"Cell {cell.CellId:X8}  |  Env: {cell.EnvironmentId:X8}\n" +
                 $"Portals: {connectedPortals}/{portalCount} connected  |  Surfaces: {cell.SurfaceCount}\n" +
-                $"Pos: ({cell.WorldPosition.X:F1}, {cell.WorldPosition.Y:F1}, {cell.WorldPosition.Z:F1})";
+                $"Statics: {staticCount}  |  Pos: ({cell.WorldPosition.X:F1}, {cell.WorldPosition.Y:F1}, {cell.WorldPosition.Z:F1})";
+
+            if (dc != null) {
+                SelectedCellSurfaces = string.Join(", ", dc.Surfaces.Select(s => $"{s:X4}"));
+            }
         }
 
         private void DeselectCell() {
@@ -296,6 +312,31 @@ namespace WorldBuilder.Editors.Dungeon {
             _needsCameraFocus = false;
         }
 
+        [ObservableProperty] private string _selectedCellSurfaces = "";
+
+        [RelayCommand]
+        private void ApplySurfaces() {
+            if (_selectedCell == null || _document == null) return;
+            var cellNum = (ushort)(_selectedCell.CellId & 0xFFFF);
+            var dc = _document.GetCell(cellNum);
+            if (dc == null) return;
+
+            var newSurfaces = new List<ushort>();
+            foreach (var part in SelectedCellSurfaces.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)) {
+                var hex = part.TrimStart('0', 'x', 'X');
+                if (string.IsNullOrEmpty(hex)) hex = "0";
+                if (ushort.TryParse(hex, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var surfId))
+                    newSurfaces.Add(surfId);
+            }
+
+            if (newSurfaces.Count > 0) {
+                dc.Surfaces.Clear();
+                dc.Surfaces.AddRange(newSurfaces);
+                RefreshRendering();
+                StatusText = $"Updated {newSurfaces.Count} surfaces on cell {cellNum:X4}";
+            }
+        }
+
         [RelayCommand]
         private void DisconnectPortal() {
             if (_selectedCell == null || _document == null) return;
@@ -316,6 +357,68 @@ namespace WorldBuilder.Editors.Dungeon {
 
             RefreshRendering();
             SelectCell(_selectedCell);
+        }
+
+        #endregion
+
+        #region Object Placement
+
+        [RelayCommand]
+        private void StartObjectPlacement() {
+            if (_selectedCell == null || string.IsNullOrWhiteSpace(ObjectIdInput)) return;
+
+            var hex = ObjectIdInput.Trim();
+            if (hex.StartsWith("0x", StringComparison.OrdinalIgnoreCase)) hex = hex[2..];
+            if (!uint.TryParse(hex, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var objId)) {
+                StatusText = "Invalid object ID";
+                return;
+            }
+
+            _pendingObjectId = objId;
+            IsObjectPlacementMode = true;
+            PlacementStatusText = $"Click in viewport to place object 0x{objId:X8}";
+        }
+
+        [RelayCommand]
+        private void CancelObjectPlacement() {
+            _pendingObjectId = null;
+            IsObjectPlacementMode = false;
+            if (!IsPlacementMode) PlacementStatusText = "";
+        }
+
+        private uint? _pendingObjectId;
+
+        private void TryPlaceObject(Vector3 rayOrigin, Vector3 rayDir) {
+            if (_pendingObjectId == null || _document == null || _scene == null) return;
+
+            var hit = _scene.EnvCellManager?.Raycast(rayOrigin, rayDir);
+            if (hit == null || !hit.Value.Hit) return;
+
+            var targetCell = hit.Value.Cell;
+            var cellNum = (ushort)(targetCell.CellId & 0xFFFF);
+            var dc = _document.GetCell(cellNum);
+            if (dc == null) return;
+
+            // Convert world-space hit position to landblock-local coordinates
+            uint lbId = _document.LandblockKey;
+            var blockX = (lbId >> 8) & 0xFF;
+            var blockY = lbId & 0xFF;
+            var lbOffset = new Vector3(blockX * 192f, blockY * 192f, 0f);
+
+            var localOrigin = hit.Value.HitPosition - lbOffset;
+            localOrigin.Z += 50f; // Reverse the dungeon depth offset
+
+            dc.StaticObjects.Add(new DatReaderWriter.Types.Stab {
+                Id = _pendingObjectId.Value,
+                Frame = new DatReaderWriter.Types.Frame {
+                    Origin = localOrigin,
+                    Orientation = Quaternion.Identity
+                }
+            });
+
+            RefreshRendering();
+            StatusText = $"Placed 0x{_pendingObjectId.Value:X8} in cell {cellNum:X4}";
+            CancelObjectPlacement();
         }
 
         #endregion

@@ -53,6 +53,9 @@ namespace WorldBuilder.Editors.Dungeon {
                     if (envCell.VisibleCells != null) {
                         dc.VisibleCells.AddRange(envCell.VisibleCells);
                     }
+                    if (envCell.StaticObjects != null) {
+                        dc.StaticObjects.AddRange(envCell.StaticObjects);
+                    }
 
                     Cells.Add(dc);
                 }
@@ -142,6 +145,12 @@ namespace WorldBuilder.Editors.Dungeon {
                 envCell.Surfaces.AddRange(dc.Surfaces);
                 envCell.CellPortals.AddRange(dc.CellPortals);
                 envCell.VisibleCells.AddRange(dc.VisibleCells);
+                envCell.StaticObjects.AddRange(dc.StaticObjects);
+
+                if (dc.StaticObjects.Count > 0)
+                    envCell.Flags |= EnvCellFlags.HasStaticObjs;
+                else
+                    envCell.Flags &= ~EnvCellFlags.HasStaticObjs;
 
                 result.Add(envCell);
             }
@@ -163,5 +172,6 @@ namespace WorldBuilder.Editors.Dungeon {
         public List<ushort> Surfaces = new();
         public List<CellPortal> CellPortals = new();
         public List<ushort> VisibleCells = new();
+        public List<Stab> StaticObjects = new();
     }
 }
