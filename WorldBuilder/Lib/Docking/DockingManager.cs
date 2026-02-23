@@ -19,6 +19,31 @@ namespace WorldBuilder.Lib.Docking {
         [ObservableProperty]
         private Orientation _centerOrientation = Orientation.Horizontal;
 
+        [ObservableProperty]
+        [NotifyPropertyChangedFor(nameof(IsLeftTabbed), nameof(IsLeftSectioned))]
+        private DockRegionMode _leftMode = DockRegionMode.Tabbed;
+
+        [ObservableProperty]
+        [NotifyPropertyChangedFor(nameof(IsRightTabbed), nameof(IsRightSectioned))]
+        private DockRegionMode _rightMode = DockRegionMode.Tabbed;
+
+        [ObservableProperty]
+        [NotifyPropertyChangedFor(nameof(IsTopTabbed), nameof(IsTopSectioned))]
+        private DockRegionMode _topMode = DockRegionMode.Tabbed;
+
+        [ObservableProperty]
+        [NotifyPropertyChangedFor(nameof(IsBottomTabbed), nameof(IsBottomSectioned))]
+        private DockRegionMode _bottomMode = DockRegionMode.Tabbed;
+
+        public bool IsLeftTabbed => LeftMode == DockRegionMode.Tabbed;
+        public bool IsLeftSectioned => LeftMode == DockRegionMode.Sections;
+        public bool IsRightTabbed => RightMode == DockRegionMode.Tabbed;
+        public bool IsRightSectioned => RightMode == DockRegionMode.Sections;
+        public bool IsTopTabbed => TopMode == DockRegionMode.Tabbed;
+        public bool IsTopSectioned => TopMode == DockRegionMode.Sections;
+        public bool IsBottomTabbed => BottomMode == DockRegionMode.Tabbed;
+        public bool IsBottomSectioned => BottomMode == DockRegionMode.Sections;
+
         public IEnumerable<IDockable> AllPanels => _allPanels;
 
         public void RegisterPanel(IDockable panel) {
@@ -117,6 +142,41 @@ namespace WorldBuilder.Lib.Docking {
                 DockLocation.Floating => FloatingPanels,
                 _ => new ObservableCollection<IDockable>()
             };
+        }
+
+        [RelayCommand]
+        private void ToggleLeftMode() =>
+            LeftMode = LeftMode == DockRegionMode.Tabbed ? DockRegionMode.Sections : DockRegionMode.Tabbed;
+
+        [RelayCommand]
+        private void ToggleRightMode() =>
+            RightMode = RightMode == DockRegionMode.Tabbed ? DockRegionMode.Sections : DockRegionMode.Tabbed;
+
+        [RelayCommand]
+        private void ToggleTopMode() =>
+            TopMode = TopMode == DockRegionMode.Tabbed ? DockRegionMode.Sections : DockRegionMode.Tabbed;
+
+        [RelayCommand]
+        private void ToggleBottomMode() =>
+            BottomMode = BottomMode == DockRegionMode.Tabbed ? DockRegionMode.Sections : DockRegionMode.Tabbed;
+
+        public DockRegionMode GetModeForLocation(DockLocation location) {
+            return location switch {
+                DockLocation.Left => LeftMode,
+                DockLocation.Right => RightMode,
+                DockLocation.Top => TopMode,
+                DockLocation.Bottom => BottomMode,
+                _ => DockRegionMode.Tabbed
+            };
+        }
+
+        public void SetModeForLocation(DockLocation location, DockRegionMode mode) {
+            switch (location) {
+                case DockLocation.Left: LeftMode = mode; break;
+                case DockLocation.Right: RightMode = mode; break;
+                case DockLocation.Top: TopMode = mode; break;
+                case DockLocation.Bottom: BottomMode = mode; break;
+            }
         }
     }
 }

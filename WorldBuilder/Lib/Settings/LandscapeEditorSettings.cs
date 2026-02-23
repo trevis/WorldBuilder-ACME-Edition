@@ -220,6 +220,12 @@ namespace WorldBuilder.Lib.Settings {
 
         /// <summary>Persisted state of dockable panels.</summary>
         public System.Collections.Generic.List<DockingPanelState> DockingLayout { get; set; } = new();
+
+        /// <summary>Layout mode per dock region (Tabbed or Sections).</summary>
+        public string LeftDockMode { get; set; } = "Tabbed";
+        public string RightDockMode { get; set; } = "Tabbed";
+        public string TopDockMode { get; set; } = "Tabbed";
+        public string BottomDockMode { get; set; } = "Tabbed";
     }
 
     public class DockingPanelState {

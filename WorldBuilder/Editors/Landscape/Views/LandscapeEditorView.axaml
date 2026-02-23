@@ -151,23 +151,58 @@
             <RowDefinition Height="Auto" MinHeight="0" />
         </Grid.RowDefinitions>
 
-        <!-- Top Panels (Tabbed) -->
+        <!-- Top Panels -->
         <Border Grid.Row="0"
                 Background="#16102a"
                 BorderBrush="#2a1d42"
                 BorderThickness="0,0,0,1"
                 IsVisible="{Binding DockingManager.TopPanels.Count}"
                 MaxHeight="300">
-            <TabControl Classes="dock-tabs"
-                        ItemsSource="{Binding DockingManager.TopPanels}"
-                        TabStripPlacement="Top"
-                        ContentTemplate="{StaticResource DockTabContentTemplate}">
-                <TabControl.ItemTemplate>
-                    <DataTemplate x:DataType="docking:IDockable">
-                        <TextBlock Text="{Binding Title}" />
-                    </DataTemplate>
-                </TabControl.ItemTemplate>
-            </TabControl>
+            <DockPanel>
+                <Border DockPanel.Dock="Top"
+                        Padding="2"
+                        BorderBrush="#2a1d42"
+                        BorderThickness="0,0,0,1">
+                    <Border.Background>
+                        <LinearGradientBrush StartPoint="0%,0%" EndPoint="0%,100%">
+                            <GradientStop Offset="0" Color="#1e1035" />
+                            <GradientStop Offset="1" Color="#18102a" />
+                        </LinearGradientBrush>
+                    </Border.Background>
+                    <Button HorizontalAlignment="Right"
+                            Classes="tab-panel-btn"
+                            Command="{Binding DockingManager.ToggleTopModeCommand}"
+                            ToolTip.Tip="Toggle tabbed / sections layout">
+                        <TextBlock Text="&#x229E;" FontSize="12" />
+                    </Button>
+                </Border>
+                <Grid>
+                    <TabControl Classes="dock-tabs"
+                                IsVisible="{Binding DockingManager.IsTopTabbed}"
+                                ItemsSource="{Binding DockingManager.TopPanels}"
+                                TabStripPlacement="Top"
+                                ContentTemplate="{StaticResource DockTabContentTemplate}">
+                        <TabControl.ItemTemplate>
+                            <DataTemplate x:DataType="docking:IDockable">
+                                <TextBlock Text="{Binding Title}" />
+                            </DataTemplate>
+                        </TabControl.ItemTemplate>
+                    </TabControl>
+                    <ItemsControl IsVisible="{Binding DockingManager.IsTopSectioned}"
+                                  ItemsSource="{Binding DockingManager.TopPanels}">
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <UniformGrid Rows="1" />
+                            </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate DataType="docking:DockablePanelViewModel">
+                                <docking:DockablePanelView />
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </Grid>
+            </DockPanel>
         </Border>
 
         <Grid x:Name="MainGrid" Grid.Row="1">
@@ -179,7 +214,7 @@
                 <ColumnDefinition Width="250" MinWidth="200" MaxWidth="500" />
             </Grid.ColumnDefinitions>
 
-            <!-- Left Panels (Tabbed) -->
+            <!-- Left Panels -->
             <Border Grid.Column="0"
                     Background="#16102a"
                     BorderBrush="#2a1d42"
@@ -187,6 +222,7 @@
                     IsVisible="{Binding DockingManager.LeftPanels.Count}">
                 <DockPanel>
                     <Border DockPanel.Dock="Top"
+                            Padding="2"
                             BorderBrush="#2a1d42"
                             BorderThickness="0,0,0,1">
                         <Border.Background>
@@ -195,17 +231,39 @@
                                 <GradientStop Offset="1" Color="#18102a" />
                             </LinearGradientBrush>
                         </Border.Background>
+                        <Button HorizontalAlignment="Right"
+                                Classes="tab-panel-btn"
+                                Command="{Binding DockingManager.ToggleLeftModeCommand}"
+                                ToolTip.Tip="Toggle tabbed / sections layout">
+                            <TextBlock Text="&#x229E;" FontSize="12" />
+                        </Button>
                     </Border>
-                    <TabControl Classes="dock-tabs"
-                                ItemsSource="{Binding DockingManager.LeftPanels}"
-                                TabStripPlacement="Top"
-                                ContentTemplate="{StaticResource DockTabContentTemplate}">
-                        <TabControl.ItemTemplate>
-                            <DataTemplate x:DataType="docking:IDockable">
-                                <TextBlock Text="{Binding Title}" />
-                            </DataTemplate>
-                        </TabControl.ItemTemplate>
-                    </TabControl>
+                    <Grid>
+                        <TabControl Classes="dock-tabs"
+                                    IsVisible="{Binding DockingManager.IsLeftTabbed}"
+                                    ItemsSource="{Binding DockingManager.LeftPanels}"
+                                    TabStripPlacement="Top"
+                                    ContentTemplate="{StaticResource DockTabContentTemplate}">
+                            <TabControl.ItemTemplate>
+                                <DataTemplate x:DataType="docking:IDockable">
+                                    <TextBlock Text="{Binding Title}" />
+                                </DataTemplate>
+                            </TabControl.ItemTemplate>
+                        </TabControl>
+                        <ItemsControl IsVisible="{Binding DockingManager.IsLeftSectioned}"
+                                      ItemsSource="{Binding DockingManager.LeftPanels}">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <UniformGrid Columns="1" />
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate DataType="docking:DockablePanelViewModel">
+                                    <docking:DockablePanelView />
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </Grid>
                 </DockPanel>
             </Border>
 
@@ -370,7 +428,7 @@
                           HorizontalAlignment="Center"
                           VerticalAlignment="Stretch" />
 
-            <!-- Right Panels (Tabbed) -->
+            <!-- Right Panels -->
             <Border Grid.Column="4"
                     Background="#16102a"
                     BorderBrush="#2a1d42"
@@ -378,6 +436,7 @@
                     IsVisible="{Binding DockingManager.RightPanels.Count}">
                 <DockPanel>
                     <Border DockPanel.Dock="Top"
+                            Padding="2"
                             BorderBrush="#2a1d42"
                             BorderThickness="0,0,0,1">
                         <Border.Background>
@@ -386,17 +445,39 @@
                                 <GradientStop Offset="1" Color="#18102a" />
                             </LinearGradientBrush>
                         </Border.Background>
+                        <Button HorizontalAlignment="Right"
+                                Classes="tab-panel-btn"
+                                Command="{Binding DockingManager.ToggleRightModeCommand}"
+                                ToolTip.Tip="Toggle tabbed / sections layout">
+                            <TextBlock Text="&#x229E;" FontSize="12" />
+                        </Button>
                     </Border>
-                    <TabControl Classes="dock-tabs"
-                                ItemsSource="{Binding DockingManager.RightPanels}"
-                                TabStripPlacement="Top"
-                                ContentTemplate="{StaticResource DockTabContentTemplate}">
-                        <TabControl.ItemTemplate>
-                            <DataTemplate x:DataType="docking:IDockable">
-                                <TextBlock Text="{Binding Title}" />
-                            </DataTemplate>
-                        </TabControl.ItemTemplate>
-                    </TabControl>
+                    <Grid>
+                        <TabControl Classes="dock-tabs"
+                                    IsVisible="{Binding DockingManager.IsRightTabbed}"
+                                    ItemsSource="{Binding DockingManager.RightPanels}"
+                                    TabStripPlacement="Top"
+                                    ContentTemplate="{StaticResource DockTabContentTemplate}">
+                            <TabControl.ItemTemplate>
+                                <DataTemplate x:DataType="docking:IDockable">
+                                    <TextBlock Text="{Binding Title}" />
+                                </DataTemplate>
+                            </TabControl.ItemTemplate>
+                        </TabControl>
+                        <ItemsControl IsVisible="{Binding DockingManager.IsRightSectioned}"
+                                      ItemsSource="{Binding DockingManager.RightPanels}">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <UniformGrid Columns="1" />
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate DataType="docking:DockablePanelViewModel">
+                                    <docking:DockablePanelView />
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </Grid>
                 </DockPanel>
             </Border>
         </Grid>
@@ -408,7 +489,7 @@
                       VerticalAlignment="Center"
                       IsVisible="{Binding DockingManager.BottomPanels.Count}" />
 
-        <!-- Bottom Panels (Tabbed) -->
+        <!-- Bottom Panels -->
         <Border Grid.Row="3"
                 Background="#16102a"
                 BorderBrush="#2a1d42"
@@ -417,16 +498,51 @@
                 MinHeight="100"
                 MaxHeight="500"
                 IsVisible="{Binding DockingManager.BottomPanels.Count}">
-            <TabControl Classes="dock-tabs"
-                        ItemsSource="{Binding DockingManager.BottomPanels}"
-                        TabStripPlacement="Top"
-                        ContentTemplate="{StaticResource DockTabContentTemplate}">
-                <TabControl.ItemTemplate>
-                    <DataTemplate x:DataType="docking:IDockable">
-                        <TextBlock Text="{Binding Title}" />
-                    </DataTemplate>
-                </TabControl.ItemTemplate>
-            </TabControl>
+            <DockPanel>
+                <Border DockPanel.Dock="Top"
+                        Padding="2"
+                        BorderBrush="#2a1d42"
+                        BorderThickness="0,0,0,1">
+                    <Border.Background>
+                        <LinearGradientBrush StartPoint="0%,0%" EndPoint="0%,100%">
+                            <GradientStop Offset="0" Color="#1e1035" />
+                            <GradientStop Offset="1" Color="#18102a" />
+                        </LinearGradientBrush>
+                    </Border.Background>
+                    <Button HorizontalAlignment="Right"
+                            Classes="tab-panel-btn"
+                            Command="{Binding DockingManager.ToggleBottomModeCommand}"
+                            ToolTip.Tip="Toggle tabbed / sections layout">
+                        <TextBlock Text="&#x229E;" FontSize="12" />
+                    </Button>
+                </Border>
+                <Grid>
+                    <TabControl Classes="dock-tabs"
+                                IsVisible="{Binding DockingManager.IsBottomTabbed}"
+                                ItemsSource="{Binding DockingManager.BottomPanels}"
+                                TabStripPlacement="Top"
+                                ContentTemplate="{StaticResource DockTabContentTemplate}">
+                        <TabControl.ItemTemplate>
+                            <DataTemplate x:DataType="docking:IDockable">
+                                <TextBlock Text="{Binding Title}" />
+                            </DataTemplate>
+                        </TabControl.ItemTemplate>
+                    </TabControl>
+                    <ItemsControl IsVisible="{Binding DockingManager.IsBottomSectioned}"
+                                  ItemsSource="{Binding DockingManager.BottomPanels}">
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <UniformGrid Rows="1" />
+                            </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate DataType="docking:DockablePanelViewModel">
+                                <docking:DockablePanelView />
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </Grid>
+            </DockPanel>
         </Border>
 
         <!-- Drop Ghosts (purple-tinted to match theme) -->

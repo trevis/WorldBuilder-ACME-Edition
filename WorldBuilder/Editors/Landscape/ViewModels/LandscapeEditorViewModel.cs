@@ -198,6 +198,17 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
 
             Register("Toolbox", "Tools", new ToolboxViewModel(this), DockLocation.Right);
 
+            // Restore dock region modes
+            var uiState = Settings.Landscape.UIState;
+            if (Enum.TryParse<DockRegionMode>(uiState.LeftDockMode, out var leftMode))
+                DockingManager.LeftMode = leftMode;
+            if (Enum.TryParse<DockRegionMode>(uiState.RightDockMode, out var rightMode))
+                DockingManager.RightMode = rightMode;
+            if (Enum.TryParse<DockRegionMode>(uiState.TopDockMode, out var topMode))
+                DockingManager.TopMode = topMode;
+            if (Enum.TryParse<DockRegionMode>(uiState.BottomDockMode, out var bottomMode))
+                DockingManager.BottomMode = bottomMode;
+
             // Register Viewports
             foreach (var vp in Viewports) {
                 // Use a sanitized ID
@@ -830,6 +841,12 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
                         IsVisible = panel.IsVisible
                     });
                 }
+
+                // Save dock region modes
+                uiState.LeftDockMode = DockingManager.LeftMode.ToString();
+                uiState.RightDockMode = DockingManager.RightMode.ToString();
+                uiState.TopDockMode = DockingManager.TopMode.ToString();
+                uiState.BottomDockMode = DockingManager.BottomMode.ToString();
 
                 Settings.Save();
             }
