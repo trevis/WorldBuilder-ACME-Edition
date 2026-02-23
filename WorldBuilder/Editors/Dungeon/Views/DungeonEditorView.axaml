@@ -1,0 +1,115 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:vm="using:WorldBuilder.Editors.Dungeon"
+             xmlns:local="using:WorldBuilder.Editors.Dungeon.Views"
+             xmlns:dh="using:DialogHostAvalonia"
+             mc:Ignorable="d" d:DesignWidth="1200" d:DesignHeight="800"
+             x:Class="WorldBuilder.Editors.Dungeon.Views.DungeonEditorView"
+             x:DataType="vm:DungeonEditorViewModel">
+
+    <UserControl.Styles>
+        <Style Selector="Button.dng-toolbar-btn">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Padding" Value="10,6" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="MinWidth" Value="0" />
+            <Setter Property="Focusable" Value="False" />
+            <Setter Property="CornerRadius" Value="4" />
+            <Setter Property="Foreground" Value="#8a7a9e" />
+        </Style>
+        <Style Selector="Button.dng-toolbar-btn:pointerover /template/ ContentPresenter">
+            <Setter Property="Background" Value="#33ffffff" />
+            <Setter Property="Foreground" Value="#c0b0d8" />
+        </Style>
+    </UserControl.Styles>
+
+    <dh:DialogHost Identifier="DungeonDialogHost"
+                   DialogMargin="0"
+                   CloseOnClickAway="True"
+                   OverlayBackground="#80000000">
+        <DockPanel>
+            <!-- Toolbar -->
+            <Border DockPanel.Dock="Top"
+                    Background="#120c22"
+                    BorderBrush="#2a1d42"
+                    BorderThickness="0,0,0,1"
+                    Padding="4,2">
+                <DockPanel>
+                    <StackPanel Orientation="Horizontal" Spacing="4" DockPanel.Dock="Left">
+                        <Button Classes="dng-toolbar-btn"
+                                Content="Open Dungeon..."
+                                Command="{Binding OpenLandblockCommand}" />
+                        <Border Width="1" Background="#2a1d42" Margin="4,2" />
+                        <TextBlock Text="{Binding StatusText}"
+                                   VerticalAlignment="Center"
+                                   FontSize="12"
+                                   Foreground="#8a7a9e" />
+                    </StackPanel>
+
+                    <StackPanel Orientation="Horizontal" Spacing="8" DockPanel.Dock="Right" HorizontalAlignment="Right">
+                        <TextBlock Text="{Binding CurrentPositionText}"
+                                   VerticalAlignment="Center"
+                                   FontSize="11"
+                                   Foreground="#5a4a6e" />
+                    </StackPanel>
+                </DockPanel>
+            </Border>
+
+            <!-- Status Bar -->
+            <Border DockPanel.Dock="Bottom"
+                    Background="#120c22"
+                    BorderBrush="#2a1d42"
+                    BorderThickness="0,1,0,0"
+                    Padding="10,4">
+                <DockPanel>
+                    <TextBlock DockPanel.Dock="Left"
+                               FontSize="11"
+                               Foreground="#8a7a9e"
+                               VerticalAlignment="Center"
+                               Text="Dungeon Editor" />
+                    <TextBlock DockPanel.Dock="Right"
+                               HorizontalAlignment="Right"
+                               FontSize="11"
+                               Foreground="#5a4a6e"
+                               VerticalAlignment="Center">
+                        <TextBlock.Text>
+                            <MultiBinding StringFormat="Cells: {0}">
+                                <Binding Path="CellCount" />
+                            </MultiBinding>
+                        </TextBlock.Text>
+                    </TextBlock>
+                    <TextBlock FontSize="11"
+                               Foreground="#7c4dbd"
+                               VerticalAlignment="Center"
+                               Margin="20,0,0,0"
+                               IsVisible="{Binding HasSelectedCell}"
+                               Text="{Binding SelectedCellInfo}" />
+                </DockPanel>
+            </Border>
+
+            <!-- 3D Viewport -->
+            <Grid>
+                <local:DungeonViewportControl />
+
+                <!-- Empty state overlay -->
+                <Border Background="#CC0a0614"
+                        IsVisible="{Binding !HasDungeon}"
+                        IsHitTestVisible="False">
+                    <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" Spacing="12">
+                        <TextBlock Text="No dungeon loaded"
+                                   FontSize="18"
+                                   Foreground="#5a4a6e"
+                                   HorizontalAlignment="Center" />
+                        <TextBlock Text="Click 'Open Dungeon...' or press Ctrl+G to load a landblock"
+                                   FontSize="12"
+                                   Foreground="#3a2a4e"
+                                   HorizontalAlignment="Center" />
+                    </StackPanel>
+                </Border>
+            </Grid>
+        </DockPanel>
+    </dh:DialogHost>
+</UserControl>

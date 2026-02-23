@@ -941,6 +941,12 @@ namespace WorldBuilder.Editors.Landscape {
         /// </summary>
         public IEnumerable<ushort> GetLoadedLandblockKeys() => _loadedCells.Keys.ToList();
 
+        /// <summary>
+        /// Returns the loaded cells for a specific landblock, or null if not loaded.
+        /// </summary>
+        public List<LoadedEnvCell>? GetLoadedCellsForLandblock(ushort lbKey) =>
+            _loadedCells.TryGetValue(lbKey, out var cells) ? cells : null;
+
         #endregion
 
         #region Portal Visibility

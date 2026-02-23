@@ -8,6 +8,7 @@ using CommunityToolkit.Mvvm.Messaging;
 using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
+using WorldBuilder.Editors.Dungeon;
 using WorldBuilder.Editors.Landscape.ViewModels;
 using WorldBuilder.Lib;
 using WorldBuilder.Lib.Docking;
@@ -22,6 +23,9 @@ public partial class MainViewModel : ViewModelBase {
     private readonly InputManager _inputManager;
 
     private bool _settingsOpen;
+
+    [ObservableProperty]
+    private object? _activeEditor;
 
     public KeyGesture? ExitGesture => _inputManager.GetKeyGesture(InputActions.AppExit);
     public KeyGesture? GotoLandblockGesture => _inputManager.GetKeyGesture(InputActions.NavigationGoToLandblock);
@@ -45,6 +49,7 @@ public partial class MainViewModel : ViewModelBase {
     public MainViewModel(WorldBuilderSettings settings) {
         _settings = settings;
         _inputManager = new InputManager(_settings);
+        ActiveEditor = ProjectManager.Instance?.GetProjectService<LandscapeEditorViewModel>();
     }
 
     [RelayCommand]
@@ -146,5 +151,15 @@ public partial class MainViewModel : ViewModelBase {
              };
              window.Show(desktop.MainWindow);
         }
+    }
+
+    [RelayCommand]
+    private void SwitchToLandscapeEditor() {
+        ActiveEditor = ProjectManager.Instance?.GetProjectService<LandscapeEditorViewModel>();
+    }
+
+    [RelayCommand]
+    private void SwitchToDungeonEditor() {
+        ActiveEditor = ProjectManager.Instance?.GetProjectService<DungeonEditorViewModel>();
     }
 }

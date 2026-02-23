@@ -46,6 +46,16 @@ namespace WorldBuilder.Lib.Docking {
 
         public IEnumerable<IDockable> AllPanels => _allPanels;
 
+        public void Clear() {
+            _allPanels.Clear();
+            LeftPanels.Clear();
+            RightPanels.Clear();
+            TopPanels.Clear();
+            BottomPanels.Clear();
+            CenterPanels.Clear();
+            FloatingPanels.Clear();
+        }
+
         public void RegisterPanel(IDockable panel) {
             if (_allPanels.Any(p => p.Id == panel.Id)) return;
             _allPanels.Add(panel);

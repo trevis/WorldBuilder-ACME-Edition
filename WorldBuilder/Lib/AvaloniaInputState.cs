@@ -46,6 +46,27 @@ namespace WorldBuilder.Lib {
         /// <returns>True if the key was down, false if it was up.</returns>
         public bool WasKeyDownLastFrame(Key key) => _keysPrevious.Get((int)key);
 
+        /// <summary>
+        /// Updates basic mouse state (position, buttons, delta) without any raycasting.
+        /// Used by editors that don't have terrain (e.g. Dungeon Editor).
+        /// </summary>
+        internal void UpdateMouseStateBasic(Point p, PointerPointProperties properties, int Width, int Height, Vector2 inputScale) {
+            Vector2 relativePos = new Vector2((float)p.X, (float)p.Y) * inputScale;
+            _currentMouseState = new MouseState {
+                Position = relativePos,
+                LeftPressed = properties.IsLeftButtonPressed,
+                RightPressed = properties.IsRightButtonPressed,
+                MiddlePressed = properties.IsMiddleButtonPressed,
+                ShiftPressed = Modifiers.HasFlag(KeyModifiers.Shift),
+                CtrlPressed = Modifiers.HasFlag(KeyModifiers.Control),
+                Delta = relativePos - _lastMousePos,
+                IsOverTerrain = false,
+                TerrainHit = null,
+                ObjectHit = null,
+                EnvCellHit = null
+            };
+        }
+
         internal void UpdateMouseState(Point p, PointerPointProperties properties, int Width, int Height, Vector2 inputScale, ICamera camera, TerrainSystem provider) {
             Vector2 relativePos = new Vector2((float)p.X, (float)p.Y) * inputScale;
             var hitResult = TerrainRaycast.Raycast(

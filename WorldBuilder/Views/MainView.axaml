@@ -4,6 +4,9 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:editors="clr-namespace:WorldBuilder.Editors.Landscape.Views"
+    xmlns:dungeonEditors="clr-namespace:WorldBuilder.Editors.Dungeon.Views"
+    xmlns:landscapeVm="clr-namespace:WorldBuilder.Editors.Landscape.ViewModels"
+    xmlns:dungeonVm="clr-namespace:WorldBuilder.Editors.Dungeon"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     xmlns:vm="clr-namespace:WorldBuilder.ViewModels"
     xmlns:docking="clr-namespace:WorldBuilder.Lib.Docking;assembly=WorldBuilder"
@@ -50,6 +53,10 @@
                         Header="Go to Landblock..."
                         InputGesture="{Binding GotoLandblockGesture}" />
                 </MenuItem>
+                <MenuItem Header="E_ditors">
+                    <MenuItem Command="{Binding SwitchToLandscapeEditorCommand}" Header="Landscape Editor" />
+                    <MenuItem Command="{Binding SwitchToDungeonEditorCommand}" Header="Dungeon Editor" />
+                </MenuItem>
                 <MenuItem Header="_Windows" ItemsSource="{Binding DockingPanels}">
                     <MenuItem.Styles>
                         <Style Selector="MenuItem > MenuItem" x:DataType="docking:IDockable">
@@ -88,7 +95,16 @@
             </DockPanel>
         </Border>
 
-        <!--  Editor Content  -->
-        <editors:LandscapeEditorView />
+        <!--  Editor Content (only one editor is instantiated at a time) -->
+        <ContentControl Content="{Binding ActiveEditor}" x:CompileBindings="False">
+            <ContentControl.DataTemplates>
+                <DataTemplate DataType="{x:Type landscapeVm:LandscapeEditorViewModel}">
+                    <editors:LandscapeEditorView />
+                </DataTemplate>
+                <DataTemplate DataType="{x:Type dungeonVm:DungeonEditorViewModel}">
+                    <dungeonEditors:DungeonEditorView />
+                </DataTemplate>
+            </ContentControl.DataTemplates>
+        </ContentControl>
     </DockPanel>
 </UserControl>

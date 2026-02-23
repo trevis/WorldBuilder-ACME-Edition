@@ -113,6 +113,10 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
             _dats = project.DocumentManager.Dats;
             _project = project;
 
+            Viewports.Clear();
+            Tools.Clear();
+            DockingManager.Clear();
+
             TerrainSystem = new TerrainSystem(project, _dats, Settings, _logger);
 
             // Create default viewports
@@ -700,8 +704,8 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
             uint? result = null;
             var textBox = new TextBox {
                 Text = "",
-                Width = 300,
-                Watermark = "Hex ID (e.g. C6AC or 01D90108) or X,Y (e.g. 198,172)"
+                Width = 400,
+                Watermark = "Search by name, hex ID (C6AC), or X,Y (198,172)"
             };
             var errorText = new TextBlock {
                 Text = "",
@@ -710,9 +714,51 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
                 IsVisible = false
             };
 
+            var locationList = new ListBox {
+                MaxHeight = 250,
+                Width = 400,
+                IsVisible = false,
+                FontSize = 12,
+            };
+
+            void UpdateLocationResults(string? query) {
+                if (string.IsNullOrWhiteSpace(query) || query.Length < 2) {
+                    locationList.IsVisible = false;
+                    locationList.ItemsSource = null;
+                    return;
+                }
+
+                var results = LocationDatabase.Search(query).Take(50).ToList();
+                if (results.Count > 0) {
+                    locationList.ItemsSource = results.Select(r => $"{r.Name}  [{r.CellIdHex}]").ToList();
+                    locationList.IsVisible = true;
+                }
+                else {
+                    locationList.IsVisible = false;
+                    locationList.ItemsSource = null;
+                }
+            }
+
+            textBox.TextChanged += (s, e) => {
+                errorText.IsVisible = false;
+                UpdateLocationResults(textBox.Text);
+            };
+
+            locationList.SelectionChanged += (s, e) => {
+                if (locationList.SelectedIndex < 0) return;
+                var query = textBox.Text;
+                if (string.IsNullOrWhiteSpace(query)) return;
+                var results = LocationDatabase.Search(query).Take(50).ToList();
+                if (locationList.SelectedIndex < results.Count) {
+                    var selected = results[locationList.SelectedIndex];
+                    result = selected.CellId;
+                    DialogHost.Close("MainDialogHost");
+                }
+            };
+
             await DialogHost.Show(new StackPanel {
                 Margin = new Avalonia.Thickness(20),
-                Spacing = 15,
+                Spacing = 10,
                 Children = {
                     new TextBlock {
                         Text = "Go to Location",
@@ -720,13 +766,14 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
                         FontWeight = FontWeight.Bold
                     },
                     new TextBlock {
-                        Text = "Enter a landblock ID in hex (e.g. C6AC),\na full cell ID (e.g. 01D90108),\nor X,Y coordinates (e.g. 198,172).",
+                        Text = "Search by name or enter a landblock ID in hex,\na full cell ID, or X,Y coordinates.",
                         TextWrapping = TextWrapping.Wrap,
-                        MaxWidth = 300,
+                        MaxWidth = 400,
                         FontSize = 12,
                         Opacity = 0.7
                     },
                     textBox,
+                    locationList,
                     errorText,
                     new StackPanel {
                         Orientation = Avalonia.Layout.Orientation.Horizontal,
@@ -740,13 +787,17 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
                             new Button {
                                 Content = "Go",
                                 Command = new RelayCommand(() => {
+                                    if (result != null) {
+                                        DialogHost.Close("MainDialogHost");
+                                        return;
+                                    }
                                     var parsed = ParseLocationInput(textBox.Text);
                                     if (parsed != null) {
                                         result = parsed;
                                         DialogHost.Close("MainDialogHost");
                                     }
                                     else {
-                                        errorText.Text = "Invalid input. Use hex (C6AC or 01D90108) or X,Y (198,172).";
+                                        errorText.Text = "Invalid input. Try a name, hex ID, or X,Y coordinates.";
                                         errorText.IsVisible = true;
                                     }
                                 })
@@ -852,6 +903,7 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
             }
 
             TerrainSystem?.Dispose();
+            TerrainSystem = null;
         }
     }
 

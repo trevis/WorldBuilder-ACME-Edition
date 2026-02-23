@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using System;
+using WorldBuilder.Editors.Dungeon;
 using WorldBuilder.Editors.Landscape;
 using WorldBuilder.Editors.Landscape.ViewModels;
 using WorldBuilder.Editors.Landscape.Views;
@@ -48,6 +49,7 @@ namespace WorldBuilder.Lib.Extensions {
             collection.AddSingleton<IDocumentStorageService, DocumentStorageService>();
             collection.AddSingleton(project);
             collection.AddSingleton<LandscapeEditorViewModel>();
+            collection.AddSingleton<DungeonEditorViewModel>();
             collection.AddTransient<ObjectDebugViewModel>();
             collection.AddTransient<HistorySnapshotPanelViewModel>();
         }
