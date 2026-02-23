@@ -3,6 +3,10 @@
 ##
 ## Get latest from https://github.com/github/gitignore/blob/master/VisualStudio.gitignore
 
+# Temp files from git blob/encoding checks
+blob_*.txt
+blob_*.bin
+
 *.exe
 appcast.xml
 appcast.xml.signature
