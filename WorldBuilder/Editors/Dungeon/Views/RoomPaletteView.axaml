@@ -1,0 +1,81 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:vm="using:WorldBuilder.Editors.Dungeon"
+             mc:Ignorable="d" d:DesignWidth="280" d:DesignHeight="600"
+             x:Class="WorldBuilder.Editors.Dungeon.Views.RoomPaletteView"
+             x:DataType="vm:RoomPaletteViewModel">
+
+    <DockPanel>
+        <!-- Header -->
+        <Border DockPanel.Dock="Top"
+                Background="#16102a"
+                BorderBrush="#2a1d42"
+                BorderThickness="0,0,0,1"
+                Padding="8,6">
+            <TextBlock Text="Room Palette"
+                       FontSize="12"
+                       FontWeight="SemiBold"
+                       Foreground="#c0b0d8" />
+        </Border>
+
+        <!-- Search -->
+        <Border DockPanel.Dock="Top" Padding="6,4">
+            <TextBox Text="{Binding SearchText}"
+                     Watermark="Search by Environment ID..."
+                     FontSize="11" />
+        </Border>
+
+        <!-- Filters -->
+        <Border DockPanel.Dock="Top" Padding="6,2">
+            <StackPanel Orientation="Horizontal" Spacing="6">
+                <TextBlock Text="Portals:"
+                           VerticalAlignment="Center"
+                           FontSize="11"
+                           Foreground="#8a7a9e" />
+                <NumericUpDown Value="{Binding MinPortals}"
+                               Minimum="0" Maximum="20"
+                               Width="60" FontSize="11"
+                               FormatString="0" />
+                <TextBlock Text="to"
+                           VerticalAlignment="Center"
+                           FontSize="11"
+                           Foreground="#8a7a9e" />
+                <NumericUpDown Value="{Binding MaxPortals}"
+                               Minimum="0" Maximum="99"
+                               Width="60" FontSize="11"
+                               FormatString="0" />
+            </StackPanel>
+        </Border>
+
+        <!-- Status -->
+        <Border DockPanel.Dock="Bottom"
+                Padding="6,4"
+                BorderBrush="#2a1d42"
+                BorderThickness="0,1,0,0">
+            <TextBlock Text="{Binding StatusText}"
+                       FontSize="10"
+                       Foreground="#5a4a6e" />
+        </Border>
+
+        <!-- Room List -->
+        <ListBox ItemsSource="{Binding FilteredRooms}"
+                 SelectedItem="{Binding SelectedRoom}"
+                 FontSize="11"
+                 Background="Transparent">
+            <ListBox.ItemTemplate>
+                <DataTemplate x:DataType="vm:RoomEntry">
+                    <StackPanel Margin="2,3">
+                        <TextBlock Text="{Binding DisplayName}"
+                                   Foreground="#c0b0d8"
+                                   FontSize="11" />
+                        <TextBlock Text="{Binding DetailText}"
+                                   Foreground="#5a4a6e"
+                                   FontSize="10" />
+                    </StackPanel>
+                </DataTemplate>
+            </ListBox.ItemTemplate>
+        </ListBox>
+    </DockPanel>
+</UserControl>

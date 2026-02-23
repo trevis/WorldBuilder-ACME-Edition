@@ -4,8 +4,10 @@ using Avalonia.Media;
 using Chorizite.OpenGLSDLBackend;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using DatReaderWriter.Types;
 using DialogHostAvalonia;
 using System;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Globalization;
 using System.Linq;
@@ -28,17 +30,23 @@ namespace WorldBuilder.Editors.Dungeon {
         [ObservableProperty] private int _cellCount;
         [ObservableProperty] private bool _hasDungeon;
         [ObservableProperty] private bool _hasSelectedCell;
+        [ObservableProperty] private bool _isPlacementMode;
+        [ObservableProperty] private string _placementStatusText = "";
 
         private LoadedEnvCell? _selectedCell;
+        private bool _needsCameraFocus;
 
         public WorldBuilderSettings Settings { get; }
 
         private Project? _project;
         private IDatReaderWriter? _dats;
         private DungeonScene? _scene;
+        private DungeonDocument? _document;
         private ushort _loadedLandblockKey;
 
         public DungeonScene? Scene => _scene;
+        public DungeonDocument? Document => _document;
+        public RoomPaletteViewModel? RoomPalette { get; private set; }
 
         public DungeonEditorViewModel(WorldBuilderSettings settings) {
             Settings = settings;
@@ -48,6 +56,12 @@ namespace WorldBuilder.Editors.Dungeon {
             _project = project;
             _dats = project.DocumentManager.Dats;
             _scene = new DungeonScene(_dats, Settings);
+
+            RoomPalette = new RoomPaletteViewModel(_dats);
+            RoomPalette.RoomSelected += OnRoomSelected;
+            OnPropertyChanged(nameof(RoomPalette));
+
+            _ = RoomPalette.LoadRoomsAsync();
         }
 
         /// <summary>
@@ -67,6 +81,18 @@ namespace WorldBuilder.Editors.Dungeon {
 
             _scene.Camera.ScreenSize = new Vector2(canvasSize.Width, canvasSize.Height);
             _scene.Render((float)canvasSize.Width / canvasSize.Height);
+
+            // Deferred camera focus: wait until cells are actually uploaded to GPU
+            if (_needsCameraFocus && _scene.EnvCellManager != null && _scene.EnvCellManager.LoadedCellCount > 0) {
+                if (_targetCellId >= 0x0100) {
+                    _scene.FocusCameraOnCell(_loadedLandblockKey, _targetCellId);
+                }
+                else {
+                    _scene.FocusCamera();
+                }
+                _needsCameraFocus = false;
+                _targetCellId = 0;
+            }
 
             var cam = _scene.Camera.Position;
             CurrentPositionText = $"({cam.X:F0}, {cam.Y:F0}, {cam.Z:F0})";
@@ -118,10 +144,16 @@ namespace WorldBuilder.Editors.Dungeon {
         }
 
         internal void HandlePointerPressed(AvaloniaInputState inputState) {
-            if (_scene?.EnvCellManager == null || !HasDungeon) return;
+            if (_scene?.EnvCellManager == null) return;
 
             var mouse = inputState.MouseState;
             if (!mouse.LeftPressed || mouse.RightPressed) return;
+
+            // If in placement mode and dungeon is empty, place first cell at camera target
+            if (IsPlacementMode && _pendingRoom != null && _document != null && _document.Cells.Count == 0) {
+                PlaceFirstCell();
+                return;
+            }
 
             var camera = _scene.Camera;
             float width = camera.ScreenSize.X;
@@ -143,6 +175,14 @@ namespace WorldBuilder.Editors.Dungeon {
             var rayOrigin = new Vector3(nearW.X, nearW.Y, nearW.Z);
             var rayDir = Vector3.Normalize(new Vector3(farW.X, farW.Y, farW.Z) - rayOrigin);
 
+            // In placement mode, try to snap to an open portal
+            if (IsPlacementMode && _pendingRoom != null && _document != null) {
+                TrySnapToPortal(rayOrigin, rayDir);
+                return;
+            }
+
+            // Normal mode: select cell
+            if (!HasDungeon) return;
             var hit = _scene.EnvCellManager.Raycast(rayOrigin, rayDir);
             if (hit.Hit) {
                 SelectCell(hit.Cell);
@@ -176,6 +216,243 @@ namespace WorldBuilder.Editors.Dungeon {
             SelectedCellInfo = "";
         }
 
+        #region Placement
+
+        private RoomEntry? _pendingRoom;
+
+        private void OnRoomSelected(object? sender, RoomEntry room) {
+            if (_document == null) {
+                // Need a landblock first -- create a new empty dungeon
+                EnsureDocument();
+            }
+
+            _pendingRoom = room;
+            IsPlacementMode = true;
+
+            if (_document!.Cells.Count == 0) {
+                PlacementStatusText = $"Click viewport to place '{room.DisplayName}' as first cell";
+            }
+            else {
+                PlacementStatusText = $"Click an open portal to attach '{room.DisplayName}'";
+            }
+        }
+
+        [RelayCommand]
+        private void CancelPlacement() {
+            _pendingRoom = null;
+            IsPlacementMode = false;
+            PlacementStatusText = "";
+        }
+
+        [RelayCommand]
+        private async Task NewDungeon() {
+            if (_dats == null) return;
+
+            var cellId = await ShowNewDungeonDialog();
+            if (cellId == null) return;
+
+            var lbKey = (ushort)(cellId.Value >> 16);
+            if (lbKey == 0) lbKey = (ushort)(cellId.Value & 0xFFFF);
+
+            _loadedLandblockKey = lbKey;
+            _document = new DungeonDocument(lbKey);
+            HasDungeon = true;
+            CellCount = 0;
+            StatusText = $"LB {lbKey:X4}: New dungeon (empty)";
+
+            _scene?.Camera.SetPosition(Vector3.Zero + new Vector3(0, -20f, 10f));
+            _scene?.Camera.LookAt(Vector3.Zero);
+        }
+
+        private void EnsureDocument() {
+            if (_document != null) return;
+            _loadedLandblockKey = 0xFFFF;
+            _document = new DungeonDocument(_loadedLandblockKey);
+            HasDungeon = true;
+        }
+
+        private void PlaceFirstCell() {
+            if (_pendingRoom == null || _document == null || _scene == null || _dats == null) return;
+
+            var surfaces = GetSurfacesForRoom(_pendingRoom);
+            var cellNum = _document.AddCell(
+                _pendingRoom.EnvironmentId,
+                _pendingRoom.CellStructureIndex,
+                Vector3.Zero,
+                Quaternion.Identity,
+                surfaces);
+
+            RefreshRendering();
+            _needsCameraFocus = true;
+
+            StatusText = $"LB {_document.LandblockKey:X4}: {_document.Cells.Count} cells";
+            CellCount = _document.Cells.Count;
+
+            CancelPlacement();
+        }
+
+        private void TrySnapToPortal(Vector3 rayOrigin, Vector3 rayDir) {
+            if (_pendingRoom == null || _document == null || _scene == null || _dats == null) return;
+
+            // Raycast to find which cell was clicked
+            var hit = _scene.EnvCellManager?.Raycast(rayOrigin, rayDir);
+            if (hit == null || !hit.Value.Hit) return;
+
+            var targetCell = hit.Value.Cell;
+            var targetCellNum = (ushort)(targetCell.CellId & 0xFFFF);
+            var targetDocCell = _document.GetCell(targetCellNum);
+            if (targetDocCell == null) return;
+
+            // Load the target cell's CellStruct to get portal polygons
+            uint targetEnvFileId = targetCell.EnvironmentId;
+            if (!_dats.TryGet<DatReaderWriter.DBObjs.Environment>(targetEnvFileId, out var targetEnv)) return;
+
+            var targetDocCellStruct = (ushort)targetDocCell.CellStructure;
+            if (!targetEnv.Cells.TryGetValue(targetDocCellStruct, out var targetCellStruct)) return;
+
+            // Find an open portal on the target cell (not yet connected)
+            var connectedPolygons = new HashSet<ushort>();
+            foreach (var cp in targetDocCell.CellPortals) {
+                connectedPolygons.Add((ushort)cp.PolygonId);
+            }
+
+            var targetPortalIds = PortalSnapper.GetPortalPolygonIds(targetCellStruct);
+            ushort? openPortalId = null;
+            foreach (var pid in targetPortalIds) {
+                if (!connectedPolygons.Contains(pid)) {
+                    openPortalId = pid;
+                    break;
+                }
+            }
+
+            if (openPortalId == null) {
+                PlacementStatusText = "No open portals on this cell";
+                return;
+            }
+
+            // Get target portal geometry in local space, then transform to world
+            var targetPortalLocal = PortalSnapper.GetPortalGeometry(targetCellStruct, openPortalId.Value);
+            if (targetPortalLocal == null) return;
+
+            var (targetCentroidWorld, targetNormalWorld) = PortalSnapper.TransformPortalToWorld(
+                targetPortalLocal.Value, targetDocCell.Origin, targetDocCell.Orientation);
+
+            // Load the source room's CellStruct
+            uint sourceEnvFileId = (uint)(_pendingRoom.EnvironmentId | 0x0D000000);
+            if (!_dats.TryGet<DatReaderWriter.DBObjs.Environment>(sourceEnvFileId, out var sourceEnv)) return;
+            if (!sourceEnv.Cells.TryGetValue(_pendingRoom.CellStructureIndex, out var sourceCellStruct)) return;
+
+            // Pick the first portal on the source room to connect with
+            var sourcePortalIds = PortalSnapper.GetPortalPolygonIds(sourceCellStruct);
+            if (sourcePortalIds.Count == 0) {
+                PlacementStatusText = "Selected room has no portals";
+                return;
+            }
+            var sourcePortalId = sourcePortalIds[0];
+
+            var sourcePortalLocal = PortalSnapper.GetPortalGeometry(sourceCellStruct, sourcePortalId);
+            if (sourcePortalLocal == null) return;
+
+            // Compute snap transform
+            var (newOrigin, newOrientation) = PortalSnapper.ComputeSnapTransform(
+                targetCentroidWorld, targetNormalWorld, sourcePortalLocal.Value);
+
+            // Add the new cell
+            var surfaces = GetSurfacesForRoom(_pendingRoom);
+            var newCellNum = _document.AddCell(
+                _pendingRoom.EnvironmentId,
+                _pendingRoom.CellStructureIndex,
+                newOrigin,
+                newOrientation,
+                surfaces);
+
+            // Connect portals
+            _document.ConnectPortals(targetCellNum, openPortalId.Value, newCellNum, sourcePortalId);
+
+            RefreshRendering();
+
+            StatusText = $"LB {_document.LandblockKey:X4}: {_document.Cells.Count} cells";
+            CellCount = _document.Cells.Count;
+
+            CancelPlacement();
+        }
+
+        private List<ushort> GetSurfacesForRoom(RoomEntry room) {
+            // Try to find surfaces from an existing EnvCell using this environment
+            if (room.DefaultSurfaces.Count > 0)
+                return new List<ushort>(room.DefaultSurfaces);
+
+            return new List<ushort>();
+        }
+
+        private void RefreshRendering() {
+            if (_scene == null || _document == null) return;
+            _scene.RefreshFromDocument(_document);
+        }
+
+        #endregion
+
+        private async Task<uint?> ShowNewDungeonDialog() {
+            uint? result = null;
+            var textBox = new TextBox {
+                Text = "",
+                Width = 300,
+                Watermark = "Landblock hex ID for new dungeon (e.g. FFFF)"
+            };
+            var errorText = new TextBlock {
+                Text = "",
+                Foreground = Brushes.Red,
+                FontSize = 12,
+                IsVisible = false
+            };
+
+            await DialogHost.Show(new StackPanel {
+                Margin = new Avalonia.Thickness(20),
+                Spacing = 10,
+                Children = {
+                    new TextBlock {
+                        Text = "New Dungeon",
+                        FontSize = 16,
+                        FontWeight = FontWeight.Bold
+                    },
+                    new TextBlock {
+                        Text = "Enter a landblock ID for the new dungeon.",
+                        FontSize = 12,
+                        Opacity = 0.7
+                    },
+                    textBox,
+                    errorText,
+                    new StackPanel {
+                        Orientation = Avalonia.Layout.Orientation.Horizontal,
+                        HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right,
+                        Spacing = 10,
+                        Children = {
+                            new Button {
+                                Content = "Cancel",
+                                Command = new RelayCommand(() => DialogHost.Close("DungeonDialogHost"))
+                            },
+                            new Button {
+                                Content = "Create",
+                                Command = new RelayCommand(() => {
+                                    var parsed = ParseLandblockInput(textBox.Text);
+                                    if (parsed != null) {
+                                        result = parsed;
+                                        DialogHost.Close("DungeonDialogHost");
+                                    }
+                                    else {
+                                        errorText.Text = "Invalid hex ID.";
+                                        errorText.IsVisible = true;
+                                    }
+                                })
+                            }
+                        }
+                    }
+                }
+            }, "DungeonDialogHost");
+
+            return result;
+        }
+
         [RelayCommand]
         public async Task OpenLandblock() {
             if (_dats == null) return;
@@ -183,13 +460,22 @@ namespace WorldBuilder.Editors.Dungeon {
             var cellId = await ShowOpenDungeonDialog();
             if (cellId == null) return;
 
-            var lbId = (ushort)(cellId.Value >> 16);
-            if (lbId == 0) lbId = (ushort)(cellId.Value & 0xFFFF);
+            var fullId = cellId.Value;
+            var lbId = (ushort)(fullId >> 16);
+            var cellPart = (ushort)(fullId & 0xFFFF);
 
-            LoadDungeon(lbId);
+            // If only landblock was given (4-char hex), cellPart might be the landblock
+            if (lbId == 0 && cellPart != 0) {
+                lbId = cellPart;
+                cellPart = 0;
+            }
+
+            LoadDungeon(lbId, cellPart >= 0x0100 ? cellPart : (ushort)0);
         }
 
-        public void LoadDungeon(ushort landblockKey) {
+        private ushort _targetCellId;
+
+        public void LoadDungeon(ushort landblockKey, ushort targetCellId = 0) {
             if (_scene == null || _dats == null) return;
 
             uint lbiId = ((uint)landblockKey << 16) | 0xFFFE;
@@ -200,14 +486,18 @@ namespace WorldBuilder.Editors.Dungeon {
                 return;
             }
 
+            // Load into document for editing
+            _document = new DungeonDocument(landblockKey);
+            _document.LoadFromDat(_dats);
+
             if (_scene.LoadLandblock(landblockKey)) {
                 _loadedLandblockKey = landblockKey;
-                var cells = _scene.EnvCellManager?.GetLoadedCellsForLandblock(landblockKey);
-                CellCount = cells?.Count ?? (int)lbi.NumCells;
+                _targetCellId = targetCellId;
+                CellCount = _document.Cells.Count;
                 StatusText = $"LB {landblockKey:X4}: {CellCount} cells";
                 HasDungeon = true;
 
-                _scene.FocusCamera();
+                _needsCameraFocus = true;
             }
             else {
                 StatusText = $"LB {landblockKey:X4}: Failed to load";
