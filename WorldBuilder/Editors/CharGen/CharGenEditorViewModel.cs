@@ -118,7 +118,10 @@ namespace WorldBuilder.Editors.CharGen {
             _portalDoc.SetEntry(CharGenId, _charGen);
 
             if (SelectedDetail != null) {
-                var idx = HeritageGroups.ToList().FindIndex(h => h.Id == SelectedDetail.HeritageId);
+                int idx = -1;
+                for (int i = 0; i < HeritageGroups.Count; i++) {
+                    if (HeritageGroups[i].Id == SelectedDetail.HeritageId) { idx = i; break; }
+                }
                 if (idx >= 0 && _charGen.HeritageGroups.TryGetValue(SelectedDetail.HeritageId, out var updated)) {
                     HeritageGroups[idx] = new HeritageListItem(SelectedDetail.HeritageId, updated);
                 }

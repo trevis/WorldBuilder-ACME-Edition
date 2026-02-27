@@ -535,7 +535,7 @@ namespace WorldBuilder.Editors.Dungeon {
 
             var dc = _document?.GetCell((ushort)(cell.CellId & 0xFFFF));
             if (dc != null) {
-                SelectedCellSurfaces = string.Join(", ", dc.Surfaces.Select(s => $"{s:X4}"));
+                SelectedCellSurfaces = string.Join(", ", dc.Surfaces.Select(s => s.ToString("X4")));
                 CellPosX = dc.Origin.X.ToString("F1");
                 CellPosY = dc.Origin.Y.ToString("F1");
                 CellPosZ = dc.Origin.Z.ToString("F1");
@@ -573,7 +573,7 @@ namespace WorldBuilder.Editors.Dungeon {
                 SelectedCellInfo = BuildCellInfoString(_selectedCell, includeStatics: true);
                 var dc = _document?.GetCell((ushort)(_selectedCell.CellId & 0xFFFF));
                 if (dc != null) {
-                    SelectedCellSurfaces = string.Join(", ", dc.Surfaces.Select(s => $"{s:X4}"));
+                    SelectedCellSurfaces = string.Join(", ", dc.Surfaces.Select(s => s.ToString("X4")));
                     CellPosX = dc.Origin.X.ToString("F1");
                     CellPosY = dc.Origin.Y.ToString("F1");
                     CellPosZ = dc.Origin.Z.ToString("F1");
@@ -589,7 +589,7 @@ namespace WorldBuilder.Editors.Dungeon {
                 SelectedCellInfo = $"{SelectedCellCount} cells selected";
                 var primaryDc = _document?.GetCell((ushort)(_selectedCell.CellId & 0xFFFF));
                 if (primaryDc != null) {
-                    SelectedCellSurfaces = string.Join(", ", primaryDc.Surfaces.Select(s => $"{s:X4}"));
+                    SelectedCellSurfaces = string.Join(", ", primaryDc.Surfaces.Select(s => s.ToString("X4")));
                     RefreshSurfaceSlots(primaryDc);
                     SurfaceBrowser?.SetCurrentCellSurfaces(primaryDc.Surfaces);
                 }
@@ -903,13 +903,12 @@ namespace WorldBuilder.Editors.Dungeon {
         [ObservableProperty] private string _selectedCellSurfaces = "";
 
         private void RefreshSurfaceSlots(DungeonCellData dc) {
-            SurfaceSlots.Clear();
+            var slots = new List<CellSurfaceSlot>(dc.Surfaces.Count);
             for (int i = 0; i < dc.Surfaces.Count; i++) {
                 var surfId = dc.Surfaces[i];
                 var fullId = (uint)(surfId | 0x08000000);
                 var slot = new CellSurfaceSlot(i, surfId, $"Slot {i}: 0x{surfId:X4}");
 
-                // Generate thumbnail on background thread
                 var localSlot = slot;
                 var localDats = _dats;
                 if (localDats != null) {
@@ -919,8 +918,9 @@ namespace WorldBuilder.Editors.Dungeon {
                         Avalonia.Threading.Dispatcher.UIThread.Post(() => localSlot.Thumbnail = thumb);
                     });
                 }
-                SurfaceSlots.Add(slot);
+                slots.Add(slot);
             }
+            SurfaceSlots = new ObservableCollection<CellSurfaceSlot>(slots);
             if (SurfaceSlots.Count > 0) SelectedSurfaceSlot = 0;
         }
 
@@ -1013,7 +1013,7 @@ namespace WorldBuilder.Editors.Dungeon {
             RefreshRendering();
             var primaryDc = _document.GetCell((ushort)(_selectedCell!.CellId & 0xFFFF));
             if (primaryDc != null) {
-                SelectedCellSurfaces = string.Join(", ", primaryDc.Surfaces.Select(s => $"{s:X4}"));
+                SelectedCellSurfaces = string.Join(", ", primaryDc.Surfaces.Select(s => s.ToString("X4")));
                 RefreshSurfaceSlots(primaryDc);
             }
             StatusText = slotIdx >= 0

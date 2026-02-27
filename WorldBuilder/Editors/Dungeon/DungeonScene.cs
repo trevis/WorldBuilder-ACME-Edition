@@ -6,6 +6,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Numerics;
+using System.Runtime.InteropServices;
 using WorldBuilder.Editors.Landscape;
 using WorldBuilder.Lib;
 using WorldBuilder.Lib.Settings;
@@ -79,6 +80,8 @@ namespace WorldBuilder.Editors.Dungeon {
 
         private uint _lineVAO;
         private uint _lineVBO;
+        private uint _objSelVAO;
+        private uint _objSelVBO;
 
         private ushort _loadedLandblockKey;
         private bool _hasLoadedCells;
@@ -481,14 +484,15 @@ namespace WorldBuilder.Editors.Dungeon {
             }
 
             int vertCount = verts.Count / 6;
-            var data = verts.ToArray();
+            var data = CollectionsMarshal.AsSpan(verts);
 
-            uint objSelVAO, objSelVBO;
-            gl.GenVertexArrays(1, out objSelVAO);
-            gl.GenBuffers(1, out objSelVBO);
+            if (_objSelVAO == 0) {
+                gl.GenVertexArrays(1, out _objSelVAO);
+                gl.GenBuffers(1, out _objSelVBO);
+            }
 
-            gl.BindVertexArray(objSelVAO);
-            gl.BindBuffer(GLEnum.ArrayBuffer, objSelVBO);
+            gl.BindVertexArray(_objSelVAO);
+            gl.BindBuffer(GLEnum.ArrayBuffer, _objSelVBO);
             fixed (float* ptr = data) {
                 gl.BufferData(GLEnum.ArrayBuffer, (nuint)(data.Length * sizeof(float)), ptr, GLEnum.DynamicDraw);
             }
@@ -520,8 +524,6 @@ namespace WorldBuilder.Editors.Dungeon {
 
             gl.BindVertexArray(0);
             gl.UseProgram(0);
-            gl.DeleteBuffer(objSelVBO);
-            gl.DeleteVertexArray(objSelVAO);
         }
 
         private unsafe void RenderPlacementPreview(GL gl, Matrix4x4 viewProjection, StaticObject previewObj) {
@@ -618,7 +620,7 @@ namespace WorldBuilder.Editors.Dungeon {
             }
 
             int vertCount = verts.Count / 6;
-            var data = verts.ToArray();
+            var data = CollectionsMarshal.AsSpan(verts);
 
             if (_lineVAO == 0) {
                 gl.GenVertexArrays(1, out _lineVAO);
@@ -735,7 +737,7 @@ namespace WorldBuilder.Editors.Dungeon {
             void DrawPortalVerts(List<float> verts, Vector3 color) {
                 if (verts.Count == 0) return;
                 int vertCount = verts.Count / 6;
-                var data = verts.ToArray();
+                var data = CollectionsMarshal.AsSpan(verts);
 
                 uint vao, vbo;
                 gl.GenVertexArrays(1, out vao);
@@ -808,7 +810,7 @@ namespace WorldBuilder.Editors.Dungeon {
 
             if (verts.Count == 0) return;
             int vertCount = verts.Count / 6;
-            var data = verts.ToArray();
+            var data = CollectionsMarshal.AsSpan(verts);
 
             uint vao, vbo;
             gl.GenVertexArrays(1, out vao);
@@ -904,7 +906,7 @@ namespace WorldBuilder.Editors.Dungeon {
             }
 
             int vertCount = verts.Count / 6;
-            var data = verts.ToArray();
+            var data = CollectionsMarshal.AsSpan(verts);
 
             if (_lineVAO == 0) {
                 gl.GenVertexArrays(1, out _lineVAO);
@@ -1030,6 +1032,13 @@ namespace WorldBuilder.Editors.Dungeon {
 
         public void Dispose() {
             ThumbnailService?.Dispose();
+            if (_renderer != null) {
+                var gl = _renderer.GraphicsDevice.GL;
+                if (_objSelVBO != 0) gl.DeleteBuffer(_objSelVBO);
+                if (_objSelVAO != 0) gl.DeleteVertexArray(_objSelVAO);
+                if (_lineVBO != 0) gl.DeleteBuffer(_lineVBO);
+                if (_lineVAO != 0) gl.DeleteVertexArray(_lineVAO);
+            }
             _sceneContext?.Dispose();
         }
     }

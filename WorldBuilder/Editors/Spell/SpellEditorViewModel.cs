@@ -179,7 +179,10 @@ namespace WorldBuilder.Editors.Spell {
 
             _portalDoc.SetEntry(SpellTableId, _spellTable);
 
-            var idx = Spells.ToList().FindIndex(s => s.Id == id);
+            int idx = -1;
+            for (int i = 0; i < Spells.Count; i++) {
+                if (Spells[i].Id == id) { idx = i; break; }
+            }
             if (idx >= 0) {
                 Spells[idx] = new SpellListItem(id, spell);
             }

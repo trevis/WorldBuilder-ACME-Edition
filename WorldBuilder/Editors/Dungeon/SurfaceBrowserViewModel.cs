@@ -205,7 +205,9 @@ namespace WorldBuilder.Editors.Dungeon {
                 var entry = _textureImport.ImportDungeonSurface(localPath, name);
 
                 LoadCustomSurfaceIds();
-                _allSurfaceIds = _allSurfaceIds.Concat(_customSurfaceIds).Distinct().OrderBy(id => id).ToArray();
+                var combined = new HashSet<uint>(_allSurfaceIds);
+                combined.UnionWith(_customSurfaceIds);
+                _allSurfaceIds = combined.OrderBy(id => id).ToArray();
                 ApplyFilter();
 
                 Console.WriteLine($"[SurfaceBrowser] Imported custom surface: {name} (0x{entry.SurfaceGid:X8})");
@@ -239,18 +241,18 @@ namespace WorldBuilder.Editors.Dungeon {
             }
 
             var result = surfaces.Take(200).ToArray();
-            var items = new ObservableCollection<SurfaceBrowserItem>();
+            var itemsList = new List<SurfaceBrowserItem>(result.Length);
             foreach (var id in result) {
-                items.Add(new SurfaceBrowserItem(id));
+                itemsList.Add(new SurfaceBrowserItem(id));
             }
-            FilteredItems = items;
+            FilteredItems = new ObservableCollection<SurfaceBrowserItem>(itemsList);
 
             string filterLabel = ShowCustomOnly ? "custom" :
                                  ShowCurrentCellOnly ? "cell" :
                                  ShowDungeonOnly ? "dungeon" : "all";
             Status = $"Showing {result.Length} surfaces ({filterLabel})";
 
-            _ = GenerateThumbnailsAsync(items);
+            _ = GenerateThumbnailsAsync(FilteredItems);
         }
 
         private async Task GenerateThumbnailsAsync(ObservableCollection<SurfaceBrowserItem> items) {

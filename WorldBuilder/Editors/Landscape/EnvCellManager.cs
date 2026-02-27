@@ -7,6 +7,7 @@ using DatReaderWriter.Enums;
 using DatReaderWriter.Types;
 using Silk.NET.OpenGL;
 using System;
+using System.Buffers;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
@@ -107,6 +108,7 @@ namespace WorldBuilder.Editors.Landscape {
         private uint _instanceVBO;
         private int _instanceBufferCapacity;
         private float[] _instanceUploadBuffer = Array.Empty<float>();
+        private int _instanceUploadBufferRented; // >0 if buffer was rented from ArrayPool
 
         // Reusable cell grouping buffers (avoids per-frame dictionary allocation in Render)
         private readonly Dictionary<EnvCellGpuKey, List<Matrix4x4>> _cellGroupBuffer = new();
@@ -889,9 +891,12 @@ namespace WorldBuilder.Editors.Landscape {
 
             // Ensure CPU-side upload buffer is large enough
             if (_instanceUploadBuffer.Length < requiredFloats) {
+                if (_instanceUploadBufferRented > 0)
+                    ArrayPool<float>.Shared.Return(_instanceUploadBuffer);
                 int newSize = Math.Max(requiredFloats, 256);
                 newSize = (int)System.Numerics.BitOperations.RoundUpToPowerOf2((uint)newSize);
-                _instanceUploadBuffer = new float[newSize];
+                _instanceUploadBuffer = ArrayPool<float>.Shared.Rent(newSize);
+                _instanceUploadBufferRented = newSize;
             }
 
             for (int i = 0; i < instanceTransforms.Count; i++) {
@@ -965,9 +970,12 @@ namespace WorldBuilder.Editors.Landscape {
 
             int requiredFloats = instanceTransforms.Count * 16;
             if (_instanceUploadBuffer.Length < requiredFloats) {
+                if (_instanceUploadBufferRented > 0)
+                    ArrayPool<float>.Shared.Return(_instanceUploadBuffer);
                 int newSize = Math.Max(requiredFloats, 256);
                 newSize = (int)System.Numerics.BitOperations.RoundUpToPowerOf2((uint)newSize);
-                _instanceUploadBuffer = new float[newSize];
+                _instanceUploadBuffer = ArrayPool<float>.Shared.Rent(newSize);
+                _instanceUploadBufferRented = newSize;
             }
 
             for (int i = 0; i < instanceTransforms.Count; i++) {
@@ -1066,7 +1074,7 @@ namespace WorldBuilder.Editors.Landscape {
         /// <summary>
         /// Returns all landblock keys that currently have loaded dungeon cells.
         /// </summary>
-        public IEnumerable<ushort> GetLoadedLandblockKeys() => _loadedCells.Keys.ToList();
+        public IEnumerable<ushort> GetLoadedLandblockKeys() => _loadedCells.Keys;
 
         /// <summary>
         /// Returns the loaded cells for a specific landblock, or null if not loaded.
@@ -1375,6 +1383,11 @@ namespace WorldBuilder.Editors.Landscape {
             ClearAll();
             var gl = _renderer.GraphicsDevice.GL;
             if (_instanceVBO != 0) gl.DeleteBuffer(_instanceVBO);
+            if (_instanceUploadBufferRented > 0) {
+                ArrayPool<float>.Shared.Return(_instanceUploadBuffer);
+                _instanceUploadBuffer = Array.Empty<float>();
+                _instanceUploadBufferRented = 0;
+            }
         }
     }
 

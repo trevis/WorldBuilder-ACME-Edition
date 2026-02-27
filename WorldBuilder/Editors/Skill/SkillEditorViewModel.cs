@@ -171,7 +171,10 @@ namespace WorldBuilder.Editors.Skill {
 
             _portalDoc.SetEntry(SkillTableId, _skillTable);
 
-            var idx = Skills.ToList().FindIndex(s => s.Id == id);
+            int idx = -1;
+            for (int i = 0; i < Skills.Count; i++) {
+                if (Skills[i].Id == id) { idx = i; break; }
+            }
             if (idx >= 0) {
                 Skills[idx] = new SkillListItem(id, skill);
             }

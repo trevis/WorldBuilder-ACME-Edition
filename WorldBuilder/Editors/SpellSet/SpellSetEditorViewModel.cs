@@ -143,7 +143,10 @@ namespace WorldBuilder.Editors.SpellSet {
 
             _portalDoc.SetEntry(SpellTableId, _spellTable);
 
-            var idx = SpellSets.ToList().FindIndex(s => s.EquipmentSet == eqSet);
+            int idx = -1;
+            for (int i = 0; i < SpellSets.Count; i++) {
+                if (SpellSets[i].EquipmentSet == eqSet) { idx = i; break; }
+            }
             if (idx >= 0) {
                 SpellSets[idx] = new SpellSetListItem(eqSet, spellSet);
             }
