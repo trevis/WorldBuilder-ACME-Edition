@@ -6,6 +6,13 @@ using WorldBuilder.Editors.Dungeon;
 using WorldBuilder.Editors.Landscape;
 using WorldBuilder.Editors.Landscape.ViewModels;
 using WorldBuilder.Editors.Landscape.Views;
+using WorldBuilder.Editors.CharGen;
+using WorldBuilder.Editors.Experience;
+using WorldBuilder.Editors.Layout;
+using WorldBuilder.Editors.Skill;
+using WorldBuilder.Editors.Spell;
+using WorldBuilder.Editors.SpellSet;
+using WorldBuilder.Editors.Vital;
 using WorldBuilder.Lib.Factories;
 using WorldBuilder.Lib.Settings;
 using WorldBuilder.Services;
@@ -61,6 +68,13 @@ namespace WorldBuilder.Lib.Extensions {
             });
             collection.AddSingleton<LandscapeEditorViewModel>();
             collection.AddSingleton<DungeonEditorViewModel>();
+            collection.AddSingleton<SpellEditorViewModel>();
+            collection.AddSingleton<SpellSetEditorViewModel>();
+            collection.AddSingleton<SkillEditorViewModel>();
+            collection.AddSingleton<ExperienceEditorViewModel>();
+            collection.AddSingleton<VitalEditorViewModel>();
+            collection.AddSingleton<CharGenEditorViewModel>();
+            collection.AddSingleton<LayoutEditorViewModel>();
             collection.AddTransient<ObjectDebugViewModel>();
             collection.AddTransient<HistorySnapshotPanelViewModel>();
         }

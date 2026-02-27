@@ -5,8 +5,22 @@
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:editors="clr-namespace:WorldBuilder.Editors.Landscape.Views"
     xmlns:dungeonEditors="clr-namespace:WorldBuilder.Editors.Dungeon.Views"
+    xmlns:spellEditors="clr-namespace:WorldBuilder.Editors.Spell.Views"
+    xmlns:skillEditors="clr-namespace:WorldBuilder.Editors.Skill.Views"
+    xmlns:spellSetEditors="clr-namespace:WorldBuilder.Editors.SpellSet.Views"
+    xmlns:experienceEditors="clr-namespace:WorldBuilder.Editors.Experience.Views"
+    xmlns:vitalEditors="clr-namespace:WorldBuilder.Editors.Vital.Views"
+    xmlns:charGenEditors="clr-namespace:WorldBuilder.Editors.CharGen.Views"
     xmlns:landscapeVm="clr-namespace:WorldBuilder.Editors.Landscape.ViewModels"
     xmlns:dungeonVm="clr-namespace:WorldBuilder.Editors.Dungeon"
+    xmlns:spellVm="clr-namespace:WorldBuilder.Editors.Spell"
+    xmlns:skillVm="clr-namespace:WorldBuilder.Editors.Skill"
+    xmlns:spellSetVm="clr-namespace:WorldBuilder.Editors.SpellSet"
+    xmlns:experienceVm="clr-namespace:WorldBuilder.Editors.Experience"
+    xmlns:vitalVm="clr-namespace:WorldBuilder.Editors.Vital"
+    xmlns:charGenVm="clr-namespace:WorldBuilder.Editors.CharGen"
+    xmlns:layoutEditors="clr-namespace:WorldBuilder.Editors.Layout.Views"
+    xmlns:layoutVm="clr-namespace:WorldBuilder.Editors.Layout"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     xmlns:vm="clr-namespace:WorldBuilder.ViewModels"
     xmlns:docking="clr-namespace:WorldBuilder.Lib.Docking;assembly=WorldBuilder"
@@ -57,6 +71,15 @@
                 <MenuItem Header="E_ditors">
                     <MenuItem Command="{Binding SwitchToLandscapeEditorCommand}" Header="Landscape Editor" />
                     <MenuItem Command="{Binding SwitchToDungeonEditorCommand}" Header="Dungeon Editor" />
+                    <Separator />
+                    <MenuItem Command="{Binding SwitchToSpellEditorCommand}" Header="Spell Editor" />
+                    <MenuItem Command="{Binding SwitchToSpellSetEditorCommand}" Header="Spell Set Editor" />
+                    <MenuItem Command="{Binding SwitchToSkillEditorCommand}" Header="Skill Editor" />
+                    <MenuItem Command="{Binding SwitchToExperienceEditorCommand}" Header="Experience Table Editor" />
+                    <MenuItem Command="{Binding SwitchToVitalEditorCommand}" Header="Vital Table Editor" />
+                    <MenuItem Command="{Binding SwitchToCharGenEditorCommand}" Header="Character Creation Editor" />
+                    <Separator />
+                    <MenuItem Command="{Binding SwitchToLayoutEditorCommand}" Header="UI Layout Viewer" />
                 </MenuItem>
                 <MenuItem Header="_Windows" ItemsSource="{Binding DockingPanels}">
                     <MenuItem.Styles>
@@ -104,6 +127,27 @@
                 </DataTemplate>
                 <DataTemplate DataType="{x:Type dungeonVm:DungeonEditorViewModel}">
                     <dungeonEditors:DungeonEditorView />
+                </DataTemplate>
+                <DataTemplate DataType="{x:Type spellVm:SpellEditorViewModel}">
+                    <spellEditors:SpellEditorView />
+                </DataTemplate>
+                <DataTemplate DataType="{x:Type spellSetVm:SpellSetEditorViewModel}">
+                    <spellSetEditors:SpellSetEditorView />
+                </DataTemplate>
+                <DataTemplate DataType="{x:Type skillVm:SkillEditorViewModel}">
+                    <skillEditors:SkillEditorView />
+                </DataTemplate>
+                <DataTemplate DataType="{x:Type experienceVm:ExperienceEditorViewModel}">
+                    <experienceEditors:ExperienceEditorView />
+                </DataTemplate>
+                <DataTemplate DataType="{x:Type vitalVm:VitalEditorViewModel}">
+                    <vitalEditors:VitalEditorView />
+                </DataTemplate>
+                <DataTemplate DataType="{x:Type charGenVm:CharGenEditorViewModel}">
+                    <charGenEditors:CharGenEditorView />
+                </DataTemplate>
+                <DataTemplate DataType="{x:Type layoutVm:LayoutEditorViewModel}">
+                    <layoutEditors:LayoutEditorView />
                 </DataTemplate>
             </ContentControl.DataTemplates>
         </ContentControl>

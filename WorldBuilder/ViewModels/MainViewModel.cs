@@ -10,6 +10,13 @@ using System.Collections.Generic;
 using System.Threading.Tasks;
 using WorldBuilder.Editors.Dungeon;
 using WorldBuilder.Editors.Landscape.ViewModels;
+using WorldBuilder.Editors.CharGen;
+using WorldBuilder.Editors.Experience;
+using WorldBuilder.Editors.Skill;
+using WorldBuilder.Editors.Spell;
+using WorldBuilder.Editors.SpellSet;
+using WorldBuilder.Editors.Vital;
+using WorldBuilder.Editors.Layout;
 using WorldBuilder.Lib;
 using WorldBuilder.Lib.Docking;
 using WorldBuilder.Lib.Input;
@@ -161,6 +168,41 @@ public partial class MainViewModel : ViewModelBase {
     [RelayCommand]
     private void SwitchToDungeonEditor() {
         ActiveEditor = ProjectManager.Instance?.GetProjectService<DungeonEditorViewModel>();
+    }
+
+    [RelayCommand]
+    private void SwitchToSpellEditor() {
+        ActiveEditor = ProjectManager.Instance?.GetProjectService<SpellEditorViewModel>();
+    }
+
+    [RelayCommand]
+    private void SwitchToSpellSetEditor() {
+        ActiveEditor = ProjectManager.Instance?.GetProjectService<SpellSetEditorViewModel>();
+    }
+
+    [RelayCommand]
+    private void SwitchToSkillEditor() {
+        ActiveEditor = ProjectManager.Instance?.GetProjectService<SkillEditorViewModel>();
+    }
+
+    [RelayCommand]
+    private void SwitchToExperienceEditor() {
+        ActiveEditor = ProjectManager.Instance?.GetProjectService<ExperienceEditorViewModel>();
+    }
+
+    [RelayCommand]
+    private void SwitchToVitalEditor() {
+        ActiveEditor = ProjectManager.Instance?.GetProjectService<VitalEditorViewModel>();
+    }
+
+    [RelayCommand]
+    private void SwitchToCharGenEditor() {
+        ActiveEditor = ProjectManager.Instance?.GetProjectService<CharGenEditorViewModel>();
+    }
+
+    [RelayCommand]
+    private void SwitchToLayoutEditor() {
+        ActiveEditor = ProjectManager.Instance?.GetProjectService<LayoutEditorViewModel>();
     }
 
     [RelayCommand]
