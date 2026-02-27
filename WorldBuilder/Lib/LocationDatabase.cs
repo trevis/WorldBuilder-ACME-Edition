@@ -57,6 +57,32 @@ namespace WorldBuilder.Lib {
                 e.Name.Contains(q, StringComparison.OrdinalIgnoreCase));
         }
 
+        /// <summary>
+        /// Finds the first location whose name matches (exact or contains) and optional type.
+        /// e.g. GetFirstByName("Yaraq", "Town") for the town, GetFirstByName("A Red Rat Lair", "Dungeon") for the dungeon.
+        /// </summary>
+        public static LocationEntry? GetFirstByName(string name, string? typeFilter = null) {
+            if (string.IsNullOrWhiteSpace(name)) return null;
+            var matches = Search(name, typeFilter).ToList();
+            if (matches.Count == 0) return null;
+            // Prefer exact name match
+            var exact = matches.FirstOrDefault(e => e.Name.Equals(name.Trim(), StringComparison.OrdinalIgnoreCase));
+            return exact ?? matches[0];
+        }
+
+        /// <summary>
+        /// Returns a random overworld landblock (excludes Dungeon type). Optional type filter e.g. "Town".
+        /// </summary>
+        public static LocationEntry? GetRandomLocation(string? typeFilter = null, Random? rng = null) {
+            rng ??= new Random();
+            var source = typeFilter != null
+                ? All.Where(e => e.Type.Equals(typeFilter, StringComparison.OrdinalIgnoreCase))
+                : All.Where(e => !e.Type.Equals("Dungeon", StringComparison.OrdinalIgnoreCase));
+            var list = source.ToList();
+            if (list.Count == 0) return null;
+            return list[rng.Next(list.Count)];
+        }
+
         private static void EnsureLoaded() {
             if (_entries != null) return;
             lock (_lock) {

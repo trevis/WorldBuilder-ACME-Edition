@@ -1,4 +1,4 @@
-﻿using Avalonia;
+using Avalonia;
 using Avalonia.OpenGL;
 using System;
 using System.Diagnostics;
@@ -40,6 +40,14 @@ sealed class Program
                 Console.WriteLine($"Version: {App.Version}");
             }
             catch { }
+
+        for (int i = 0; i < args.Length; i++) {
+            if (args[i] == "--demo" && i + 1 < args.Length) {
+                App.DemoProjectPath = args[i + 1];
+                Console.WriteLine($"Demo mode: auto-opening project {App.DemoProjectPath}");
+                break;
+            }
+        }
 
             BuildAvaloniaApp()
             .StartWithClassicDesktopLifetime(args);

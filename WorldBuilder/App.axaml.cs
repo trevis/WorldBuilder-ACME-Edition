@@ -5,9 +5,11 @@ using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Data.Core;
 using Avalonia.Data.Core.Plugins;
 using Avalonia.Markup.Xaml;
+using Avalonia.Threading;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using CommunityToolkit.Mvvm.Messaging;
 using NetSparkleUpdater;
 using NetSparkleUpdater.Enums;
 using NetSparkleUpdater.Interfaces;
@@ -17,8 +19,10 @@ using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Threading.Tasks;
 using System.Runtime.InteropServices;
 using WorldBuilder.Lib;
+using WorldBuilder.Lib.Demo;
 using WorldBuilder.Lib.Extensions;
 using WorldBuilder.Shared.Models;
 using WorldBuilder.ViewModels;
@@ -34,6 +38,12 @@ public partial class App : Application {
     public static string Version { get; set; } = "0.0.0";
     public static string ExecutablePath { get; set; } = "";
 
+    /// <summary>
+    /// When set (e.g. by --demo "path" on Windows), the app auto-opens this project and runs a short demo sequence for recording promo videos.
+    /// </summary>
+    public static string? DemoProjectPath { get; set; }
+    public static bool DemoModeEnabled => !string.IsNullOrEmpty(DemoProjectPath);
+
     public override void Initialize() {
         AvaloniaXamlLoader.Load(this);
     }
@@ -45,7 +55,10 @@ public partial class App : Application {
         services.AddCommonServices();
 
         Services = services.BuildServiceProvider();
-        SetupAutoUpdater();
+        // Auto-updater is desktop-only (file paths, installers); skip in browser to avoid startup failure
+        if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime) {
+            SetupAutoUpdater();
+        }
 
         _projectManager = Services.GetRequiredService<ProjectManager>();
 
@@ -72,6 +85,11 @@ public partial class App : Application {
                 mainWindow.Closing += (_, _) => {
                     SaveSettingsOnExit();
                 };
+
+                if (DemoModeEnabled) {
+                    // Start demo after the window has had a chance to layout and create the landscape view (so Init runs and Tools are populated)
+                    Dispatcher.UIThread.Post(() => _ = RunDemoSequenceAsync(), DispatcherPriority.Loaded);
+                }
             }
             else if (ApplicationLifetime is ISingleViewApplicationLifetime singleViewPlatform) {
                 singleViewPlatform.MainView = new MainView { DataContext = mainVM };
@@ -81,6 +99,14 @@ public partial class App : Application {
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop) {
             desktop.MainWindow = new SplashPageWindow { DataContext = projectSelectionVM };
             desktop.MainWindow.Show();
+
+            // Demo mode: auto-open the project so the user can record without clicking
+            if (DemoModeEnabled && !string.IsNullOrEmpty(DemoProjectPath) && File.Exists(DemoProjectPath)) {
+                Dispatcher.UIThread.Post(() => {
+                    WeakReferenceMessenger.Default.Send(new SplashPageChangedMessage(SplashPageViewModel.SplashPage.Loading));
+                    WeakReferenceMessenger.Default.Send(new StartProjectLoadMessage(DemoProjectPath!));
+                }, DispatcherPriority.Background);
+            }
 
             // Backup: also save on shutdown in case Closing didn't fire
             desktop.ShutdownRequested += (s, e) => {
@@ -161,5 +187,17 @@ public partial class App : Application {
         foreach (var plugin in dataValidationPluginsToRemove) {
             BindingPlugins.DataValidators.Remove(plugin);
         }
+    }
+
+    /// <summary>
+    /// Runs the advanced promo demo script: teleporting, terrain tools, texture panel, dungeon copy, export.
+    /// Starts after a delay so the main window and landscape view have time to load and initialize.
+    /// </summary>
+    private async Task RunDemoSequenceAsync() {
+        // Give the main window time to show and the landscape view to be created and Init() to run
+        await Task.Delay(5000);
+        if (_projectManager == null) return;
+        var script = DemoRunner.BuildDefaultScript();
+        await DemoRunner.RunAsync(_projectManager, script);
     }
 }
