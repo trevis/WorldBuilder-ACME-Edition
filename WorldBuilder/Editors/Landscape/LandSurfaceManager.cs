@@ -301,6 +301,25 @@ namespace WorldBuilder.Editors.Landscape {
             throw new Exception($"Texture GID not found in atlas: 0x{texGID:X8}");
         }
 
+        /// <summary>
+        /// Replaces the terrain texture for a given TerrainTextureType with custom RGBA data.
+        /// Updates the atlas layer in all registered renderers. The rgbaData must be 512x512x4 bytes.
+        /// </summary>
+        public bool ReplaceTerrainTexture(TerrainTextureType type, byte[] rgbaData) {
+            var desc = TerrainDescriptors.FirstOrDefault(d => d.TerrainType == type);
+            if (desc == null) return false;
+
+            if (!_textureAtlasIndexLookup.TryGetValue(desc.TerrainTex.TexGID, out var layerIndex))
+                return false;
+
+            lock (_lock) {
+                foreach (var (renderer, atlas) in _terrainAtlases) {
+                    atlas.UpdateLayer(layerIndex, rgbaData);
+                }
+            }
+            return true;
+        }
+
         public int GetAlphaAtlasIndex(uint texGID) {
             if (_alphaAtlasIndexLookup.TryGetValue(texGID, out var index)) {
                 return index;

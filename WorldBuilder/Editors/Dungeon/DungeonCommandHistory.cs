@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Numerics;
-using DatReaderWriter.Types;
+using WorldBuilder.Shared.Documents;
 
 namespace WorldBuilder.Editors.Dungeon {
     public interface IDungeonCommand {
@@ -89,8 +89,8 @@ namespace WorldBuilder.Editors.Dungeon {
 
     public class RemoveCellCommand : IDungeonCommand {
         private readonly ushort _cellNum;
-        private DungeonCell? _savedCell;
-        private List<(ushort otherCellNum, CellPortal portal)> _savedOtherPortals = new();
+        private DungeonCellData? _savedCell;
+        private List<(ushort otherCellNum, DungeonCellPortalData portal)> _savedOtherPortals = new();
 
         public string Description => "Delete Cell";
 
@@ -99,17 +99,22 @@ namespace WorldBuilder.Editors.Dungeon {
         }
 
         public void Execute(DungeonDocument document) {
-            _savedCell = document.GetCell(_cellNum);
-            if (_savedCell == null) return;
+            var src = document.GetCell(_cellNum);
+            if (src == null) return;
 
-            _savedCell = CloneCell(_savedCell);
+            _savedCell = CloneCell(src);
 
             _savedOtherPortals.Clear();
             foreach (var other in document.Cells) {
                 if (other.CellNumber == _cellNum) continue;
                 foreach (var cp in other.CellPortals) {
                     if (cp.OtherCellId == _cellNum) {
-                        _savedOtherPortals.Add((other.CellNumber, cp));
+                        _savedOtherPortals.Add((other.CellNumber, new DungeonCellPortalData {
+                            OtherCellId = cp.OtherCellId,
+                            PolygonId = cp.PolygonId,
+                            OtherPortalId = cp.OtherPortalId,
+                            Flags = cp.Flags
+                        }));
                     }
                 }
             }
@@ -129,7 +134,7 @@ namespace WorldBuilder.Editors.Dungeon {
             }
         }
 
-        private static DungeonCell CloneCell(DungeonCell src) => new DungeonCell {
+        private static DungeonCellData CloneCell(DungeonCellData src) => new DungeonCellData {
             CellNumber = src.CellNumber,
             EnvironmentId = src.EnvironmentId,
             CellStructure = src.CellStructure,
@@ -137,7 +142,7 @@ namespace WorldBuilder.Editors.Dungeon {
             Orientation = src.Orientation,
             Flags = src.Flags,
             Surfaces = new List<ushort>(src.Surfaces),
-            CellPortals = new List<CellPortal>(src.CellPortals),
+            CellPortals = new List<DungeonCellPortalData>(src.CellPortals),
             VisibleCells = new List<ushort>(src.VisibleCells),
         };
     }
@@ -171,10 +176,11 @@ namespace WorldBuilder.Editors.Dungeon {
 
         public string Description => "Rotate Cell";
 
-        public RotateCellCommand(ushort cellNum, float degrees) {
+        public RotateCellCommand(ushort cellNum, float degrees, Vector3? axis = null) {
             _cellNum = cellNum;
-            _rotation = Quaternion.CreateFromAxisAngle(Vector3.UnitZ, degrees * MathF.PI / 180f);
-            _inverseRotation = Quaternion.CreateFromAxisAngle(Vector3.UnitZ, -degrees * MathF.PI / 180f);
+            var ax = axis ?? Vector3.UnitZ;
+            _rotation = Quaternion.CreateFromAxisAngle(ax, degrees * MathF.PI / 180f);
+            _inverseRotation = Quaternion.CreateFromAxisAngle(ax, -degrees * MathF.PI / 180f);
         }
 
         public void Execute(DungeonDocument document) {
@@ -185,6 +191,91 @@ namespace WorldBuilder.Editors.Dungeon {
         public void Undo(DungeonDocument document) {
             var cell = document.GetCell(_cellNum);
             if (cell != null) cell.Orientation = Quaternion.Normalize(_inverseRotation * cell.Orientation);
+        }
+    }
+
+    public class MoveStaticObjectCommand : IDungeonCommand {
+        private readonly ushort _cellNum;
+        private readonly int _objectIndex;
+        private readonly Vector3 _delta;
+
+        public string Description => "Move Object";
+
+        public MoveStaticObjectCommand(ushort cellNum, int objectIndex, Vector3 delta) {
+            _cellNum = cellNum;
+            _objectIndex = objectIndex;
+            _delta = delta;
+        }
+
+        public void Execute(DungeonDocument document) {
+            var cell = document.GetCell(_cellNum);
+            if (cell != null && _objectIndex < cell.StaticObjects.Count)
+                cell.StaticObjects[_objectIndex].Origin += _delta;
+        }
+
+        public void Undo(DungeonDocument document) {
+            var cell = document.GetCell(_cellNum);
+            if (cell != null && _objectIndex < cell.StaticObjects.Count)
+                cell.StaticObjects[_objectIndex].Origin -= _delta;
+        }
+    }
+
+    public class RotateStaticObjectCommand : IDungeonCommand {
+        private readonly ushort _cellNum;
+        private readonly int _objectIndex;
+        private readonly Quaternion _rotation;
+        private readonly Quaternion _inverseRotation;
+
+        public string Description => "Rotate Object";
+
+        public RotateStaticObjectCommand(ushort cellNum, int objectIndex, float degrees) {
+            _cellNum = cellNum;
+            _objectIndex = objectIndex;
+            _rotation = Quaternion.CreateFromAxisAngle(Vector3.UnitZ, degrees * MathF.PI / 180f);
+            _inverseRotation = Quaternion.CreateFromAxisAngle(Vector3.UnitZ, -degrees * MathF.PI / 180f);
+        }
+
+        public void Execute(DungeonDocument document) {
+            var cell = document.GetCell(_cellNum);
+            if (cell != null && _objectIndex < cell.StaticObjects.Count)
+                cell.StaticObjects[_objectIndex].Orientation = Quaternion.Normalize(_rotation * cell.StaticObjects[_objectIndex].Orientation);
+        }
+
+        public void Undo(DungeonDocument document) {
+            var cell = document.GetCell(_cellNum);
+            if (cell != null && _objectIndex < cell.StaticObjects.Count)
+                cell.StaticObjects[_objectIndex].Orientation = Quaternion.Normalize(_inverseRotation * cell.StaticObjects[_objectIndex].Orientation);
+        }
+    }
+
+    public class DeleteStaticObjectCommand : IDungeonCommand {
+        private readonly ushort _cellNum;
+        private readonly int _objectIndex;
+        private DungeonStabData? _savedObject;
+
+        public string Description => "Delete Object";
+
+        public DeleteStaticObjectCommand(ushort cellNum, int objectIndex) {
+            _cellNum = cellNum;
+            _objectIndex = objectIndex;
+        }
+
+        public void Execute(DungeonDocument document) {
+            var cell = document.GetCell(_cellNum);
+            if (cell == null || _objectIndex >= cell.StaticObjects.Count) return;
+            _savedObject = new DungeonStabData {
+                Id = cell.StaticObjects[_objectIndex].Id,
+                Origin = cell.StaticObjects[_objectIndex].Origin,
+                Orientation = cell.StaticObjects[_objectIndex].Orientation
+            };
+            cell.StaticObjects.RemoveAt(_objectIndex);
+        }
+
+        public void Undo(DungeonDocument document) {
+            if (_savedObject == null) return;
+            var cell = document.GetCell(_cellNum);
+            if (cell == null) return;
+            cell.StaticObjects.Insert(Math.Min(_objectIndex, cell.StaticObjects.Count), _savedObject);
         }
     }
 }

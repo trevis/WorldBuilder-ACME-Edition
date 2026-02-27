@@ -18,6 +18,7 @@ using System.Threading.Tasks;
 using WorldBuilder.Editors.Landscape;
 using WorldBuilder.Lib;
 using WorldBuilder.Lib.Docking;
+using WorldBuilder.Services;
 using WorldBuilder.Lib.Input;
 using WorldBuilder.Lib.Settings;
 using WorldBuilder.Shared.Documents;
@@ -102,10 +103,12 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
         public InputManager InputManager { get; }
 
         private readonly ILogger<TerrainSystem> _logger;
+        private readonly TextureImportService? _textureImport;
 
-        public LandscapeEditorViewModel(WorldBuilderSettings settings, ILogger<TerrainSystem> logger) {
+        public LandscapeEditorViewModel(WorldBuilderSettings settings, ILogger<TerrainSystem> logger, TextureImportService? textureImport = null) {
             Settings = settings;
             _logger = logger;
+            _textureImport = textureImport;
             InputManager = InputManager.Instance ?? new InputManager(Settings);
         }
 
@@ -167,7 +170,7 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
                 () => TerrainSystem.Scene.ThumbnailService);
             ObjectBrowser.PlacementRequested += OnPlacementRequested;
 
-            TexturePalette = new TerrainTexturePaletteViewModel(TerrainSystem.Scene.SurfaceManager);
+            TexturePalette = new TerrainTexturePaletteViewModel(TerrainSystem.Scene.SurfaceManager, _textureImport);
             TexturePalette.TextureSelected += OnPaletteTextureSelected;
 
             BookmarksPanel = new CameraBookmarksPanelViewModel(TerrainSystem, Settings);

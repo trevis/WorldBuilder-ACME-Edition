@@ -51,6 +51,7 @@ namespace WorldBuilder.Editors.Dungeon.Views {
 
         protected override void OnGlPointerMoved(PointerEventArgs e, Vector2 mousePositionScaled) {
             UpdateMouseState(e.GetPosition(this), e.GetCurrentPoint(this).Properties);
+            _viewModel?.HandlePointerMoved(InputState);
         }
 
         protected override void OnGlPointerWheelChanged(PointerWheelEventArgs e) {
@@ -65,6 +66,7 @@ namespace WorldBuilder.Editors.Dungeon.Views {
 
         protected override void OnGlPointerReleased(PointerReleasedEventArgs e) {
             UpdateMouseState(e.GetPosition(this), e.GetCurrentPoint(this).Properties);
+            _viewModel?.HandlePointerReleased(InputState);
             e.Pointer.Capture(null);
         }
 

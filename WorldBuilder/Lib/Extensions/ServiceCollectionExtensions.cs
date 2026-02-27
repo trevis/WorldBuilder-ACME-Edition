@@ -8,9 +8,11 @@ using WorldBuilder.Editors.Landscape.ViewModels;
 using WorldBuilder.Editors.Landscape.Views;
 using WorldBuilder.Lib.Factories;
 using WorldBuilder.Lib.Settings;
+using WorldBuilder.Services;
 using WorldBuilder.Shared.Documents;
 using WorldBuilder.Shared.Lib;
 using WorldBuilder.Shared.Models;
+using WorldBuilder.Shared.Services;
 using WorldBuilder.ViewModels;
 
 namespace WorldBuilder.Lib.Extensions {
@@ -48,6 +50,15 @@ namespace WorldBuilder.Lib.Extensions {
             collection.AddSingleton<DocumentManager>();
             collection.AddSingleton<IDocumentStorageService, DocumentStorageService>();
             collection.AddSingleton(project);
+            collection.AddSingleton(project.CustomTextures);
+            collection.AddSingleton<TextureImportService>(sp => {
+                var svc = new TextureImportService(project.CustomTextures, project);
+                project.OnExportCustomTextures = (writer, iteration) => {
+                    svc.WriteToDats(writer, iteration);
+                    svc.UpdateRegionForTerrainReplacements(writer, iteration);
+                };
+                return svc;
+            });
             collection.AddSingleton<LandscapeEditorViewModel>();
             collection.AddSingleton<DungeonEditorViewModel>();
             collection.AddTransient<ObjectDebugViewModel>();

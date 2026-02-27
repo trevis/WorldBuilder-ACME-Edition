@@ -162,4 +162,10 @@ public partial class MainViewModel : ViewModelBase {
     private void SwitchToDungeonEditor() {
         ActiveEditor = ProjectManager.Instance?.GetProjectService<DungeonEditorViewModel>();
     }
+
+    [RelayCommand]
+    private void AnalyzeDungeonRooms() {
+        var dungeonEditor = ProjectManager.Instance?.GetProjectService<DungeonEditorViewModel>();
+        dungeonEditor?.AnalyzeRoomsCommand.Execute(null);
+    }
 }

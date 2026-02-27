@@ -9,6 +9,7 @@ using DatReaderWriter.Options;
 using Microsoft.Data.Sqlite;
 using WorldBuilder.Shared.Documents;
 using WorldBuilder.Shared.Lib;
+using WorldBuilder.Shared.Services;
 
 namespace WorldBuilder.Shared.Models {
     public partial class Project : ObservableObject, IDisposable {
@@ -33,6 +34,8 @@ namespace WorldBuilder.Shared.Models {
         [JsonIgnore] public DocumentManager DocumentManager { get; set; }
 
         [JsonIgnore] public IDatReaderWriter DatReaderWriter { get; set; }
+
+        [JsonIgnore] public CustomTextureStore CustomTextures { get; private set; }
 
         public static Project? FromDisk(string projectFilePath) {
             if (!File.Exists(projectFilePath)) {
@@ -95,6 +98,7 @@ namespace WorldBuilder.Shared.Models {
             else {
                 throw new DirectoryNotFoundException($"Base dat directory not found: {BaseDatDirectory}");
             }
+            CustomTextures = new CustomTextureStore(ProjectDirectory);
         }
 
         public void Save() {
@@ -109,6 +113,13 @@ namespace WorldBuilder.Shared.Models {
                 }
             }
         }
+
+        /// <summary>
+        /// Called during export to write custom textures and update Region.
+        /// Set by the UI layer (TextureImportService) since image decoding requires platform deps.
+        /// </summary>
+        [JsonIgnore]
+        public Action<IDatReaderWriter, int?>? OnExportCustomTextures { get; set; }
 
         public bool ExportDats(string exportDirectory, int portalIteration) {
             if (!Directory.Exists(exportDirectory)) {
@@ -222,11 +233,22 @@ namespace WorldBuilder.Shared.Models {
                 }
             }
 
-            // Export static object changes from LandblockDocuments
+            // Export static object changes from LandblockDocuments and dungeon data
             foreach (var (docId, doc) in DocumentManager.ActiveDocs) {
                 if (doc is LandblockDocument lbDoc) {
                     lbDoc.SaveToDats(writer, portalIteration);
                 }
+                else if (doc is DungeonDocument dungeonDoc) {
+                    dungeonDoc.SaveToDats(writer, portalIteration);
+                }
+            }
+
+            // Write custom imported textures and update Region for terrain replacements
+            try {
+                OnExportCustomTextures?.Invoke(writer, portalIteration);
+            }
+            catch (Exception ex) {
+                Console.WriteLine($"[Export] Error writing custom textures: {ex.Message}");
             }
 
             // TODO: all other dat iterations

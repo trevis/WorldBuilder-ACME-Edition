@@ -27,9 +27,17 @@
                      FontSize="11" />
         </Border>
 
-        <!-- Filters -->
+        <!-- Starter / Browse toggle -->
         <Border DockPanel.Dock="Top" Padding="6,2">
-            <StackPanel Orientation="Horizontal" Spacing="6">
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <CheckBox IsChecked="{Binding ShowStarterMode}"
+                          Content="Recommended"
+                          FontSize="11"
+                          Foreground="#c0b0d8" />
+                <TextBlock Text="|"
+                           VerticalAlignment="Center"
+                           FontSize="11"
+                           Foreground="#5a4a6e" />
                 <TextBlock Text="Portals:"
                            VerticalAlignment="Center"
                            FontSize="11"
@@ -60,19 +68,28 @@
         </Border>
 
         <!-- Room List -->
-        <ListBox ItemsSource="{Binding FilteredRooms}"
+        <ListBox ItemsSource="{Binding RoomsToShow}"
                  SelectedItem="{Binding SelectedRoom}"
                  FontSize="11"
                  Background="Transparent">
             <ListBox.ItemTemplate>
                 <DataTemplate x:DataType="vm:RoomEntry">
-                    <StackPanel Margin="2,3">
-                        <TextBlock Text="{Binding DisplayName}"
-                                   Foreground="#c0b0d8"
-                                   FontSize="11" />
-                        <TextBlock Text="{Binding DetailText}"
-                                   Foreground="#5a4a6e"
-                                   FontSize="10" />
+                    <StackPanel Orientation="Horizontal" Spacing="6" Margin="2,2">
+                        <Panel Width="72" Height="72">
+                            <Border Background="#FF0E0A16" CornerRadius="3"
+                                    IsVisible="{Binding Thumbnail, Converter={x:Static ObjectConverters.IsNull}}" />
+                            <Image Width="72" Height="72" Source="{Binding Thumbnail}" Stretch="Uniform"
+                                   IsVisible="{Binding Thumbnail, Converter={x:Static ObjectConverters.IsNotNull}}" />
+                        </Panel>
+                        <StackPanel VerticalAlignment="Center" Spacing="1">
+                            <TextBlock Text="{Binding DisplayName}"
+                                       Foreground="#c0b0d8"
+                                       FontSize="9"
+                                       FontFamily="Consolas" />
+                            <TextBlock Text="{Binding DetailText}"
+                                       Foreground="#5a4a6e"
+                                       FontSize="9" />
+                        </StackPanel>
                     </StackPanel>
                 </DataTemplate>
             </ListBox.ItemTemplate>

@@ -112,6 +112,12 @@ namespace WorldBuilder.Editors.Landscape {
         private readonly Dictionary<EnvCellGpuKey, List<Matrix4x4>> _cellGroupBuffer = new();
         private readonly Dictionary<EnvCellGpuKey, List<Matrix4x4>> _buildingCellGroupBuffer = new();
 
+        /// <summary>
+        /// Optional fallback for loading texture data when a Surface ID isn't in the DAT
+        /// (e.g. custom imported textures). Returns (rgbaData, width, height) or null.
+        /// </summary>
+        public Func<uint, (byte[] Data, int Width, int Height)?> CustomTextureResolver { get; set; }
+
         public EnvCellManager(OpenGLRenderer renderer, IDatReaderWriter dats, IShader objectShader, TextureDiskCache? textureCache = null) {
             _renderer = renderer;
             _dats = dats;
@@ -348,12 +354,23 @@ namespace WorldBuilder.Editors.Landscape {
                 if (surfaceIdx < 0 || surfaceIdx >= surfaceIds.Count) continue;
 
                 var surfaceId = surfaceIds[surfaceIdx];
-                if (!_dats.TryGet<Surface>(surfaceId, out var surface)) continue;
 
-                // NoPos polygons are already skipped above, so the stippling check here
-                // only matters for Base1Solid surfaces.
-                bool isSolid = surface.Type.HasFlag(SurfaceType.Base1Solid);
-                var texResult = LoadTextureData(surfaceId, surface, isSolid, poly.Stippling);
+                bool isSolid;
+                (byte[] Data, int Width, int Height, TextureFormat Format, PixelFormat? UploadPixelFormat, PixelType? UploadPixelType, uint PaletteId)? texResult;
+
+                if (_dats.TryGet<Surface>(surfaceId, out var surface)) {
+                    isSolid = surface.Type.HasFlag(SurfaceType.Base1Solid);
+                    texResult = LoadTextureData(surfaceId, surface, isSolid, poly.Stippling);
+                }
+                else if (CustomTextureResolver?.Invoke(surfaceId) is { } customTex) {
+                    isSolid = false;
+                    texResult = (customTex.Data, customTex.Width, customTex.Height,
+                        TextureFormat.RGBA8, PixelFormat.Rgba, null, 0);
+                }
+                else {
+                    continue;
+                }
+
                 if (!texResult.HasValue) continue;
 
                 var (textureData, texWidth, texHeight, textureFormat, uploadPixelFormat, uploadPixelType, paletteId) = texResult.Value;

@@ -101,6 +101,31 @@ namespace WorldBuilder.Editors.Dungeon {
         }
 
         /// <summary>
+        /// Pick the source portal that best aligns with the target (normals opposite).
+        /// Returns the portal ID whose normal is closest to -targetNormalWorld.
+        /// </summary>
+        public static ushort? PickBestSourcePortal(CellStruct sourceCellStruct, Vector3 targetNormalWorld) {
+            var portalIds = GetPortalPolygonIds(sourceCellStruct);
+            if (portalIds.Count == 0) return null;
+            if (portalIds.Count == 1) return portalIds[0];
+
+            var desiredSourceNormal = -Vector3.Normalize(targetNormalWorld);
+            ushort? best = null;
+            float bestDot = float.MinValue;
+
+            foreach (var pid in portalIds) {
+                var geom = GetPortalGeometry(sourceCellStruct, pid);
+                if (geom == null) continue;
+                float dot = Vector3.Dot(Vector3.Normalize(geom.Value.Normal), desiredSourceNormal);
+                if (dot > bestDot) {
+                    bestDot = dot;
+                    best = pid;
+                }
+            }
+            return best ?? portalIds[0];
+        }
+
+        /// <summary>
         /// Compute the shortest rotation quaternion that rotates vector 'from' to vector 'to'.
         /// </summary>
         private static Quaternion RotationBetween(Vector3 from, Vector3 to) {
