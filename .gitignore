@@ -466,3 +466,6 @@ $RECYCLE.BIN/
 
 # User-generated stamp data
 Stamps/
+
+# Probe / scratch projects
+_probe/

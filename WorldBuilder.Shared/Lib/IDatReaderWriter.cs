@@ -1,4 +1,4 @@
-﻿using DatReaderWriter;
+using DatReaderWriter;
 using DatReaderWriter.Lib.IO;
 
 namespace WorldBuilder.Shared.Lib {

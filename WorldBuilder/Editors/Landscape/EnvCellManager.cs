@@ -239,7 +239,6 @@ namespace WorldBuilder.Editors.Landscape {
             if (!env.Cells.TryGetValue(envCell.CellStructure, out var cellStruct)) {
                 return null;
             }
-
             // Build the world transform from EnvCell position + landblock offset.
             // Dungeon cells get -50 Z bump; building cells get +0.2 Z so floor wins over terrain.
             var cellOrigin = envCell.Position.Origin + lbOffset;
@@ -254,11 +253,46 @@ namespace WorldBuilder.Editors.Landscape {
                 surfaceIds.Add((uint)(surfId | 0x08000000));
             }
 
-            // Check if we already have GPU data for this exact geometry+surface combo
-            var gpuKey = new EnvCellGpuKey(envFileId, envCell.CellStructure, surfaceIds);
+            // Build the definitive set of portal polygon IDs from multiple sources.
+            var portalPolyIds = new HashSet<ushort>();
+
+            // 1) CellStruct.Portals — structural portal list from Environment geometry.
+            //    In AC source CCellStruct::UnPack, portals are stored as indices into the
+            //    polygons array. DatReaderWriter may store them as indices OR as poly_ids
+            //    depending on version; handle both.
+            if (cellStruct.Portals != null) {
+                var polyKeys = cellStruct.Polygons.Keys.ToArray();
+                foreach (var portalRef in cellStruct.Portals) {
+                    if (cellStruct.Polygons.ContainsKey(portalRef)) {
+                        portalPolyIds.Add(portalRef);
+                    }
+                    else if (portalRef >= 0 && portalRef < polyKeys.Length) {
+                        portalPolyIds.Add(polyKeys[portalRef]);
+                    }
+                }
+            }
+
+            // 2) EnvCell.CellPortals — per-instance portal connections
+            if (envCell.CellPortals != null) {
+                foreach (var cp in envCell.CellPortals)
+                    portalPolyIds.Add((ushort)cp.PolygonId);
+            }
+
+            // 3) Polygons minus PhysicsPolygons — portal polys appear in the rendering
+            //    polygon set but not in the physics/collision set
+            if (cellStruct.PhysicsPolygons != null && cellStruct.PhysicsPolygons.Count > 0) {
+                foreach (var polyId in cellStruct.Polygons.Keys) {
+                    if (!cellStruct.PhysicsPolygons.ContainsKey(polyId))
+                        portalPolyIds.Add(polyId);
+                }
+            }
+
+            // Include portal polygon IDs in the GPU key so cells sharing the same
+            // environment+surfaces but having different portal openings get distinct meshes.
+            var gpuKey = new EnvCellGpuKey(envFileId, envCell.CellStructure, surfaceIds, portalPolyIds);
 
             // Build vertex/index data from CellStruct (same approach as StaticObjectManager.PrepareGfxObjData)
-            var meshData = PrepareCellStructMesh(cellStruct, surfaceIds);
+            var meshData = PrepareCellStructMesh(cellStruct, surfaceIds, portalPolyIds);
             if (meshData == null) return null;
 
             // Extract portal connectivity and clip planes from CellPortals
@@ -328,9 +362,10 @@ namespace WorldBuilder.Editors.Landscape {
             return null;
         }
 
-        private PreparedCellStructMesh? PrepareCellStructMesh(CellStruct cellStruct, List<uint> surfaceIds) {
+        private PreparedCellStructMesh? PrepareCellStructMesh(CellStruct cellStruct, List<uint> surfaceIds, HashSet<ushort>? portalPolygonIds = null) {
             var vertices = new List<VertexPositionNormalTexture>();
             var UVLookup = new Dictionary<(ushort vertId, ushort uvIdx), ushort>();
+            var portalOccluderIndices = new List<ushort>();
 
             var texturesByFormat = new Dictionary<(int Width, int Height, TextureFormat Format), List<PreparedTexture>>();
             var textureIndexByKey = new Dictionary<(int Width, int Height, TextureFormat Format, TextureAtlasManager.TextureKey Key), int>();
@@ -340,12 +375,29 @@ namespace WorldBuilder.Editors.Landscape {
                 var poly = kvp.Value;
                 if (poly.VertexIds.Count < 3) continue;
 
-                // Skip portal polygons (openings between rooms) — they have no renderable
-                // surface and should not be drawn. StipplingType is a flags enum:
-                //   NoPos (bit 0) = no positive surface
-                //   NoNeg (bit 1) = no negative surface
-                // Use HasFlag to catch both pure NoPos and compound types like NoBoth.
-                if (poly.Stippling.HasFlag(StipplingType.NoPos)) continue;
+                // Portal polygons: collect indices for depth-only occlusion pass
+                // (blocks terrain from showing through openings in building cells).
+                if (portalPolygonIds != null && portalPolygonIds.Contains(kvp.Key)) {
+                    var portalIndices = new List<ushort>();
+                    for (int i = 0; i < poly.VertexIds.Count; i++) {
+                        ushort vertId = (ushort)poly.VertexIds[i];
+                        if (!cellStruct.VertexArray.Vertices.TryGetValue(vertId, out var vtx)) continue;
+                        var key = (vertId, (ushort)0);
+                        if (!UVLookup.TryGetValue(key, out var idx)) {
+                            idx = (ushort)vertices.Count;
+                            vertices.Add(new VertexPositionNormalTexture(
+                                vtx.Origin, Vector3.Normalize(vtx.Normal), Vector2.Zero));
+                            UVLookup[key] = idx;
+                        }
+                        portalIndices.Add(idx);
+                    }
+                    for (int i = 2; i < portalIndices.Count; i++) {
+                        portalOccluderIndices.Add(portalIndices[i]);
+                        portalOccluderIndices.Add(portalIndices[i - 1]);
+                        portalOccluderIndices.Add(portalIndices[0]);
+                    }
+                    continue;
+                }
 
                 // EnvCell polygons reference surfaces from the EnvCell's Surfaces list
                 int surfaceIdx = poly.PosSurface;
@@ -432,7 +484,8 @@ namespace WorldBuilder.Editors.Landscape {
             return new PreparedCellStructMesh {
                 Vertices = vertices.ToArray(),
                 Batches = preparedBatches,
-                TexturesByFormat = texturesByFormat
+                TexturesByFormat = texturesByFormat,
+                PortalOccluderIndices = portalOccluderIndices.Count > 0 ? portalOccluderIndices.ToArray() : null
             };
         }
 
@@ -705,13 +758,27 @@ namespace WorldBuilder.Editors.Landscape {
                 });
             }
 
+            // Upload portal occluder index buffer (depth-only pass for building cells)
+            uint portalOccluderIBO = 0;
+            int portalOccluderIndexCount = 0;
+            if (mesh.PortalOccluderIndices != null && mesh.PortalOccluderIndices.Length > 0) {
+                gl.GenBuffers(1, out portalOccluderIBO);
+                gl.BindBuffer(GLEnum.ElementArrayBuffer, portalOccluderIBO);
+                fixed (ushort* iptr = mesh.PortalOccluderIndices) {
+                    gl.BufferData(GLEnum.ElementArrayBuffer, (nuint)(mesh.PortalOccluderIndices.Length * sizeof(ushort)), iptr, GLEnum.StaticDraw);
+                }
+                portalOccluderIndexCount = mesh.PortalOccluderIndices.Length;
+            }
+
             gl.BindVertexArray(0);
 
             return new EnvCellRenderData {
                 VAO = vao,
                 VBO = vbo,
                 Batches = renderBatches,
-                LocalAtlases = localAtlases
+                LocalAtlases = localAtlases,
+                PortalOccluderIBO = portalOccluderIBO,
+                PortalOccluderIndexCount = portalOccluderIndexCount
             };
         }
 
@@ -729,9 +796,9 @@ namespace WorldBuilder.Editors.Landscape {
             var gl = _renderer.GraphicsDevice.GL;
             var frustum = new Frustum(viewProjection);
 
-            // Run portal visibility traversal
-            var visibility = GetVisibleCells(camera.Position, frustum);
-            LastVisibilityResult = visibility;
+            // Use pre-computed visibility from ComputeVisibility() if available,
+            // otherwise compute it now (backwards-compat).
+            var visibility = LastVisibilityResult ?? GetVisibleCells(camera.Position, frustum);
 
             gl.Enable(EnableCap.DepthTest);
             gl.Enable(EnableCap.Blend);
@@ -790,16 +857,17 @@ namespace WorldBuilder.Editors.Landscape {
                 }
             }
 
-            // Draw building interiors with a smaller polygon offset than terrain (2,2) so floor wins over terrain at boundaries
-            gl.Enable(EnableCap.PolygonOffsetFill);
-            gl.PolygonOffset(0.5f, 0.5f);
+            // Draw building interiors. Terrain is rendered first by GameScene with
+            // PolygonOffset so building floors win at equal Z. When the camera is
+            // inside a building, GameScene clears only the depth buffer after terrain
+            // (matching the original AC client pipeline), so portal openings naturally
+            // show the terrain behind them instead of the clear color.
             foreach (var (gpuKey, transforms) in _buildingCellGroupBuffer) {
                 if (transforms.Count == 0) continue;
                 if (!_gpuCache.TryGetValue(gpuKey, out var renderData)) continue;
                 if (renderData.Batches.Count == 0) continue;
                 RenderBatchedEnvCell(gl, renderData, transforms);
             }
-            gl.Disable(EnableCap.PolygonOffsetFill);
 
             // Draw dungeon cells (no offset needed — already -50 Z below terrain)
             foreach (var (gpuKey, transforms) in _cellGroupBuffer) {
@@ -892,6 +960,47 @@ namespace WorldBuilder.Editors.Landscape {
             gl.BindVertexArray(0);
         }
 
+        private unsafe void RenderPortalOccluders(GL gl, EnvCellRenderData renderData, List<Matrix4x4> instanceTransforms) {
+            if (instanceTransforms.Count == 0) return;
+
+            int requiredFloats = instanceTransforms.Count * 16;
+            if (_instanceUploadBuffer.Length < requiredFloats) {
+                int newSize = Math.Max(requiredFloats, 256);
+                newSize = (int)System.Numerics.BitOperations.RoundUpToPowerOf2((uint)newSize);
+                _instanceUploadBuffer = new float[newSize];
+            }
+
+            for (int i = 0; i < instanceTransforms.Count; i++) {
+                var transform = instanceTransforms[i];
+                int offset = i * 16;
+                _instanceUploadBuffer[offset +  0] = transform.M11; _instanceUploadBuffer[offset +  1] = transform.M12;
+                _instanceUploadBuffer[offset +  2] = transform.M13; _instanceUploadBuffer[offset +  3] = transform.M14;
+                _instanceUploadBuffer[offset +  4] = transform.M21; _instanceUploadBuffer[offset +  5] = transform.M22;
+                _instanceUploadBuffer[offset +  6] = transform.M23; _instanceUploadBuffer[offset +  7] = transform.M24;
+                _instanceUploadBuffer[offset +  8] = transform.M31; _instanceUploadBuffer[offset +  9] = transform.M32;
+                _instanceUploadBuffer[offset + 10] = transform.M33; _instanceUploadBuffer[offset + 11] = transform.M34;
+                _instanceUploadBuffer[offset + 12] = transform.M41; _instanceUploadBuffer[offset + 13] = transform.M42;
+                _instanceUploadBuffer[offset + 14] = transform.M43; _instanceUploadBuffer[offset + 15] = transform.M44;
+            }
+
+            gl.BindBuffer(GLEnum.ArrayBuffer, _instanceVBO);
+            fixed (float* ptr = _instanceUploadBuffer) {
+                gl.BufferSubData(GLEnum.ArrayBuffer, 0, (nuint)(requiredFloats * sizeof(float)), ptr);
+            }
+
+            gl.BindVertexArray(renderData.VAO);
+            gl.BindBuffer(GLEnum.ArrayBuffer, _instanceVBO);
+            for (int i = 0; i < 4; i++) {
+                gl.EnableVertexAttribArray((uint)(3 + i));
+                gl.VertexAttribPointer((uint)(3 + i), 4, GLEnum.Float, false, (uint)(16 * sizeof(float)), (void*)(i * 4 * sizeof(float)));
+                gl.VertexAttribDivisor((uint)(3 + i), 1);
+            }
+
+            gl.BindBuffer(GLEnum.ElementArrayBuffer, renderData.PortalOccluderIBO);
+            gl.DrawElementsInstanced(GLEnum.Triangles, (uint)renderData.PortalOccluderIndexCount, GLEnum.UnsignedShort, null, (uint)instanceTransforms.Count);
+            gl.BindVertexArray(0);
+        }
+
         #endregion
 
         #region Landblock Management
@@ -932,6 +1041,7 @@ namespace WorldBuilder.Editors.Landscape {
                 if (_gpuCache.TryGetValue(key, out var renderData)) {
                     if (renderData.VAO != 0) gl.DeleteVertexArray(renderData.VAO);
                     if (renderData.VBO != 0) gl.DeleteBuffer(renderData.VBO);
+                    if (renderData.PortalOccluderIBO != 0) gl.DeleteBuffer(renderData.PortalOccluderIBO);
                     foreach (var batch in renderData.Batches) {
                         if (batch.IBO != 0) gl.DeleteBuffer(batch.IBO);
                     }
@@ -1122,8 +1232,22 @@ namespace WorldBuilder.Editors.Landscape {
         }
 
         /// <summary>
+        /// Pre-compute portal visibility for the current frame. Call before Render()
+        /// so that the caller can inspect <see cref="LastVisibilityResult"/> to decide
+        /// whether a depth-clear is needed between terrain and EnvCell rendering.
+        /// </summary>
+        public void ComputeVisibility(Matrix4x4 viewProjection, ICamera camera) {
+            if (_loadedCells.Count == 0) {
+                LastVisibilityResult = null;
+                return;
+            }
+            var frustum = new Frustum(viewProjection);
+            LastVisibilityResult = GetVisibleCells(camera.Position, frustum);
+        }
+
+        /// <summary>
         /// Exposes the last visibility result for external consumers (e.g. GameScene static filtering).
-        /// Updated each frame by the Render method.
+        /// Updated each frame by <see cref="ComputeVisibility"/> or <see cref="Render"/>.
         /// </summary>
         public VisibilityResult? LastVisibilityResult { get; private set; }
 
@@ -1225,6 +1349,7 @@ namespace WorldBuilder.Editors.Landscape {
             foreach (var renderData in _gpuCache.Values) {
                 if (renderData.VAO != 0) gl.DeleteVertexArray(renderData.VAO);
                 if (renderData.VBO != 0) gl.DeleteBuffer(renderData.VBO);
+                if (renderData.PortalOccluderIBO != 0) gl.DeleteBuffer(renderData.PortalOccluderIBO);
                 foreach (var batch in renderData.Batches) {
                     if (batch.IBO != 0) gl.DeleteBuffer(batch.IBO);
                 }
@@ -1257,19 +1382,24 @@ namespace WorldBuilder.Editors.Landscape {
         public readonly uint EnvironmentId;
         public readonly uint CellStructure;
         private readonly string _surfaceKey;
+        private readonly string _portalKey;
 
-        public EnvCellGpuKey(uint environmentId, uint cellStructure, List<uint> surfaceIds) {
+        public EnvCellGpuKey(uint environmentId, uint cellStructure, List<uint> surfaceIds, HashSet<ushort>? portalPolygonIds = null) {
             EnvironmentId = environmentId;
             CellStructure = cellStructure;
             _surfaceKey = string.Join(",", surfaceIds);
+            _portalKey = portalPolygonIds != null && portalPolygonIds.Count > 0
+                ? string.Join(",", portalPolygonIds.OrderBy(id => id))
+                : "";
         }
 
         public bool Equals(EnvCellGpuKey other) =>
             EnvironmentId == other.EnvironmentId &&
             CellStructure == other.CellStructure &&
-            _surfaceKey == other._surfaceKey;
+            _surfaceKey == other._surfaceKey &&
+            _portalKey == other._portalKey;
 
-        public override int GetHashCode() => HashCode.Combine(EnvironmentId, CellStructure, _surfaceKey);
+        public override int GetHashCode() => HashCode.Combine(EnvironmentId, CellStructure, _surfaceKey, _portalKey);
     }
 
     /// <summary>
@@ -1280,6 +1410,10 @@ namespace WorldBuilder.Editors.Landscape {
         public uint VBO { get; set; }
         public List<RenderBatch> Batches { get; set; } = new();
         public Dictionary<(int Width, int Height, TextureFormat Format), TextureAtlasManager> LocalAtlases { get; set; } = new();
+        /// <summary>IBO for portal polygon depth-only occluders. 0 if none.</summary>
+        public uint PortalOccluderIBO { get; set; }
+        /// <summary>Number of indices in the portal occluder IBO.</summary>
+        public int PortalOccluderIndexCount { get; set; }
     }
 
     /// <summary>
@@ -1406,6 +1540,12 @@ namespace WorldBuilder.Editors.Landscape {
         public VertexPositionNormalTexture[] Vertices { get; set; } = Array.Empty<VertexPositionNormalTexture>();
         public List<PreparedBatch> Batches { get; set; } = new();
         public Dictionary<(int Width, int Height, TextureFormat Format), List<PreparedTexture>> TexturesByFormat { get; set; } = new();
+        /// <summary>
+        /// Triangle indices for portal polygons, used as depth-only occluders to prevent
+        /// terrain from showing through portal openings in building interior cells.
+        /// Null if no portal polygons exist for this mesh.
+        /// </summary>
+        public ushort[]? PortalOccluderIndices { get; set; }
     }
 
     #endregion

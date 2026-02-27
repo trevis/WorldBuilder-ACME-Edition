@@ -245,11 +245,13 @@ namespace WorldBuilder.Editors.Dungeon {
                 var polyList = new List<(int key, float depth, bool isPortal, bool isFloor, bool isCeiling,
                     List<(int x, int y)> screenPts, Vector3 normal)>();
 
+                var portalIds = cellStruct.Portals != null ? new HashSet<ushort>(cellStruct.Portals) : new HashSet<ushort>();
+
                 foreach (var kvp in cellStruct.Polygons) {
                     var poly = kvp.Value;
                     if (poly.VertexIds.Count < 3) continue;
 
-                    bool isPortal = poly.Stippling.HasFlag(StipplingType.NoPos);
+                    bool isPortal = portalIds.Contains(kvp.Key);
 
                     var pts3d = new List<Vector3>();
                     var screenPts = new List<(int x, int y)>();

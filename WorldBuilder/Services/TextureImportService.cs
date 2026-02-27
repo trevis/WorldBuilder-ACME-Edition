@@ -162,9 +162,16 @@ namespace WorldBuilder.Services {
 
         /// <summary>
         /// Writes all custom textures to DATs during export.
+        /// Terrain replacements overwrite existing RenderSurface entries in-place
+        /// (no new B-tree entries, no Region modification needed).
+        /// Dungeon surfaces create new entries since they have no original to overwrite.
         /// </summary>
         public void WriteToDats(IDatReaderWriter writer, int? iteration = 0) {
-            foreach (var entry in _store.Entries) {
+            // Terrain replacements: overwrite existing RenderSurface in-place
+            WriteTerrainReplacementsToDats(writer, iteration);
+
+            // Dungeon surfaces: create new entries (these are genuinely new)
+            foreach (var entry in _store.Entries.Where(e => e.Usage == CustomTextureUsage.DungeonSurface)) {
                 var imagePath = _store.GetImagePath(entry);
                 if (!File.Exists(imagePath)) continue;
 
@@ -177,23 +184,26 @@ namespace WorldBuilder.Services {
                     var st = CreateSurfaceTexture(entry.SurfaceTextureGid, entry.RenderSurfaceGid);
                     writer.TrySave(st, iteration);
 
-                    if (entry.Usage == CustomTextureUsage.DungeonSurface && entry.SurfaceGid != 0) {
+                    if (entry.SurfaceGid != 0) {
                         var surf = CreateSurface(entry.SurfaceGid, entry.SurfaceTextureGid);
                         writer.TrySave(surf, iteration);
                     }
 
-                    Console.WriteLine($"[TextureImport] Exported '{entry.Name}' (RS=0x{entry.RenderSurfaceGid:X8}, ST=0x{entry.SurfaceTextureGid:X8}, Surf=0x{entry.SurfaceGid:X8})");
+                    Console.WriteLine($"[TextureImport] Exported dungeon surface '{entry.Name}' (RS=0x{entry.RenderSurfaceGid:X8}, ST=0x{entry.SurfaceTextureGid:X8}, Surf=0x{entry.SurfaceGid:X8})");
                 }
                 catch (Exception ex) {
-                    Console.WriteLine($"[TextureImport] Failed to write custom texture '{entry.Name}': {ex.Message}");
+                    Console.WriteLine($"[TextureImport] Failed to write dungeon surface '{entry.Name}': {ex.Message}");
                 }
             }
         }
 
         /// <summary>
-        /// Updates the Region's TerrainDesc for terrain replacements during export.
+        /// Overwrites existing RenderSurface entries for terrain replacements.
+        /// Instead of creating new GIDs and rewiring the Region, we find the original
+        /// RenderSurface that each terrain type uses and overwrite its pixel data.
+        /// This avoids inserting new B-tree entries which can corrupt the DAT.
         /// </summary>
-        public void UpdateRegionForTerrainReplacements(IDatReaderWriter writer, int? iteration = 0) {
+        private void WriteTerrainReplacementsToDats(IDatReaderWriter writer, int? iteration) {
             var terrainReplacements = _store.GetTerrainReplacements().ToList();
             if (terrainReplacements.Count == 0) return;
 
@@ -206,15 +216,46 @@ namespace WorldBuilder.Services {
                 if (entry.ReplacesTerrainType == null) continue;
                 var targetType = (TerrainTextureType)entry.ReplacesTerrainType.Value;
 
+                var imagePath = _store.GetImagePath(entry);
+                if (!File.Exists(imagePath)) continue;
+
                 var desc = region.TerrainInfo.LandSurfaces.TexMerge.TerrainDesc
                     .FirstOrDefault(d => d.TerrainType == targetType);
+                if (desc == null) {
+                    Console.WriteLine($"[TextureImport] No TerrainDesc found for {targetType}");
+                    continue;
+                }
 
-                if (desc != null) {
-                    desc.TerrainTex.TexGID = entry.SurfaceTextureGid;
+                var originalStId = desc.TerrainTex.TextureId;
+                if (!writer.TryGet<SurfaceTexture>(originalStId, out var originalSt) || originalSt.Textures.Count == 0) {
+                    Console.WriteLine($"[TextureImport] Failed to read SurfaceTexture 0x{originalStId:X8} for {targetType}");
+                    continue;
+                }
+
+                var originalRsId = originalSt.Textures[^1];
+
+                try {
+                    var bgraData = LoadImageAsBgra(imagePath, entry.Width, entry.Height);
+                    var rs = CreateRenderSurface(originalRsId, bgraData, entry.Width, entry.Height);
+                    writer.TrySave(rs, iteration);
+
+                    Console.WriteLine($"[TextureImport] Replaced terrain '{entry.Name}' by overwriting RS=0x{originalRsId:X8} (via ST=0x{originalStId:X8})");
+                }
+                catch (Exception ex) {
+                    Console.WriteLine($"[TextureImport] Failed to replace terrain '{entry.Name}': {ex.Message}");
                 }
             }
+        }
 
-            writer.TrySave(region, iteration);
+        /// <summary>
+        /// Updates the Region's TerrainDesc for terrain replacements during export.
+        /// No longer needed since we overwrite existing entries in-place, but kept
+        /// for backward compatibility with dungeon surfaces or future use.
+        /// </summary>
+        public void UpdateRegionForTerrainReplacements(IDatReaderWriter writer, int? iteration = 0) {
+            // Terrain replacements now overwrite existing RenderSurface entries in-place,
+            // so no Region modification is needed. The existing TerrainDesc already points
+            // to the correct SurfaceTexture/RenderSurface chain.
         }
 
         /// <summary>

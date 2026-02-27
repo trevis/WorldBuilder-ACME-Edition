@@ -1373,6 +1373,7 @@ namespace WorldBuilder.Editors.Landscape {
             var gl = renderer.GraphicsDevice.GL;
 
             ProcessPendingUploads(context);
+            SurfaceManager.ProcessPendingTextureUpdates();
 
             _aspectRatio = aspectRatio;
             gl.Enable(EnableCap.DepthTest);
@@ -1398,15 +1399,37 @@ namespace WorldBuilder.Editors.Landscape {
             var frustum = new Frustum(viewProjection);
             var renderableChunks = GetRenderableChunks(frustum, context);
 
-            // Render terrain (with brush preview).
-            // Terrain is pushed furthest back in the depth priority chain:
-            //   Terrain (2,2) < Building EnvCells (1,1) < Static objects (0)
-            // This ensures interior floors win over terrain, while exterior
-            // GfxObj models win over interior EnvCell walls/ceilings.
+            // --- Render order matches the original AC client (PView::DrawCells): ---
+            //   1. Terrain first  (landscape drawn, color+depth written)
+            //   2. Depth-clear    (only when camera is inside a building/dungeon)
+            //   3. EnvCells       (building/dungeon geometry on top)
+            // Portal openings contain no EnvCell geometry, so the terrain that
+            // was already drawn in step 1 remains visible through them.
+
+            // Pre-compute EnvCell visibility so we know whether the camera is
+            // inside a building before we decide whether to depth-clear.
+            context.EnvCellManager.ShowDungeonCells = ShowDungeons;
+            context.EnvCellManager.AlwaysShowBuildingInteriors = ShowBuildingInteriors;
+            context.EnvCellManager.ComputeVisibility(viewProjection, camera);
+
+            // Step 1: Terrain. PolygonOffset pushes terrain slightly back so
+            // building floors win at equal Z when the camera is outside.
             gl.Enable(EnableCap.PolygonOffsetFill);
-            gl.PolygonOffset(2f, 2f);
+            gl.PolygonOffset(1f, 1f);
             RenderTerrain(context, renderableChunks, model, camera, cameraDistance, width, height, editingContext);
             gl.Disable(EnableCap.PolygonOffsetFill);
+
+            // Step 2: When the camera is inside a building or dungeon cell,
+            // clear only the depth buffer. Terrain stays in the color buffer so
+            // exit-portal openings show the landscape behind them instead of the
+            // clear color. EnvCell geometry will write fresh depth on top.
+            bool cameraInsideCell = context.EnvCellManager.LastVisibilityResult?.CameraCell != null;
+            if (cameraInsideCell) {
+                gl.Clear(ClearBufferMask.DepthBufferBit);
+            }
+
+            // Step 3: EnvCells (building interiors + dungeon cells).
+            context.EnvCellManager.Render(viewProjection, camera, LightDirection, AmbientLightIntensity, SpecularPower);
 
             if (editingContext.ActiveVertices.Count > 0) {
                 RenderActiveSpheres(context, editingContext, camera, model, viewProjection);
@@ -1454,10 +1477,6 @@ namespace WorldBuilder.Editors.Landscape {
             if (renderStaticsMs > 200) {
                 Console.WriteLine($"[GameScene.Render] Static objects: {renderStaticsMs}ms ({visibleObjects.Count} objects)");
             }
-
-            context.EnvCellManager.ShowDungeonCells = ShowDungeons;
-            context.EnvCellManager.AlwaysShowBuildingInteriors = ShowBuildingInteriors;
-            context.EnvCellManager.Render(viewProjection, camera, LightDirection, AmbientLightIntensity, SpecularPower);
 
             if (editingContext.ObjectSelection.HasSelection) {
                 RenderSelectionHighlight(context, editingContext.ObjectSelection, camera, viewProjection);

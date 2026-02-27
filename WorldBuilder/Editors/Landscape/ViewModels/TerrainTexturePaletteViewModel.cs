@@ -18,6 +18,7 @@ using WorldBuilder.ViewModels;
 namespace WorldBuilder.Editors.Landscape.ViewModels {
     public partial class TerrainTextureItem : ViewModelBase {
         public TerrainTextureType TextureType { get; }
+        public TerrainTexturePaletteViewModel Owner { get; set; } = null!;
 
         [ObservableProperty]
         private Bitmap? _thumbnail;
@@ -67,14 +68,17 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
             foreach (var desc in available) {
                 thumbnails.TryGetValue(desc.TerrainType, out var thumb);
                 var hasCustom = textureImport?.Store.GetTerrainReplacement((int)desc.TerrainType) != null;
+                TerrainTextureItem item;
                 if (hasCustom) {
                     var customThumb = textureImport!.GenerateThumbnail(
                         textureImport.Store.GetTerrainReplacement((int)desc.TerrainType)!, 64);
-                    Textures.Add(new TerrainTextureItem(desc.TerrainType, customThumb ?? thumb, isCustom: true));
+                    item = new TerrainTextureItem(desc.TerrainType, customThumb ?? thumb, isCustom: true);
                 }
                 else {
-                    Textures.Add(new TerrainTextureItem(desc.TerrainType, thumb));
+                    item = new TerrainTextureItem(desc.TerrainType, thumb);
                 }
+                item.Owner = this;
+                Textures.Add(item);
             }
 
             if (Textures.Count > 0) {

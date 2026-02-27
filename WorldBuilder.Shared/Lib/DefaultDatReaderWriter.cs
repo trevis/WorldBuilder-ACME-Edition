@@ -41,6 +41,13 @@ namespace WorldBuilder.Shared.Lib {
                     Type _ when typeof(T) == typeof(RenderSurface) => Dats.Portal.TryGet(id, out file),
                     Type _ when typeof(T) == typeof(SurfaceTexture) => Dats.Portal.TryGet(id, out file),
                     Type _ when typeof(T) == typeof(DatReaderWriter.DBObjs.Environment) => Dats.Portal.TryGet(id, out file),
+                    Type _ when typeof(T) == typeof(SpellTable) => Dats.Portal.TryGet(id, out file),
+                    Type _ when typeof(T) == typeof(SpellComponentTable) => Dats.Portal.TryGet(id, out file),
+                    Type _ when typeof(T) == typeof(ExperienceTable) => Dats.Portal.TryGet(id, out file),
+                    Type _ when typeof(T) == typeof(SkillTable) => Dats.Portal.TryGet(id, out file),
+                    Type _ when typeof(T) == typeof(VitalTable) => Dats.Portal.TryGet(id, out file),
+                    Type _ when typeof(T) == typeof(CharGen) => Dats.Portal.TryGet(id, out file),
+                    Type _ when typeof(T) == typeof(LayoutDesc) => Dats.TryGet(id, out file),
                     _ => throw new NotImplementedException($"DefaultDatReaderWriter does not currently support {typeof(T)}"),
                 };
             }
@@ -62,6 +69,11 @@ namespace WorldBuilder.Shared.Lib {
                     Type _ when typeof(T) == typeof(RenderSurface) => Dats.Portal.TryWriteFile(file, iteration),
                     Type _ when typeof(T) == typeof(SurfaceTexture) => Dats.Portal.TryWriteFile(file, iteration),
                     Type _ when typeof(T) == typeof(DatReaderWriter.DBObjs.Environment) => Dats.Portal.TryWriteFile(file, iteration),
+                    Type _ when typeof(T) == typeof(SpellTable) => Dats.Portal.TryWriteFile(file, iteration),
+                    Type _ when typeof(T) == typeof(ExperienceTable) => Dats.Portal.TryWriteFile(file, iteration),
+                    Type _ when typeof(T) == typeof(SkillTable) => Dats.Portal.TryWriteFile(file, iteration),
+                    Type _ when typeof(T) == typeof(VitalTable) => Dats.Portal.TryWriteFile(file, iteration),
+                    Type _ when typeof(T) == typeof(CharGen) => Dats.Portal.TryWriteFile(file, iteration),
                     _ => throw new NotImplementedException($"DefaultDatReaderWriter does not currently support {typeof(T)}"),
                 };
             }

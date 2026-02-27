@@ -49,14 +49,33 @@ namespace WorldBuilder.Editors.Dungeon {
         }
 
         /// <summary>
-        /// Find all portal polygon IDs in a CellStruct (polygons with StipplingType.NoPos).
+        /// Find all portal polygon IDs in a CellStruct using the structural Portals list
+        /// (corresponds to CCellStruct::portals in the AC client).
         /// </summary>
         public static List<ushort> GetPortalPolygonIds(CellStruct cellStruct) {
-            var result = new List<ushort>();
-            foreach (var kvp in cellStruct.Polygons) {
-                if (kvp.Value.Stippling.HasFlag(StipplingType.NoPos))
-                    result.Add(kvp.Key);
+            if (cellStruct.Portals == null || cellStruct.Portals.Count == 0)
+                return new List<ushort>();
+
+            var result = new List<ushort>(cellStruct.Portals.Count);
+            var seen = new HashSet<ushort>();
+            foreach (var portalRef in cellStruct.Portals) {
+                // In AC source, CCellStruct::portals is stored as polygon array refs.
+                // DatReaderWriter may expose either refs or resolved IDs depending on source.
+                ushort resolvedId = portalRef;
+                if (!cellStruct.Polygons.ContainsKey(resolvedId)) {
+                    int portalIndex = portalRef;
+                    if (portalIndex >= 0 && portalIndex < cellStruct.Polygons.Count) {
+                        resolvedId = cellStruct.Polygons.ElementAt(portalIndex).Key;
+                    }
+                    else {
+                        continue;
+                    }
+                }
+
+                if (seen.Add(resolvedId))
+                    result.Add(resolvedId);
             }
+
             return result;
         }
 

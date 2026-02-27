@@ -10,6 +10,7 @@ using DatReaderWriter.Lib.IO;
 using DatReaderWriter.Types;
 using System;
 using System.Buffers;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Numerics;
@@ -28,6 +29,7 @@ namespace WorldBuilder.Editors.Landscape {
 
         private readonly Dictionary<OpenGLRenderer, ITextureArray> _terrainAtlases = new();
         private readonly Dictionary<OpenGLRenderer, ITextureArray> _alphaAtlases = new();
+        private readonly ConcurrentQueue<(int layerIndex, byte[] rgbaData)> _pendingTextureUpdates = new();
         private readonly object _lock = new();
 
         private static readonly Vector2[] LandUVs = new Vector2[] {
@@ -117,7 +119,7 @@ namespace WorldBuilder.Editors.Landscape {
         public int GetAtlasIndexForTerrainType(TerrainTextureType type) {
             var desc = TerrainDescriptors.FirstOrDefault(d => d.TerrainType == type);
             if (desc == null) return -1;
-            if (_textureAtlasIndexLookup.TryGetValue(desc.TerrainTex.TexGID, out var index)) {
+            if (_textureAtlasIndexLookup.TryGetValue(desc.TerrainTex.TextureId, out var index)) {
                 return index;
             }
             return -1;
@@ -134,7 +136,7 @@ namespace WorldBuilder.Editors.Landscape {
 
             foreach (var tmDesc in GetAvailableTerrainTextures()) {
                 try {
-                    if (!_dats.TryGet<SurfaceTexture>(tmDesc.TerrainTex.TexGID, out var st)) continue;
+                    if (!_dats.TryGet<SurfaceTexture>(tmDesc.TerrainTex.TextureId, out var st)) continue;
                     if (!_dats.TryGet<RenderSurface>(st.Textures[^1], out var rs)) continue;
                     if (rs.Width != 512 || rs.Height != 512) continue;
 
@@ -179,65 +181,65 @@ namespace WorldBuilder.Editors.Landscape {
             bool populateLookup = _textureAtlasIndexLookup.Count == 0;
 
             foreach (var tmDesc in _region.TerrainInfo.LandSurfaces.TexMerge.TerrainDesc) {
-                if (!_dats.TryGet<SurfaceTexture>(tmDesc.TerrainTex.TexGID, out var t)) {
-                    throw new Exception($"Unable to load SurfaceTexture: {tmDesc.TerrainType}: 0x{tmDesc.TerrainTex.TexGID:X8}");
+                if (!_dats.TryGet<SurfaceTexture>(tmDesc.TerrainTex.TextureId, out var t)) {
+                    throw new Exception($"Unable to load SurfaceTexture: {tmDesc.TerrainType}: 0x{tmDesc.TerrainTex.TextureId:X8}");
                 }
                 if (!_dats.TryGet<RenderSurface>(t.Textures[^1], out var texture)) {
                     throw new Exception($"Unable to load RenderSurface: 0x{t.Textures[^1]:X8}");
                 }
 
-                if (populateLookup && _textureAtlasIndexLookup.ContainsKey(tmDesc.TerrainTex.TexGID)) {
+                if (populateLookup && _textureAtlasIndexLookup.ContainsKey(tmDesc.TerrainTex.TextureId)) {
                     continue;
                 }
                 GetTerrainTexture(texture, bytes);
                 var layerIndex = terrainAtlas.AddLayer(bytes);
 
                 if (populateLookup)
-                    _textureAtlasIndexLookup.Add(tmDesc.TerrainTex.TexGID, layerIndex);
+                    _textureAtlasIndexLookup.Add(tmDesc.TerrainTex.TextureId, layerIndex);
             }
 
             foreach (var overlay in _region.TerrainInfo.LandSurfaces.TexMerge.RoadMaps) {
-                if (populateLookup && _alphaAtlasIndexLookup.ContainsKey(overlay.TexGID)) continue;
+                if (populateLookup && _alphaAtlasIndexLookup.ContainsKey(overlay.TextureId)) continue;
 
-                if (!_dats.TryGet<SurfaceTexture>(overlay.TexGID, out var t)) {
-                    throw new Exception($"Unable to load SurfaceTexture: 0x{overlay.TexGID:X8}");
+                if (!_dats.TryGet<SurfaceTexture>(overlay.TextureId, out var t)) {
+                    throw new Exception($"Unable to load SurfaceTexture: 0x{overlay.TextureId:X8}");
                 }
                 if (_dats.TryGet<RenderSurface>(t.Textures[^1], out var overlayTexture)) {
                     GetAlphaTexture(overlayTexture, bytes);
                     var layerIndex = alphaAtlas.AddLayer(bytes);
 
                     if (populateLookup)
-                        _alphaAtlasIndexLookup.Add(overlay.TexGID, layerIndex);
+                        _alphaAtlasIndexLookup.Add(overlay.TextureId, layerIndex);
                 }
             }
 
             foreach (var overlay in _region.TerrainInfo.LandSurfaces.TexMerge.CornerTerrainMaps) {
-                if (populateLookup && _alphaAtlasIndexLookup.ContainsKey(overlay.TexGID)) continue;
+                if (populateLookup && _alphaAtlasIndexLookup.ContainsKey(overlay.TextureId)) continue;
 
-                if (!_dats.TryGet<SurfaceTexture>(overlay.TexGID, out var t)) {
-                    throw new Exception($"Unable to load SurfaceTexture: 0x{overlay.TexGID:X8}");
+                if (!_dats.TryGet<SurfaceTexture>(overlay.TextureId, out var t)) {
+                    throw new Exception($"Unable to load SurfaceTexture: 0x{overlay.TextureId:X8}");
                 }
                 if (_dats.TryGet<RenderSurface>(t.Textures[^1], out var overlayTexture)) {
                     GetAlphaTexture(overlayTexture, bytes);
                     var layerIndex = alphaAtlas.AddLayer(bytes);
 
                     if (populateLookup)
-                        _alphaAtlasIndexLookup.Add(overlay.TexGID, layerIndex);
+                        _alphaAtlasIndexLookup.Add(overlay.TextureId, layerIndex);
                 }
             }
 
             foreach (var overlay in _region.TerrainInfo.LandSurfaces.TexMerge.SideTerrainMaps) {
-                if (populateLookup && _alphaAtlasIndexLookup.ContainsKey(overlay.TexGID)) continue;
+                if (populateLookup && _alphaAtlasIndexLookup.ContainsKey(overlay.TextureId)) continue;
 
-                if (!_dats.TryGet<SurfaceTexture>(overlay.TexGID, out var t)) {
-                    throw new Exception($"Unable to load SurfaceTexture: 0x{overlay.TexGID:X8}");
+                if (!_dats.TryGet<SurfaceTexture>(overlay.TextureId, out var t)) {
+                    throw new Exception($"Unable to load SurfaceTexture: 0x{overlay.TextureId:X8}");
                 }
                 if (_dats.TryGet<RenderSurface>(t.Textures[^1], out var overlayTexture)) {
                     GetAlphaTexture(overlayTexture, bytes);
                     var layerIndex = alphaAtlas.AddLayer(bytes);
 
                     if (populateLookup)
-                        _alphaAtlasIndexLookup.Add(overlay.TexGID, layerIndex);
+                        _alphaAtlasIndexLookup.Add(overlay.TextureId, layerIndex);
                 }
             }
         }
@@ -255,18 +257,18 @@ namespace WorldBuilder.Editors.Landscape {
             v.PackedRoad0 = VertexLandscape.PackTexCoord(-1, -1, 255, 255);
             v.PackedRoad1 = VertexLandscape.PackTexCoord(-1, -1, 255, 255);
 
-            var baseIndex = GetTextureAtlasIndex(surfInfo.TerrainBase.TexGID);
+            var baseIndex = GetTextureAtlasIndex(surfInfo.TerrainBase.TextureId);
             var baseUV = LandUVs[cornerIndex];
             v.SetBase(baseUV.X, baseUV.Y, (byte)baseIndex, 255);
 
             for (int i = 0; i < surfInfo.TerrainOverlays.Count && i < 3; i++) {
-                var overlayIndex = (byte)GetTextureAtlasIndex(surfInfo.TerrainOverlays[i].TexGID);
+                var overlayIndex = (byte)GetTextureAtlasIndex(surfInfo.TerrainOverlays[i].TextureId);
                 var rotIndex = i < surfInfo.TerrainRotations.Count ? (byte)surfInfo.TerrainRotations[i] : (byte)0;
                 var rotatedUV = LandUVsRotated[rotIndex][cornerIndex];
                 byte alphaIndex = 255;
 
                 if (i < surfInfo.TerrainAlphaOverlays.Count) {
-                    alphaIndex = (byte)GetAlphaAtlasIndex(surfInfo.TerrainAlphaOverlays[i].TexGID);
+                    alphaIndex = (byte)GetAlphaAtlasIndex(surfInfo.TerrainAlphaOverlays[i].TextureId);
                 }
 
                 switch (i) {
@@ -277,18 +279,18 @@ namespace WorldBuilder.Editors.Landscape {
             }
 
             if (surfInfo.RoadOverlay != null) {
-                var roadOverlayIndex = (byte)GetTextureAtlasIndex(surfInfo.RoadOverlay.TexGID);
+                var roadOverlayIndex = (byte)GetTextureAtlasIndex(surfInfo.RoadOverlay.TextureId);
                 var rotIndex = surfInfo.RoadRotations.Count > 0 ? (byte)surfInfo.RoadRotations[0] : (byte)0;
                 var rotatedUV = LandUVsRotated[rotIndex][cornerIndex];
                 byte alphaIndex = surfInfo.RoadAlphaOverlays.Count > 0
-                    ? (byte)GetAlphaAtlasIndex(surfInfo.RoadAlphaOverlays[0].TexGID)
+                    ? (byte)GetAlphaAtlasIndex(surfInfo.RoadAlphaOverlays[0].TextureId)
                     : (byte)255;
                 v.SetRoad0(rotatedUV.X, rotatedUV.Y, roadOverlayIndex, alphaIndex);
 
                 if (surfInfo.RoadAlphaOverlays.Count > 1) {
                     var rotIndex2 = surfInfo.RoadRotations.Count > 1 ? (byte)surfInfo.RoadRotations[1] : (byte)0;
                     var rotatedUV2 = LandUVsRotated[rotIndex2][cornerIndex];
-                    byte alphaIndex2 = (byte)GetAlphaAtlasIndex(surfInfo.RoadAlphaOverlays[1].TexGID);
+                    byte alphaIndex2 = (byte)GetAlphaAtlasIndex(surfInfo.RoadAlphaOverlays[1].TextureId);
                     v.SetRoad1(rotatedUV2.X, rotatedUV2.Y, roadOverlayIndex, alphaIndex2);
                 }
             }
@@ -303,21 +305,30 @@ namespace WorldBuilder.Editors.Landscape {
 
         /// <summary>
         /// Replaces the terrain texture for a given TerrainTextureType with custom RGBA data.
-        /// Updates the atlas layer in all registered renderers. The rgbaData must be 512x512x4 bytes.
+        /// Queues the update for the next render frame (GL thread). The rgbaData must be 512x512x4 bytes.
         /// </summary>
         public bool ReplaceTerrainTexture(TerrainTextureType type, byte[] rgbaData) {
             var desc = TerrainDescriptors.FirstOrDefault(d => d.TerrainType == type);
             if (desc == null) return false;
 
-            if (!_textureAtlasIndexLookup.TryGetValue(desc.TerrainTex.TexGID, out var layerIndex))
+            if (!_textureAtlasIndexLookup.TryGetValue(desc.TerrainTex.TextureId, out var layerIndex))
                 return false;
 
-            lock (_lock) {
-                foreach (var (renderer, atlas) in _terrainAtlases) {
-                    atlas.UpdateLayer(layerIndex, rgbaData);
+            _pendingTextureUpdates.Enqueue((layerIndex, rgbaData));
+            return true;
+        }
+
+        /// <summary>
+        /// Processes queued texture replacements. Must be called on the GL thread (e.g. during Render).
+        /// </summary>
+        public void ProcessPendingTextureUpdates() {
+            while (_pendingTextureUpdates.TryDequeue(out var update)) {
+                lock (_lock) {
+                    foreach (var (renderer, atlas) in _terrainAtlases) {
+                        atlas.UpdateLayer(update.layerIndex, update.rgbaData);
+                    }
                 }
             }
-            return true;
         }
 
         public int GetAlphaAtlasIndex(uint texGID) {

@@ -32,7 +32,7 @@
                             Padding="2"
                             Width="72"
                             Height="88"
-                            Command="{Binding $parent[ItemsControl].((vm:TerrainTexturePaletteViewModel)DataContext).SelectTextureCommand}"
+                            Command="{Binding Owner.SelectTextureCommand}"
                             CommandParameter="{Binding}"
                             ToolTip.Tip="{Binding DisplayName}"
                             Focusable="False"
@@ -40,10 +40,10 @@
                             <Button.ContextMenu>
                                 <ContextMenu>
                                     <MenuItem Header="Replace Texture..."
-                                              Command="{Binding $parent[ItemsControl].((vm:TerrainTexturePaletteViewModel)DataContext).ReplaceTextureCommand}"
+                                              Command="{Binding Owner.ReplaceTextureCommand}"
                                               CommandParameter="{Binding}" />
                                     <MenuItem Header="Revert to Original"
-                                              Command="{Binding $parent[ItemsControl].((vm:TerrainTexturePaletteViewModel)DataContext).RevertTextureCommand}"
+                                              Command="{Binding Owner.RevertTextureCommand}"
                                               CommandParameter="{Binding}"
                                               IsEnabled="{Binding IsCustom}" />
                                 </ContextMenu>

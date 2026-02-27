@@ -293,15 +293,15 @@ namespace WorldBuilder.Editors.Dungeon {
 
                 switch (renderSurface.Format) {
                     case DatReaderWriter.Enums.PixelFormat.PFID_A8R8G8B8:
-                        rgba = renderSurface.SourceData;
+                        rgba = DatIconLoader.SwizzleBgraToRgba(renderSurface.SourceData, w * h);
                         break;
 
                     case DatReaderWriter.Enums.PixelFormat.PFID_R8G8B8:
                         rgba = new byte[w * h * 4];
                         for (int i = 0; i < w * h; i++) {
-                            rgba[i * 4 + 0] = renderSurface.SourceData[i * 3 + 0];
+                            rgba[i * 4 + 0] = renderSurface.SourceData[i * 3 + 2];
                             rgba[i * 4 + 1] = renderSurface.SourceData[i * 3 + 1];
-                            rgba[i * 4 + 2] = renderSurface.SourceData[i * 3 + 2];
+                            rgba[i * 4 + 2] = renderSurface.SourceData[i * 3 + 0];
                             rgba[i * 4 + 3] = 255;
                         }
                         break;

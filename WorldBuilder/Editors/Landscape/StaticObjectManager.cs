@@ -222,30 +222,20 @@ namespace WorldBuilder.Editors.Landscape {
             foreach (var poly in gfxObj.Polygons.Values) {
                 if (poly.VertexIds.Count < 3) continue;
 
+                // NoPos = "no positive surface" — portal/doorway openings that should not be rendered.
+                if (poly.Stippling == StipplingType.NoPos) continue;
+
                 int surfaceIdx = poly.PosSurface;
                 bool useNegSurface = false;
 
-                // Determine which surface to use
-                if (poly.Stippling == StipplingType.NoPos) {
-                    if (poly.PosSurface < gfxObj.Surfaces.Count) {
-                        surfaceIdx = poly.PosSurface;
-                    }
-                    else if (poly.NegSurface < gfxObj.Surfaces.Count) {
-                        surfaceIdx = poly.NegSurface;
-                        useNegSurface = true;
-                    }
-                    else {
-                        continue;
-                    }
-                }
-                else if (surfaceIdx >= gfxObj.Surfaces.Count) {
+                if (surfaceIdx >= gfxObj.Surfaces.Count) {
                     continue;
                 }
 
                 var surfaceId = gfxObj.Surfaces[surfaceIdx];
                 if (!_dats.TryGet<Surface>(surfaceId, out var surface)) continue;
 
-                bool isSolid = poly.Stippling == StipplingType.NoPos || surface.Type.HasFlag(SurfaceType.Base1Solid);
+                bool isSolid = surface.Type.HasFlag(SurfaceType.Base1Solid);
                 var texResult = LoadTextureData(surfaceId, surface, isSolid, poly.Stippling);
                 if (!texResult.HasValue) continue;
 
@@ -454,25 +444,18 @@ namespace WorldBuilder.Editors.Landscape {
             foreach (var poly in gfxObj.Polygons.Values) {
                 if (poly.VertexIds.Count < 3) continue;
 
+                // NoPos = "no positive surface" — portal/doorway openings that should not be rendered.
+                if (poly.Stippling == StipplingType.NoPos) continue;
+
                 int surfaceIdx = poly.PosSurface;
                 bool useNegSurface = false;
 
-                if (poly.Stippling == StipplingType.NoPos) {
-                    if (poly.PosSurface < gfxObj.Surfaces.Count) {
-                        surfaceIdx = poly.PosSurface;
-                    }
-                    else if (poly.NegSurface < gfxObj.Surfaces.Count) {
-                        surfaceIdx = poly.NegSurface;
-                        useNegSurface = true;
-                    }
-                    else continue;
-                }
-                else if (surfaceIdx >= gfxObj.Surfaces.Count) continue;
+                if (surfaceIdx >= gfxObj.Surfaces.Count) continue;
 
                 var surfaceId = gfxObj.Surfaces[surfaceIdx];
                 if (!_dats.TryGet<Surface>(surfaceId, out var surface)) continue;
 
-                bool isSolid = poly.Stippling == StipplingType.NoPos || surface.Type.HasFlag(SurfaceType.Base1Solid);
+                bool isSolid = surface.Type.HasFlag(SurfaceType.Base1Solid);
                 var texResult = LoadTextureData(surfaceId, surface, isSolid, poly.Stippling);
                 if (!texResult.HasValue) continue;
 

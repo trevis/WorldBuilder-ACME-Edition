@@ -928,9 +928,9 @@ namespace WorldBuilder.Editors.Dungeon {
                 var rsId = surfTex.Textures.Last();
                 if (!dats.TryGet<RenderSurface>(rsId, out var rs))
                     return CreateFallbackThumb(sz);
-                // For thumbnails just grab a few pixels from the texture source
                 if (rs.Format == DatReaderWriter.Enums.PixelFormat.PFID_A8R8G8B8 && rs.SourceData.Length >= sz * sz * 4) {
-                    return SurfaceBrowserViewModel.DownsampleNearest(rs.SourceData, rs.Width, rs.Height, sz, sz);
+                    var downsampled = SurfaceBrowserViewModel.DownsampleNearest(rs.SourceData, rs.Width, rs.Height, sz, sz);
+                    return DatIconLoader.SwizzleBgraToRgba(downsampled, sz * sz);
                 }
             }
             catch { }
@@ -1642,11 +1642,11 @@ namespace WorldBuilder.Editors.Dungeon {
                 if (!_dats.TryGet<DatReaderWriter.DBObjs.Environment>(envFileId, out var env)) return 0;
                 if (!env.Cells.TryGetValue(room.CellStructureIndex, out var cellStruct)) return 0;
 
+                var portalIds = cellStruct.Portals != null ? new HashSet<ushort>(cellStruct.Portals) : new HashSet<ushort>();
                 int maxIndex = -1;
                 foreach (var kvp in cellStruct.Polygons) {
-                    var poly = kvp.Value;
-                    if (poly.Stippling.HasFlag(DatReaderWriter.Enums.StipplingType.NoPos)) continue;
-                    if (poly.PosSurface > maxIndex) maxIndex = poly.PosSurface;
+                    if (portalIds.Contains(kvp.Key)) continue;
+                    if (kvp.Value.PosSurface > maxIndex) maxIndex = kvp.Value.PosSurface;
                 }
                 return maxIndex + 1;
             }
@@ -1842,6 +1842,32 @@ namespace WorldBuilder.Editors.Dungeon {
                     }
                 }
             }, "DungeonDialogHost");
+        }
+
+        /// <summary>
+        /// Copy a dungeon from source landblock to target landblock.
+        /// Creates a new document at target with same structure, positions, and portal connectivity.
+        /// </summary>
+        public void CopyDungeonTemplate(ushort sourceLb, ushort targetLb) {
+            CopyTemplateToLandblock(sourceLb, targetLb);
+        }
+
+        /// <summary>
+        /// Applies alternate wall and floor surfaces to all cells in the current document (for demo/promo).
+        /// Slot 0 = wall, slot 1 = floor. Uses default stone surfaces if not provided.
+        /// </summary>
+        public void ApplyAlternateSurfacesToAllCells(ushort? wallSurfaceId = null, ushort? floorSurfaceId = null) {
+            if (_document == null || _document.Cells.Count == 0) return;
+            ushort wall = wallSurfaceId ?? 0x032A;
+            ushort floor = floorSurfaceId ?? 0x032B;
+            int updated = 0;
+            foreach (var dc in _document.Cells) {
+                if (dc.Surfaces.Count >= 1) { dc.Surfaces[0] = wall; updated++; }
+                if (dc.Surfaces.Count >= 2) { dc.Surfaces[1] = floor; updated++; }
+            }
+            _document.MarkDirty();
+            RefreshRendering();
+            StatusText = $"Applied surfaces to {updated} cell(s)";
         }
 
         /// <summary>
