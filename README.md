@@ -1,6 +1,8 @@
 # ACME WorldBuilder
 
-Landscape and world building tool for Asheron's Call. Edit terrain, place objects, paint textures, draw roads, manage layers, and export directly to DAT files.
+World building tool for Asheron's Call. Edit terrain, dungeons, spells, skills, and more — export directly to DAT files.
+
+> **Beta software.** All features are under active development. The newer data editors (Spell, Skill, Vital, Experience, CharGen, SpellSet, Layout) are especially early and have not been thoroughly tested. Expect rough edges, and back up your DAT files before exporting.
 
 > **First run note:** The initial launch will be slower than usual. ACME WorldBuilder builds several caches on first run (textures, thumbnails, terrain data) that persist across sessions. Subsequent launches will be significantly faster.
 
@@ -70,6 +72,63 @@ Landscape and world building tool for Asheron's Call. Edit terrain, place object
 - Named snapshots that persist between sessions
 - Forward entries shown dimmed in the history panel
 
+### Dungeon Editor
+
+- **Room palette** — browse all dungeon environment rooms with 2D cross-section previews
+- **Portal snapping** — rooms auto-snap together via portal connections
+- **Surface editing** — change wall and floor textures per cell
+- **Static objects** — place and move objects inside dungeon cells
+- **Copy template** — duplicate a dungeon from one landblock to another
+- **Undo / redo** — full history support for dungeon operations
+
+### Spell Editor *(beta)*
+
+- Browse and search all spells by name, school, or type
+- Edit spell properties: power, range, duration, components (1–8 slots)
+- Icon picker with visual DAT icon browser
+- Add and delete spells, save back to SpellTable
+
+### Spell Set Editor *(beta)*
+
+- Edit equipment set spell assignments
+- Tiered spell slot management (add/remove tiers and spells per tier)
+
+### Skill Editor *(beta)*
+
+- Browse and filter skills by category (Combat, Magic, Other)
+- Edit training costs, formulas (attribute contributions, divisor), bounds, learn mod
+- Icon picker, add/delete skills
+
+### Experience Table Editor *(beta)*
+
+- Edit level progression, attribute/vital/skill XP cost tables
+- Auto-scale generator with power-curve formulas for quick table generation
+- Add/remove levels and ranks
+
+### Vital Table Editor *(beta)*
+
+- Edit Health, Stamina, and Mana formulas
+- Configure attribute contributions, divisors, and multipliers
+- Live formula preview
+
+### Character Creation Editor *(beta)*
+
+- Edit heritage groups: names, icons, attribute/skill credits, setup models
+- 3D model preview for heritage setups with rotation and zoom
+- Manage starting areas and spawn locations
+
+### UI Layout Viewer *(beta)*
+
+- Browse all LayoutDesc entries from the DAT
+- Element tree hierarchy with property inspector
+- Visual preview canvas with selection highlighting
+
+### Custom Textures
+
+- **Terrain texture replacement** — import custom images to replace any terrain type
+- **Dungeon surface import** — create new dungeon wall/floor textures
+- Exports overwrite existing RenderSurface entries in-place (no DAT corruption)
+
 ### DAT Export
 
 - Exports to `client_cell_1.dat`, `client_portal.dat`, `client_highres.dat`, and `client_local_English.dat`
@@ -83,6 +142,8 @@ Landscape and world building tool for Asheron's Call. Edit terrain, place object
 - **Top-down orthographic camera** — pan and zoom, ideal for large-scale editing
 - **Toggle** — press Q to switch between modes
 - **Go To Landblock** — Ctrl+G, enter a hex ID or X,Y coordinates
+- **Location search** — search named locations (towns, dungeons, landmarks) and teleport to them
+- **Camera bookmarks** — save and recall camera positions
 - **Position HUD** — shows current coordinates in the viewport
 - **Grid overlay** — landblock boundaries (magenta) and cell boundaries (cyan)
 - **Overlay toggles** — grid, static objects, scenery, dungeons, unwalkable slopes
