@@ -11,8 +11,6 @@ World building tool for Asheron's Call. Edit terrain, dungeons, spells, skills, 
 
 Requires **Windows 10/11**, **.NET 8.0** (installer can prompt to install it). The app can check for updates in-app once installed.
 
-**First-time setup:** If you haven’t set up releases yet, see [RELEASE-SETUP.md](RELEASE-SETUP.md).
-
 ---
 
 > **Beta software.** All features are under active development. The newer data editors (Spell, Skill, Vital, Experience, CharGen, SpellSet, Layout) are especially early and have not been thoroughly tested. Expect rough edges, and back up your DAT files before exporting.
