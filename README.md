@@ -6,10 +6,10 @@ World building tool for Asheron's Call. Edit terrain, dungeons, spells, skills, 
 
 ## Downloads
 
-- **Latest (for testing)** — [Releases → Edge (pre-release)](https://github.com/YOUR_ORG/YOUR_REPO/releases) — automated build from the latest commit. Download **ACME-WorldBuilderInstall-*.exe** and run it.
-- **Stable** — [Releases](https://github.com/YOUR_ORG/YOUR_REPO/releases) — pick a versioned release (e.g. v0.1.0) when available.
+- **Latest (for testing)** — [Releases → Edge (pre-release)](https://github.com/Vanquish-6/WorldBuilder-ACME-Edition/releases) — automated build from the latest commit. Download **ACME-WorldBuilderInstall-*.exe** and run it.
+- **Stable** — [Releases](https://github.com/Vanquish-6/WorldBuilder-ACME-Edition/releases) — pick a versioned release (e.g. v0.1.0) when available.
 
-Replace `YOUR_ORG` and `YOUR_REPO` with your GitHub org/username and repo name. Requires **Windows 10/11**, **.NET 8.0** (installer can prompt to install it). The app can check for updates in-app once installed.
+Requires **Windows 10/11**, **.NET 8.0** (installer can prompt to install it). The app can check for updates in-app once installed.
 
 **First-time setup:** If you haven’t set up releases yet, see [RELEASE-SETUP.md](RELEASE-SETUP.md).
 
