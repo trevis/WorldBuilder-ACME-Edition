@@ -78,6 +78,10 @@ namespace WorldBuilder.Editors.Landscape.Commands {
                     ComputeStaticObjectChanges();
                 }
                 ApplyStaticObjectChanges(isUndo);
+
+                if (_staticObjectChanges != null && _staticObjectChanges.Count > 0) {
+                    _context.TerrainSystem.Scene.InvalidateStaticObjectsCache();
+                }
             }
 
             return true;
