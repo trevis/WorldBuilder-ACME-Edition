@@ -1,4 +1,4 @@
-﻿name: Update Appcast
+name: Update Appcast
 on:
   release:
     types: [published]
@@ -39,7 +39,7 @@ jobs:
         # Download the installer from the release
         ASSET_URL=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
           "https://api.github.com/repos/${{ github.repository }}/releases/${{ github.event.release.id }}" \
-          | jq -r '.assets[] | select(.name | contains("WorldBuilderInstaller")) | .browser_download_url')
+          | jq -r '.assets[] | select(.name | contains("ACME-WorldBuilderInstall")) | .browser_download_url')
         
         if [ -z "$ASSET_URL" ]; then
           echo "❌ Could not find installer asset"
@@ -47,7 +47,7 @@ jobs:
         fi
         
         echo "📥 Downloading installer from: $ASSET_URL"
-        curl -L -o "WorldBuilderInstaller-${{ steps.version.outputs.version }}.exe" "$ASSET_URL"
+        curl -L -o "ACME-WorldBuilderInstall-${{ steps.version.outputs.version }}.exe" "$ASSET_URL"
 
     - name: Create changelog file
       run: |
@@ -83,7 +83,7 @@ jobs:
         cat appcast.xml
         
         # Clean up the installer file (we don't need to store it in Pages)
-        rm WorldBuilderInstaller-${{ steps.version.outputs.version }}.exe
+        rm ACME-WorldBuilderInstall-${{ steps.version.outputs.version }}.exe
       shell: bash
       env:
         SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
@@ -101,9 +101,10 @@ jobs:
 
     - name: Post to Discord
       if: success()
+      continue-on-error: true
       run: |
         # Get the installer download URL
-        INSTALLER_URL="https://github.com/${{ github.repository }}/releases/download/${{ github.event.release.tag_name }}/WorldBuilderInstaller-${{ steps.version.outputs.version }}.exe"
+        INSTALLER_URL="https://github.com/${{ github.repository }}/releases/download/${{ github.event.release.tag_name }}/ACME-WorldBuilderInstall-${{ steps.version.outputs.version }}.exe"
         
         # Prepare the release notes (escape quotes and newlines for JSON)
         RELEASE_NOTES=$(cat << 'HEREDOC' | jq -Rs .
@@ -123,7 +124,7 @@ jobs:
             "fields": [
               {
                 "name": "📥 Download Installer",
-                "value": "[WorldBuilderInstaller-${{ steps.version.outputs.version }}.exe](${INSTALLER_URL})",
+                "value": "[ACME-WorldBuilderInstall-${{ steps.version.outputs.version }}.exe](${INSTALLER_URL})",
                 "inline": false
               },
               {

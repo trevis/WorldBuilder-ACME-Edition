@@ -1,4 +1,4 @@
-﻿name: Create Stable Release Draft
+name: Create Stable Release Draft
 on:
   workflow_dispatch:
 
@@ -101,7 +101,7 @@ jobs:
         body: |
           ### 📋 Changelog
           ${{ steps.changelog.outputs.changelog }}
-        files: ./WorldBuilderInstaller-${{ env.APP_VERSION }}.exe
+        files: ./ACME-WorldBuilderInstall-${{ env.APP_VERSION }}.exe
         draft: true
         prerelease: false
       env:

@@ -2,6 +2,19 @@
 
 World building tool for Asheron's Call. Edit terrain, dungeons, spells, skills, and more — export directly to DAT files.
 
+---
+
+## Downloads
+
+- **Latest (for testing)** — [Releases → Edge (pre-release)](https://github.com/YOUR_ORG/YOUR_REPO/releases) — automated build from the latest commit. Download **ACME-WorldBuilderInstall-*.exe** and run it.
+- **Stable** — [Releases](https://github.com/YOUR_ORG/YOUR_REPO/releases) — pick a versioned release (e.g. v0.1.0) when available.
+
+Replace `YOUR_ORG` and `YOUR_REPO` with your GitHub org/username and repo name. Requires **Windows 10/11**, **.NET 8.0** (installer can prompt to install it). The app can check for updates in-app once installed.
+
+**First-time setup:** If you haven’t set up releases yet, see [RELEASE-SETUP.md](RELEASE-SETUP.md).
+
+---
+
 > **Beta software.** All features are under active development. The newer data editors (Spell, Skill, Vital, Experience, CharGen, SpellSet, Layout) are especially early and have not been thoroughly tested. Expect rough edges, and back up your DAT files before exporting.
 
 > **First run note:** The initial launch will be slower than usual. ACME WorldBuilder builds several caches on first run (textures, thumbnails, terrain data) that persist across sessions. Subsequent launches will be significantly faster.

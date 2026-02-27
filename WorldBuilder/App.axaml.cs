@@ -158,7 +158,7 @@ public partial class App : Application {
     }
 
     private const string AppcastUrl = "https://vanquish-6.github.io/WorldBuilder-ACME-Edition/appcast.xml";
-    private const string SparklePublicKey = "CxN3A8g5g9l31yJ+HhUXeb0j5locPqamt9UMdgKQCB0=";
+    private const string SparklePublicKey = "V8bysZdBUEvhVt36o/FTTixfKEpNnwroz41Ihz9HrAs=";
 
     private void SetupAutoUpdater() {
         _sparkle = new SparkleUpdater(
@@ -176,7 +176,7 @@ public partial class App : Application {
         _sparkle.UpdateDetected += (s, e) => {
             // TODO: Figure out how to do installers for Linux. This is Win/macOS only for now
             string installerExtension = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "exe" : "pkg";
-            _sparkle.TmpDownloadFileNameWithExtension = $"WorldBuilderInstaller-{e.LatestVersion.SemVerLikeVersion}.{installerExtension}";
+            _sparkle.TmpDownloadFileNameWithExtension = $"ACME-WorldBuilderInstall-{e.LatestVersion.SemVerLikeVersion}.{installerExtension}";
         };
     }
 

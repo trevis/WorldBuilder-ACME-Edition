@@ -7,6 +7,8 @@
 ;-------------------------------- ; Custom Variables
 
 !define PRODUCT "ACME WorldBuilder"
+!define INSTALLER_NAME "ACME-WorldBuilderInstall"
+; Logo at repo root (same as WorldBuilder.Windows ApplicationIcon)
 !define ICON "acme-wblogo.ico"
 !define COMPANY "ACME"
 !define MUI_ICON "${ICON}"
@@ -15,7 +17,7 @@
 ;-------------------------------- ; General Information
 
 Name "${PRODUCT}"
-OutFile "${PRODUCT}Installer-${VERSION}.exe"
+OutFile "${INSTALLER_NAME}-${VERSION}.exe"
 InstallDir "$PROGRAMFILES64\${PRODUCT}"
 InstallDirRegKey HKLM "Software${PRODUCT}" "Install_Dir"
 RequestExecutionLevel admin
@@ -24,8 +26,8 @@ RequestExecutionLevel admin
 
 !define MUI_ABORTWARNING
 !define MUI_HEADERIMAGE
-!define MUI_HEADERIMAGE_BITMAP "${NSISDIR}\Contrib\Graphics\Header\nsis.bmp" ; Replace with custom header image if available
-!define MUI_WELCOMEFINISHPAGE_BITMAP "${NSISDIR}\Contrib\Graphics\Wizard\win.bmp" ; Replace with custom wizard image if available
+!define MUI_HEADERIMAGE_BITMAP "${NSISDIR}\Contrib\Graphics\Header\nsis.bmp"
+!define MUI_WELCOMEFINISHPAGE_BITMAP "${NSISDIR}\Contrib\Graphics\Wizard\win.bmp"
 !define MUI_WELCOMEPAGE_TITLE "${PRODUCT} Setup"
 !define MUI_WELCOMEPAGE_TEXT "Welcome to the ${PRODUCT} Setup Wizard. This will install ${PRODUCT} ${VERSION} on your computer. Click Next to continue."
 !define MUI_FINISHPAGE_TITLE "${PRODUCT} Installation Complete"
