@@ -198,19 +198,15 @@ namespace WorldBuilder.Shared.Documents {
                                 batch.Add(update);
                                 updateCount++;
                             }
-                            else if (batch.Count == 0) {
-                                await Task.Delay(50, cancellationToken);
+                            else if (DateTime.UtcNow - batchStartTime < TimeSpan.FromSeconds(1)) {
+                                await Task.Delay(100, cancellationToken);
                             }
                             else {
-                                break; // Process what we have
+                                break;
                             }
                         }
 
-                        // Process immediately if we have updates and the queue is empty
-                        if (batch.Count > 0 && !_updateReader.TryRead(out _)) {
-                            await ProcessBatch(batch);
-                        }
-                        else if (batch.Count > 0) {
+                        if (batch.Count > 0) {
                             await ProcessBatch(batch);
                         }
                     }

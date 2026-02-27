@@ -307,6 +307,22 @@ namespace WorldBuilder.Shared.Documents {
             return Task.FromResult(true);
         }
 
+        public override byte[] SaveToProjection() {
+            LayerTerrainData snapshot;
+            lock (_stateLock) {
+                snapshot = new LayerTerrainData {
+                    RootItems = TerrainData.RootItems
+                };
+                foreach (var (lbKey, cells) in TerrainData.Landblocks) {
+                    snapshot.Landblocks[lbKey] = new Dictionary<byte, uint>(cells);
+                }
+                foreach (var (lbKey, masks) in TerrainData.FieldMasks) {
+                    snapshot.FieldMasks[lbKey] = new Dictionary<byte, byte>(masks);
+                }
+            }
+            return MemoryPackSerializer.Serialize(snapshot);
+        }
+
         protected override byte[] SaveToProjectionInternal() {
             return MemoryPackSerializer.Serialize(TerrainData);
         }

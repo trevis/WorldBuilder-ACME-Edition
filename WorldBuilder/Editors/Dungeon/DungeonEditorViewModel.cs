@@ -88,6 +88,7 @@ namespace WorldBuilder.Editors.Dungeon {
 
         private LoadedEnvCell? _selectedCell; // Primary (first selected), used for position/rotation UI
         private readonly List<LoadedEnvCell> _selectedCells = new(); // Full multi-selection
+        private List<DungeonCellData>? _cellClipboard;
         private bool _needsCameraFocus;
         private Vector3 _dragStartHit;
         private Vector3 _dragStartOrigin;
@@ -232,6 +233,14 @@ namespace WorldBuilder.Editors.Dungeon {
             }
             if (ctrl && e.Key == Key.Y) {
                 UndoRedoRedo();
+                return;
+            }
+            if (ctrl && e.Key == Key.C) {
+                CopySelectedCells();
+                return;
+            }
+            if (ctrl && e.Key == Key.V) {
+                PasteCells();
                 return;
             }
             if (ctrl && e.Key == Key.S) {
@@ -1033,6 +1042,87 @@ namespace WorldBuilder.Editors.Dungeon {
             _document.MarkDirty();
             RefreshRendering();
             SelectCell(_selectedCell);
+        }
+
+        internal void CopySelectedCells() {
+            if (_selectedCells.Count == 0 || _document == null) {
+                Console.WriteLine($"[Dungeon] Copy: nothing to copy (selected={_selectedCells.Count}, doc={(_document != null ? "yes" : "null")})");
+                return;
+            }
+
+            _cellClipboard = new List<DungeonCellData>();
+            foreach (var cell in _selectedCells) {
+                var cellNum = (ushort)(cell.CellId & 0xFFFF);
+                var dc = _document.GetCell(cellNum);
+                if (dc == null) continue;
+                _cellClipboard.Add(DeepCloneCell(dc));
+            }
+            Console.WriteLine($"[Dungeon] Copied {_cellClipboard.Count} cell(s) to clipboard");
+            StatusText = $"Copied {_cellClipboard.Count} cell(s)";
+        }
+
+        internal void PasteCells() {
+            Console.WriteLine($"[Dungeon] Paste: clipboard={_cellClipboard?.Count ?? 0}, doc={(_document != null ? "yes" : "null")}");
+            if (_cellClipboard == null || _cellClipboard.Count == 0 || _document == null) return;
+
+            var offset = new Vector3(10f, 0f, 0f);
+            var cmd = new PasteCellsCommand(_cellClipboard, offset);
+            CommandHistory.Execute(cmd, _document);
+
+            RefreshRendering();
+            CellCount = _document.Cells.Count;
+            StatusText = $"Pasted {_cellClipboard.Count} cell(s)";
+
+            // Auto-select the pasted cells
+            DeselectCell();
+            if (_scene?.EnvCellManager != null) {
+                uint lbId = _document.LandblockKey;
+                foreach (var newCellNum in cmd.CreatedCellNums) {
+                    uint fullId = ((uint)lbId << 16) | newCellNum;
+                    var loaded = _scene.EnvCellManager.FindCell(fullId);
+                    if (loaded != null)
+                        _selectedCells.Add(loaded);
+                }
+                if (_selectedCells.Count > 0) {
+                    _selectedCell = _selectedCells[0];
+                    HasSelectedCell = true;
+                    SelectedCellCount = _selectedCells.Count;
+                    SyncSceneSelection();
+                    SelectedCellInfo = SelectedCellCount == 1
+                        ? BuildCellInfoString(_selectedCell, includeStatics: true)
+                        : $"{SelectedCellCount} cells selected";
+                }
+            }
+        }
+
+        private static DungeonCellData DeepCloneCell(DungeonCellData src) {
+            var clone = new DungeonCellData {
+                CellNumber = src.CellNumber,
+                EnvironmentId = src.EnvironmentId,
+                CellStructure = src.CellStructure,
+                Origin = src.Origin,
+                Orientation = src.Orientation,
+                Flags = src.Flags,
+                RestrictionObj = src.RestrictionObj,
+            };
+            clone.Surfaces.AddRange(src.Surfaces);
+            foreach (var cp in src.CellPortals) {
+                clone.CellPortals.Add(new DungeonCellPortalData {
+                    OtherCellId = cp.OtherCellId,
+                    PolygonId = cp.PolygonId,
+                    OtherPortalId = cp.OtherPortalId,
+                    Flags = cp.Flags
+                });
+            }
+            clone.VisibleCells.AddRange(src.VisibleCells);
+            foreach (var stab in src.StaticObjects) {
+                clone.StaticObjects.Add(new DungeonStabData {
+                    Id = stab.Id,
+                    Origin = stab.Origin,
+                    Orientation = stab.Orientation
+                });
+            }
+            return clone;
         }
 
         #endregion

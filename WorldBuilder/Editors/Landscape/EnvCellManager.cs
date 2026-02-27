@@ -1074,6 +1074,12 @@ namespace WorldBuilder.Editors.Landscape {
         public List<LoadedEnvCell>? GetLoadedCellsForLandblock(ushort lbKey) =>
             _loadedCells.TryGetValue(lbKey, out var cells) ? cells : null;
 
+        /// <summary>
+        /// Finds a loaded cell by its full cell ID (e.g. 0x01D90105), or null if not loaded.
+        /// </summary>
+        public LoadedEnvCell? FindCell(uint fullCellId) =>
+            _cellLookup.TryGetValue(fullCellId, out var cell) ? cell : null;
+
         #endregion
 
         #region Portal Visibility

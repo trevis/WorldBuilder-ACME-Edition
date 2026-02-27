@@ -390,6 +390,21 @@ namespace WorldBuilder.Shared.Documents {
             return Task.FromResult(true);
         }
 
+        public override byte[] SaveToProjection() {
+            TerrainData snapshot;
+            lock (_stateLock) {
+                snapshot = new TerrainData {
+                    RootItems = TerrainData.RootItems
+                };
+                foreach (var (key, value) in TerrainData.Landblocks) {
+                    var copy = new uint[value.Length];
+                    Buffer.BlockCopy(value, 0, copy, 0, value.Length * sizeof(uint));
+                    snapshot.Landblocks[key] = copy;
+                }
+            }
+            return MemoryPackSerializer.Serialize(snapshot);
+        }
+
         protected override byte[] SaveToProjectionInternal() {
             return MemoryPackSerializer.Serialize(TerrainData);
         }
