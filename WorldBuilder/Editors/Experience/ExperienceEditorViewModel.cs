@@ -5,6 +5,7 @@ using System;
 using System.Collections.ObjectModel;
 using System.Linq;
 using WorldBuilder.Lib.Settings;
+using WorldBuilder.Shared.Documents;
 using WorldBuilder.Shared.Lib;
 using WorldBuilder.Shared.Models;
 using WorldBuilder.ViewModels;
@@ -35,7 +36,9 @@ namespace WorldBuilder.Editors.Experience {
     public partial class ExperienceEditorViewModel : ViewModelBase {
         private IDatReaderWriter? _dats;
         private Project? _project;
+        private PortalDatDocument? _portalDoc;
         private ExperienceTable? _table;
+        private const uint ExperienceTableId = 0x0E000018;
 
         [ObservableProperty] private string _statusText = "No experience table loaded";
         [ObservableProperty] private int _selectedTabIndex;
@@ -72,18 +75,24 @@ namespace WorldBuilder.Editors.Experience {
         internal void Init(Project project) {
             _project = project;
             _dats = project.DocumentManager.Dats;
+            _portalDoc = project.DocumentManager.GetOrCreateDocumentAsync<PortalDatDocument>(PortalDatDocument.DocumentId).Result;
             LoadTable();
         }
 
         private void LoadTable() {
             if (_dats == null) return;
 
-            if (!_dats.TryGet<ExperienceTable>(0x0E000018, out var table)) {
+            if (_portalDoc != null && _portalDoc.TryGetEntry<ExperienceTable>(ExperienceTableId, out var docTable) && docTable != null) {
+                _table = docTable;
+            }
+            else if (!_dats.TryGet<ExperienceTable>(ExperienceTableId, out var datTable)) {
                 StatusText = "Failed to load ExperienceTable (0x0E000018) from DAT";
                 return;
             }
+            else {
+                _table = datTable;
+            }
 
-            _table = table;
             PopulateCollections();
             StatusText = $"Loaded: {_table.Levels.Length} levels, {_table.Attributes.Length} attribute ranks, " +
                          $"{_table.Vitals.Length} vital ranks, {_table.TrainedSkills.Length} trained, " +
@@ -262,7 +271,7 @@ namespace WorldBuilder.Editors.Experience {
 
         [RelayCommand]
         private void Save() {
-            if (_table == null || _dats == null) {
+            if (_table == null || _portalDoc == null) {
                 StatusText = "Nothing to save";
                 return;
             }
@@ -291,14 +300,10 @@ namespace WorldBuilder.Editors.Experience {
                 for (int i = 0; i < SpecializedSkills.Count; i++)
                     _table.SpecializedSkills[i] = uint.TryParse(SpecializedSkills[i].Value, out var v) ? v : 0;
 
-                if (_dats.TrySave(_table)) {
-                    StatusText = $"Saved: {Levels.Count} levels, {Attributes.Count} attr, " +
-                                 $"{Vitals.Count} vital, {TrainedSkills.Count} trained, " +
-                                 $"{SpecializedSkills.Count} specialized";
-                }
-                else {
-                    StatusText = "Failed to save experience table";
-                }
+                _portalDoc.SetEntry(ExperienceTableId, _table);
+                StatusText = $"Saved: {Levels.Count} levels, {Attributes.Count} attr, " +
+                             $"{Vitals.Count} vital, {TrainedSkills.Count} trained, " +
+                             $"{SpecializedSkills.Count} specialized. Use File > Export to write DATs.";
             }
             catch (Exception ex) {
                 StatusText = $"Save error: {ex.Message}";

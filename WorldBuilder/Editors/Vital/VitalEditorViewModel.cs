@@ -6,6 +6,7 @@ using DatReaderWriter.Types;
 using System;
 using System.Collections.Generic;
 using WorldBuilder.Lib.Settings;
+using WorldBuilder.Shared.Documents;
 using WorldBuilder.Shared.Lib;
 using WorldBuilder.Shared.Models;
 using WorldBuilder.ViewModels;
@@ -14,7 +15,9 @@ namespace WorldBuilder.Editors.Vital {
     public partial class VitalEditorViewModel : ViewModelBase {
         private IDatReaderWriter? _dats;
         private Project? _project;
+        private PortalDatDocument? _portalDoc;
         private VitalTable? _vitalTable;
+        private const uint VitalTableId = 0x0E000003;
 
         [ObservableProperty] private string _statusText = "No vital table loaded";
 
@@ -31,39 +34,41 @@ namespace WorldBuilder.Editors.Vital {
         internal void Init(Project project) {
             _project = project;
             _dats = project.DocumentManager.Dats;
+            _portalDoc = project.DocumentManager.GetOrCreateDocumentAsync<PortalDatDocument>(PortalDatDocument.DocumentId).Result;
             LoadVitalTable();
         }
 
         private void LoadVitalTable() {
             if (_dats == null) return;
 
-            if (!_dats.TryGet<VitalTable>(0x0E000003, out var table)) {
+            if (_portalDoc != null && _portalDoc.TryGetEntry<VitalTable>(VitalTableId, out var docTable) && docTable != null) {
+                _vitalTable = docTable;
+            }
+            else if (!_dats.TryGet<VitalTable>(VitalTableId, out var datTable)) {
                 StatusText = "Failed to load VitalTable from DAT";
                 return;
             }
+            else {
+                _vitalTable = datTable;
+            }
 
-            _vitalTable = table;
-            HealthFormula = new SkillFormulaViewModel("Health", table.Health);
-            StaminaFormula = new SkillFormulaViewModel("Stamina", table.Stamina);
-            ManaFormula = new SkillFormulaViewModel("Mana", table.Mana);
+            HealthFormula = new SkillFormulaViewModel("Health", _vitalTable.Health);
+            StaminaFormula = new SkillFormulaViewModel("Stamina", _vitalTable.Stamina);
+            ManaFormula = new SkillFormulaViewModel("Mana", _vitalTable.Mana);
 
             StatusText = "Loaded VitalTable (0x0E000003)";
         }
 
         [RelayCommand]
         private void Save() {
-            if (_vitalTable == null || _dats == null) return;
+            if (_vitalTable == null || _portalDoc == null) return;
 
             HealthFormula?.ApplyTo(_vitalTable.Health);
             StaminaFormula?.ApplyTo(_vitalTable.Stamina);
             ManaFormula?.ApplyTo(_vitalTable.Mana);
 
-            if (!_dats.TrySave(_vitalTable)) {
-                StatusText = "Failed to save VitalTable";
-                return;
-            }
-
-            StatusText = "Saved VitalTable successfully";
+            _portalDoc.SetEntry(VitalTableId, _vitalTable);
+            StatusText = "Saved VitalTable to project. Use File > Export to write DATs.";
         }
     }
 

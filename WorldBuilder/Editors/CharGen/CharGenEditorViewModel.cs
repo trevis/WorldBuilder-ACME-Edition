@@ -12,6 +12,7 @@ using System.Threading.Tasks;
 using WorldBuilder.Editors.Dungeon;
 using WorldBuilder.Lib;
 using WorldBuilder.Lib.Settings;
+using WorldBuilder.Shared.Documents;
 using WorldBuilder.Shared.Lib;
 using WorldBuilder.Shared.Models;
 using WorldBuilder.ViewModels;
@@ -20,7 +21,9 @@ namespace WorldBuilder.Editors.CharGen {
     public partial class CharGenEditorViewModel : ViewModelBase {
         private IDatReaderWriter? _dats;
         private Project? _project;
+        private PortalDatDocument? _portalDoc;
         private DatReaderWriter.DBObjs.CharGen? _charGen;
+        private const uint CharGenId = 0x0E000002;
 
         [ObservableProperty] private string _statusText = "No CharGen loaded";
         [ObservableProperty] private ObservableCollection<HeritageListItem> _heritageGroups = new();
@@ -38,6 +41,7 @@ namespace WorldBuilder.Editors.CharGen {
         internal void Init(Project project) {
             _project = project;
             _dats = project.DocumentManager.Dats;
+            _portalDoc = project.DocumentManager.GetOrCreateDocumentAsync<PortalDatDocument>(PortalDatDocument.DocumentId).Result;
             LoadCharGen();
         }
 
@@ -50,15 +54,20 @@ namespace WorldBuilder.Editors.CharGen {
         private void LoadCharGen() {
             if (_dats == null) return;
 
-            if (!_dats.TryGet<DatReaderWriter.DBObjs.CharGen>(0x0E000002, out var table)) {
+            if (_portalDoc != null && _portalDoc.TryGetEntry<DatReaderWriter.DBObjs.CharGen>(CharGenId, out var docTable) && docTable != null) {
+                _charGen = docTable;
+            }
+            else if (!_dats.TryGet<DatReaderWriter.DBObjs.CharGen>(CharGenId, out var datTable)) {
                 StatusText = "Failed to load CharGen from DAT";
                 return;
             }
+            else {
+                _charGen = datTable;
+            }
 
-            _charGen = table;
             RefreshHeritageList();
             RefreshStartingAreas();
-            StatusText = $"Loaded CharGen: {table.HeritageGroups.Count} heritages, {table.StartingAreas.Count} starting areas";
+            StatusText = $"Loaded CharGen: {_charGen.HeritageGroups.Count} heritages, {_charGen.StartingAreas.Count} starting areas";
         }
 
         private void RefreshHeritageList() {
@@ -96,7 +105,7 @@ namespace WorldBuilder.Editors.CharGen {
 
         [RelayCommand]
         private void Save() {
-            if (_charGen == null || _dats == null) return;
+            if (_charGen == null || _portalDoc == null) return;
 
             if (SelectedDetail != null && _charGen.HeritageGroups.TryGetValue(SelectedDetail.HeritageId, out var group)) {
                 SelectedDetail.ApplyTo(group);
@@ -106,10 +115,7 @@ namespace WorldBuilder.Editors.CharGen {
                 areaVm.ApplyTo();
             }
 
-            if (!_dats.TrySave(_charGen)) {
-                StatusText = "Failed to save CharGen";
-                return;
-            }
+            _portalDoc.SetEntry(CharGenId, _charGen);
 
             if (SelectedDetail != null) {
                 var idx = HeritageGroups.ToList().FindIndex(h => h.Id == SelectedDetail.HeritageId);
@@ -118,7 +124,7 @@ namespace WorldBuilder.Editors.CharGen {
                 }
             }
 
-            StatusText = "Saved CharGen successfully";
+            StatusText = "Saved CharGen to project. Use File > Export to write DATs.";
         }
 
         [RelayCommand]
@@ -143,19 +149,16 @@ namespace WorldBuilder.Editors.CharGen {
 
         [RelayCommand]
         private void RemoveHeritage() {
-            if (SelectedDetail == null || _charGen == null || _dats == null) return;
+            if (SelectedDetail == null || _charGen == null || _portalDoc == null) return;
 
             var id = SelectedDetail.HeritageId;
             if (!_charGen.HeritageGroups.Remove(id)) return;
 
-            if (!_dats.TrySave(_charGen)) {
-                StatusText = "Failed to save CharGen after deletion";
-                return;
-            }
+            _portalDoc.SetEntry(CharGenId, _charGen);
 
             SelectedDetail = null;
             RefreshHeritageList();
-            StatusText = $"Deleted heritage #{id}";
+            StatusText = $"Deleted heritage #{id}. Use File > Export to write DATs.";
         }
 
         [RelayCommand]
@@ -170,18 +173,15 @@ namespace WorldBuilder.Editors.CharGen {
 
         [RelayCommand]
         private void RemoveStartingArea(StartingAreaViewModel? areaVm) {
-            if (areaVm == null || _charGen == null || _dats == null) return;
+            if (areaVm == null || _charGen == null || _portalDoc == null) return;
 
             var backing = areaVm.BackingArea;
             if (!_charGen.StartingAreas.Remove(backing)) return;
 
-            if (!_dats.TrySave(_charGen)) {
-                StatusText = "Failed to save CharGen after area removal";
-                return;
-            }
+            _portalDoc.SetEntry(CharGenId, _charGen);
 
             RefreshStartingAreas();
-            StatusText = "Removed starting area";
+            StatusText = "Removed starting area. Use File > Export to write DATs.";
         }
     }
 

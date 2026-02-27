@@ -9,6 +9,7 @@ using System.Collections.ObjectModel;
 using System.Linq;
 using WorldBuilder.Lib;
 using WorldBuilder.Lib.Settings;
+using WorldBuilder.Shared.Documents;
 using WorldBuilder.Shared.Lib;
 using WorldBuilder.Shared.Models;
 using WorldBuilder.ViewModels;
@@ -17,7 +18,9 @@ namespace WorldBuilder.Editors.SpellSet {
     public partial class SpellSetEditorViewModel : ViewModelBase {
         private IDatReaderWriter? _dats;
         private Project? _project;
+        private PortalDatDocument? _portalDoc;
         private SpellTable? _spellTable;
+        private const uint SpellTableId = 0x0E00000E;
 
         [ObservableProperty] private string _statusText = "No spell sets loaded";
         [ObservableProperty] private string _searchText = "";
@@ -36,21 +39,27 @@ namespace WorldBuilder.Editors.SpellSet {
         internal void Init(Project project) {
             _project = project;
             _dats = project.DocumentManager.Dats;
+            _portalDoc = project.DocumentManager.GetOrCreateDocumentAsync<PortalDatDocument>(PortalDatDocument.DocumentId).Result;
             LoadSpellSets();
         }
 
         private void LoadSpellSets() {
             if (_dats == null) return;
 
-            if (!_dats.TryGet<SpellTable>(0x0E00000E, out var table)) {
+            if (_portalDoc != null && _portalDoc.TryGetEntry<SpellTable>(SpellTableId, out var docTable) && docTable != null) {
+                _spellTable = docTable;
+            }
+            else if (!_dats.TryGet<SpellTable>(SpellTableId, out var datTable)) {
                 StatusText = "Failed to load SpellTable from DAT";
                 return;
             }
+            else {
+                _spellTable = datTable;
+            }
 
-            _spellTable = table;
-            TotalSetCount = table.SpellsSets.Count;
+            TotalSetCount = _spellTable.SpellsSets.Count;
             ApplyFilter();
-            StatusText = $"Loaded {TotalSetCount} spell sets, {table.Spells.Count} spells available";
+            StatusText = $"Loaded {TotalSetCount} spell sets, {_spellTable.Spells.Count} spells available";
         }
 
         partial void OnSearchTextChanged(string value) => ApplyFilter();
@@ -121,7 +130,7 @@ namespace WorldBuilder.Editors.SpellSet {
 
         [RelayCommand]
         private void SaveSpellSet() {
-            if (SelectedDetail == null || _spellTable == null || _dats == null) return;
+            if (SelectedDetail == null || _spellTable == null || _portalDoc == null) return;
 
             var eqSet = SelectedDetail.EquipmentSet;
 
@@ -132,17 +141,14 @@ namespace WorldBuilder.Editors.SpellSet {
 
             SelectedDetail.ApplyTo(spellSet);
 
-            if (!_dats.TrySave(_spellTable)) {
-                StatusText = $"Failed to save SpellTable";
-                return;
-            }
+            _portalDoc.SetEntry(SpellTableId, _spellTable);
 
             var idx = SpellSets.ToList().FindIndex(s => s.EquipmentSet == eqSet);
             if (idx >= 0) {
                 SpellSets[idx] = new SpellSetListItem(eqSet, spellSet);
             }
 
-            StatusText = $"Saved spell set: {eqSet}";
+            StatusText = $"Saved spell set: {eqSet} to project. Use File > Export to write DATs.";
         }
     }
 

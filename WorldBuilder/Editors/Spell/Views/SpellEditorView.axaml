@@ -52,6 +52,21 @@
             <Setter Property="VerticalAlignment" Value="Center" />
             <Setter Property="Margin" Value="6,0,0,0" />
         </Style>
+        <Style Selector="Button.field-dropdown">
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="MinHeight" Value="30" />
+            <Setter Property="Padding" Value="8,4,28,4" />
+            <Setter Property="HorizontalContentAlignment" Value="Left" />
+            <Setter Property="HorizontalAlignment" Value="Left" />
+            <Setter Property="MaxWidth" Value="300" />
+        </Style>
+        <Style Selector="Button.field-dropdown TextBlock.dropdown-arrow">
+            <Setter Property="Text" Value="&#x25BC;" />
+            <Setter Property="FontSize" Value="9" />
+            <Setter Property="Foreground" Value="#8a7a9e" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="Margin" Value="6,0,0,0" />
+        </Style>
         <Style Selector="Button.sm-btn">
             <Setter Property="Background" Value="Transparent" />
             <Setter Property="BorderThickness" Value="1" />
@@ -255,13 +270,59 @@
                             </DockPanel>
                             <DockPanel>
                                 <TextBlock DockPanel.Dock="Left" Classes="field-label" Text="Bitfield" />
-                                <TextBlock DockPanel.Dock="Right" Classes="help-icon" ToolTip.Tip="Spell flags. Bit 0x4: spell is shown in the 'harmful' effects panel (unset = beneficial). Bit 0x8: spell does not require target selection." />
-                                <TextBox Classes="field-input" Text="{Binding Bitfield}" MaxWidth="160" HorizontalAlignment="Left" />
+                                <TextBlock DockPanel.Dock="Right" Classes="help-icon" ToolTip.Tip="Spell flags bitmask (SpellFlags). Controls spell behavior: Resistable, PKSensitive, Beneficial, SelfTargeted, Projectile, etc." />
+                                <Button Classes="field-dropdown">
+                                    <Button.Content>
+                                        <DockPanel>
+                                            <TextBlock DockPanel.Dock="Right" Classes="dropdown-arrow" />
+                                            <TextBlock Text="{Binding BitfieldDisplay}" TextTrimming="CharacterEllipsis" />
+                                        </DockPanel>
+                                    </Button.Content>
+                                    <Button.Flyout>
+                                        <Flyout Placement="BottomEdgeAlignedLeft">
+                                            <Border MaxHeight="320" MinWidth="220">
+                                                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                                    <ItemsControl ItemsSource="{Binding BitfieldFlags}">
+                                                        <ItemsControl.ItemTemplate>
+                                                            <DataTemplate>
+                                                                <CheckBox Content="{Binding Name}" IsChecked="{Binding IsChecked}"
+                                                                          FontSize="12" Margin="0,1" />
+                                                            </DataTemplate>
+                                                        </ItemsControl.ItemTemplate>
+                                                    </ItemsControl>
+                                                </ScrollViewer>
+                                            </Border>
+                                        </Flyout>
+                                    </Button.Flyout>
+                                </Button>
                             </DockPanel>
                             <DockPanel>
                                 <TextBlock DockPanel.Dock="Left" Classes="field-label" Text="Target Type" />
-                                <TextBlock DockPanel.Dock="Right" Classes="help-icon" ToolTip.Tip="Target type bitmask. Not read by the client — stored in DAT for server-side target validation logic. Default 0." />
-                                <TextBox Classes="field-input" Text="{Binding NonComponentTargetType}" MaxWidth="160" HorizontalAlignment="Left" />
+                                <TextBlock DockPanel.Dock="Right" Classes="help-icon" ToolTip.Tip="Target type bitmask (ItemType). Determines valid target types for the spell. Stored in DAT for server-side target validation." />
+                                <Button Classes="field-dropdown">
+                                    <Button.Content>
+                                        <DockPanel>
+                                            <TextBlock DockPanel.Dock="Right" Classes="dropdown-arrow" />
+                                            <TextBlock Text="{Binding TargetTypeDisplay}" TextTrimming="CharacterEllipsis" />
+                                        </DockPanel>
+                                    </Button.Content>
+                                    <Button.Flyout>
+                                        <Flyout Placement="BottomEdgeAlignedLeft">
+                                            <Border MaxHeight="400" MinWidth="220">
+                                                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                                    <ItemsControl ItemsSource="{Binding TargetTypeFlags}">
+                                                        <ItemsControl.ItemTemplate>
+                                                            <DataTemplate>
+                                                                <CheckBox Content="{Binding Name}" IsChecked="{Binding IsChecked}"
+                                                                          FontSize="12" Margin="0,1" />
+                                                            </DataTemplate>
+                                                        </ItemsControl.ItemTemplate>
+                                                    </ItemsControl>
+                                                </ScrollViewer>
+                                            </Border>
+                                        </Flyout>
+                                    </Button.Flyout>
+                                </Button>
                             </DockPanel>
 
                             <!-- Components -->
@@ -377,18 +438,18 @@
                             <TextBlock Classes="section-header" Text="Effects" />
                             <DockPanel>
                                 <TextBlock DockPanel.Dock="Left" Classes="field-label" Text="Caster Effect" />
-                                <TextBlock DockPanel.Dock="Right" Classes="help-icon" ToolTip.Tip="PScriptType ID for the visual/sound effect played on the caster when casting succeeds. The server reads this from the DAT and sends PlayScript events to all nearby clients." />
-                                <TextBox Classes="field-input" Text="{Binding CasterEffect}" MaxWidth="160" HorizontalAlignment="Left" />
+                                <TextBlock DockPanel.Dock="Right" Classes="help-icon" ToolTip.Tip="PlayScript visual/sound effect played on the caster when casting succeeds." />
+                                <ComboBox Classes="field-input" ItemsSource="{Binding AllPlayScripts}" SelectedItem="{Binding CasterEffect}" MaxWidth="300" HorizontalAlignment="Left" />
                             </DockPanel>
                             <DockPanel>
                                 <TextBlock DockPanel.Dock="Left" Classes="field-label" Text="Target Effect" />
-                                <TextBlock DockPanel.Dock="Right" Classes="help-icon" ToolTip.Tip="PScriptType ID for the visual/sound effect played on the target when the spell lands (e.g. fire explosion, healing glow). Server reads from DAT and broadcasts PlayScript events." />
-                                <TextBox Classes="field-input" Text="{Binding TargetEffect}" MaxWidth="160" HorizontalAlignment="Left" />
+                                <TextBlock DockPanel.Dock="Right" Classes="help-icon" ToolTip.Tip="PlayScript visual/sound effect played on the target when the spell lands." />
+                                <ComboBox Classes="field-input" ItemsSource="{Binding AllPlayScripts}" SelectedItem="{Binding TargetEffect}" MaxWidth="300" HorizontalAlignment="Left" />
                             </DockPanel>
                             <DockPanel>
                                 <TextBlock DockPanel.Dock="Left" Classes="field-label" Text="Fizzle Effect" />
-                                <TextBlock DockPanel.Dock="Right" Classes="help-icon" ToolTip.Tip="PScriptType ID for the visual/sound effect played on the caster when the spell fizzles (fails to cast). Typically a fizzle spark/smoke effect." />
-                                <TextBox Classes="field-input" Text="{Binding FizzleEffect}" MaxWidth="160" HorizontalAlignment="Left" />
+                                <TextBlock DockPanel.Dock="Right" Classes="help-icon" ToolTip.Tip="PlayScript visual/sound effect played on the caster when the spell fizzles (fails to cast)." />
+                                <ComboBox Classes="field-input" ItemsSource="{Binding AllPlayScripts}" SelectedItem="{Binding FizzleEffect}" MaxWidth="300" HorizontalAlignment="Left" />
                             </DockPanel>
 
                             <!-- Recovery -->

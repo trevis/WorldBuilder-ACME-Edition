@@ -233,13 +233,16 @@ namespace WorldBuilder.Shared.Models {
                 }
             }
 
-            // Export static object changes from LandblockDocuments and dungeon data
+            // Export static object changes from LandblockDocuments, dungeon data, and portal table edits
             foreach (var (docId, doc) in DocumentManager.ActiveDocs) {
                 if (doc is LandblockDocument lbDoc) {
                     lbDoc.SaveToDats(writer, portalIteration);
                 }
                 else if (doc is DungeonDocument dungeonDoc) {
                     dungeonDoc.SaveToDats(writer, portalIteration);
+                }
+                else if (doc is PortalDatDocument portalDoc) {
+                    portalDoc.SaveToDats(writer, portalIteration);
                 }
             }
 

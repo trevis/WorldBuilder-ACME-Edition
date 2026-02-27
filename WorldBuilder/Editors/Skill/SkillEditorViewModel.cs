@@ -12,6 +12,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using WorldBuilder.Lib;
 using WorldBuilder.Lib.Settings;
+using WorldBuilder.Shared.Documents;
 using WorldBuilder.Shared.Lib;
 using WorldBuilder.Shared.Models;
 using WorldBuilder.ViewModels;
@@ -20,8 +21,10 @@ namespace WorldBuilder.Editors.Skill {
     public partial class SkillEditorViewModel : ViewModelBase {
         private IDatReaderWriter? _dats;
         private Project? _project;
+        private PortalDatDocument? _portalDoc;
         private SkillTable? _skillTable;
         private Dictionary<SkillId, SkillBase>? _allSkills;
+        private const uint SkillTableId = 0x0E000004;
 
         [ObservableProperty] private string _statusText = "No skills loaded";
         [ObservableProperty] private string _searchText = "";
@@ -45,19 +48,25 @@ namespace WorldBuilder.Editors.Skill {
         internal void Init(Project project) {
             _project = project;
             _dats = project.DocumentManager.Dats;
+            _portalDoc = project.DocumentManager.GetOrCreateDocumentAsync<PortalDatDocument>(PortalDatDocument.DocumentId).Result;
             LoadSkills();
         }
 
         private void LoadSkills() {
             if (_dats == null) return;
 
-            if (!_dats.TryGet<SkillTable>(0x0E000004, out var table)) {
+            if (_portalDoc != null && _portalDoc.TryGetEntry<SkillTable>(SkillTableId, out var docTable) && docTable != null) {
+                _skillTable = docTable;
+            }
+            else if (!_dats.TryGet<SkillTable>(SkillTableId, out var datTable)) {
                 StatusText = "Failed to load SkillTable from DAT";
                 return;
             }
+            else {
+                _skillTable = datTable;
+            }
 
-            _skillTable = table;
-            _allSkills = table.Skills;
+            _allSkills = _skillTable.Skills;
             TotalSkillCount = _allSkills.Count;
 
             ApplyFilter();
@@ -136,25 +145,22 @@ namespace WorldBuilder.Editors.Skill {
 
         [RelayCommand]
         private void DeleteSkill() {
-            if (SelectedDetail == null || _skillTable == null || _dats == null || _allSkills == null) return;
+            if (SelectedDetail == null || _skillTable == null || _portalDoc == null || _allSkills == null) return;
 
             var id = SelectedDetail.SkillId;
             if (!_allSkills.Remove(id)) return;
 
-            if (!_dats.TrySave(_skillTable)) {
-                StatusText = "Failed to save SkillTable after deletion";
-                return;
-            }
+            _portalDoc.SetEntry(SkillTableId, _skillTable);
 
             SelectedDetail = null;
             TotalSkillCount = _allSkills.Count;
             ApplyFilter();
-            StatusText = $"Deleted skill: {id}";
+            StatusText = $"Deleted skill: {id}. Use File > Export to write DATs.";
         }
 
         [RelayCommand]
         private void SaveSkill() {
-            if (SelectedDetail == null || _skillTable == null || _dats == null || _allSkills == null) return;
+            if (SelectedDetail == null || _skillTable == null || _portalDoc == null || _allSkills == null) return;
 
             var detail = SelectedDetail;
             var id = detail.SkillId;
@@ -163,17 +169,14 @@ namespace WorldBuilder.Editors.Skill {
 
             detail.ApplyTo(skill);
 
-            if (!_dats.TrySave(_skillTable)) {
-                StatusText = "Failed to save SkillTable";
-                return;
-            }
+            _portalDoc.SetEntry(SkillTableId, _skillTable);
 
             var idx = Skills.ToList().FindIndex(s => s.Id == id);
             if (idx >= 0) {
                 Skills[idx] = new SkillListItem(id, skill);
             }
 
-            StatusText = $"Saved skill: {skill.Name}";
+            StatusText = $"Saved skill: {skill.Name} to project. Use File > Export to write DATs.";
         }
     }
 

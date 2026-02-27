@@ -12,6 +12,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using WorldBuilder.Lib;
 using WorldBuilder.Lib.Settings;
+using WorldBuilder.Shared.Documents;
 using WorldBuilder.Shared.Lib;
 using WorldBuilder.Shared.Models;
 using WorldBuilder.ViewModels;
@@ -20,9 +21,11 @@ namespace WorldBuilder.Editors.Spell {
     public partial class SpellEditorViewModel : ViewModelBase {
         private IDatReaderWriter? _dats;
         private Project? _project;
+        private PortalDatDocument? _portalDoc;
         private SpellTable? _spellTable;
         private Dictionary<uint, SpellBase>? _allSpells;
         private SpellComponentTable? _componentTable;
+        private const uint SpellTableId = 0x0E00000E;
 
         [ObservableProperty] private string _statusText = "No spells loaded";
         [ObservableProperty] private string _searchText = "";
@@ -56,19 +59,25 @@ namespace WorldBuilder.Editors.Spell {
         internal void Init(Project project) {
             _project = project;
             _dats = project.DocumentManager.Dats;
+            _portalDoc = project.DocumentManager.GetOrCreateDocumentAsync<PortalDatDocument>(PortalDatDocument.DocumentId).Result;
             LoadSpells();
         }
 
         private void LoadSpells() {
             if (_dats == null) return;
 
-            if (!_dats.TryGet<SpellTable>(0x0E00000E, out var table)) {
+            if (_portalDoc != null && _portalDoc.TryGetEntry<SpellTable>(SpellTableId, out var docTable) && docTable != null) {
+                _spellTable = docTable;
+            }
+            else if (!_dats.TryGet<SpellTable>(SpellTableId, out var datTable)) {
                 StatusText = "Failed to load SpellTable from DAT";
                 return;
             }
+            else {
+                _spellTable = datTable;
+            }
 
-            _spellTable = table;
-            _allSpells = table.Spells;
+            _allSpells = _spellTable.Spells;
             TotalSpellCount = _allSpells.Count;
 
             _dats.TryGet<SpellComponentTable>(0x0E00000F, out var compTable);
@@ -144,25 +153,22 @@ namespace WorldBuilder.Editors.Spell {
 
         [RelayCommand]
         private void DeleteSpell() {
-            if (SelectedDetail == null || _spellTable == null || _dats == null || _allSpells == null) return;
+            if (SelectedDetail == null || _spellTable == null || _portalDoc == null || _allSpells == null) return;
 
             var id = SelectedDetail.SpellId;
             if (!_allSpells.Remove(id)) return;
 
-            if (!_dats.TrySave(_spellTable)) {
-                StatusText = "Failed to save SpellTable after deletion";
-                return;
-            }
+            _portalDoc.SetEntry(SpellTableId, _spellTable);
 
             SelectedDetail = null;
             TotalSpellCount = _allSpells.Count;
             ApplyFilter();
-            StatusText = $"Deleted spell #{id}";
+            StatusText = $"Deleted spell #{id}. Use File > Export to write DATs.";
         }
 
         [RelayCommand]
         private void SaveSpell() {
-            if (SelectedDetail == null || _spellTable == null || _dats == null || _allSpells == null) return;
+            if (SelectedDetail == null || _spellTable == null || _portalDoc == null || _allSpells == null) return;
 
             var detail = SelectedDetail;
             var id = detail.SpellId;
@@ -171,17 +177,14 @@ namespace WorldBuilder.Editors.Spell {
 
             detail.ApplyTo(spell);
 
-            if (!_dats.TrySave(_spellTable)) {
-                StatusText = $"Failed to save SpellTable";
-                return;
-            }
+            _portalDoc.SetEntry(SpellTableId, _spellTable);
 
             var idx = Spells.ToList().FindIndex(s => s.Id == id);
             if (idx >= 0) {
                 Spells[idx] = new SpellListItem(id, spell);
             }
 
-            StatusText = $"Saved spell #{id}: {spell.Name}";
+            StatusText = $"Saved spell #{id}: {spell.Name} to project. Use File > Export to write DATs.";
         }
     }
 
@@ -285,9 +288,9 @@ namespace WorldBuilder.Editors.Spell {
         [ObservableProperty] private float _degradeModifier;
         [ObservableProperty] private float _degradeLimit;
         [ObservableProperty] private double _portalLifetime;
-        [ObservableProperty] private uint _casterEffect;
-        [ObservableProperty] private uint _targetEffect;
-        [ObservableProperty] private uint _fizzleEffect;
+        [ObservableProperty] private PlayScript _casterEffect;
+        [ObservableProperty] private PlayScript _targetEffect;
+        [ObservableProperty] private PlayScript _fizzleEffect;
         [ObservableProperty] private double _recoveryInterval;
         [ObservableProperty] private float _recoveryAmount;
         [ObservableProperty] private uint _displayOrder;
@@ -321,9 +324,23 @@ namespace WorldBuilder.Editors.Spell {
 
         public IReadOnlyList<MagicSchool> AllSchools { get; } = Enum.GetValues<MagicSchool>();
         public IReadOnlyList<SpellType> AllSpellTypes { get; } = Enum.GetValues<SpellType>();
+        public IReadOnlyList<PlayScript> AllPlayScripts { get; } = Enum.GetValues<PlayScript>();
+
+        public ObservableCollection<FlagItem> BitfieldFlags { get; } = new();
+        public ObservableCollection<FlagItem> TargetTypeFlags { get; } = new();
+
+        public string BitfieldDisplay => BitfieldFlags.Any(f => f.IsChecked)
+            ? string.Join(", ", BitfieldFlags.Where(f => f.IsChecked).Select(f => f.Name))
+            : "(none)";
+
+        public string TargetTypeDisplay => TargetTypeFlags.Any(f => f.IsChecked)
+            ? string.Join(", ", TargetTypeFlags.Where(f => f.IsChecked).Select(f => f.Name))
+            : "(none)";
 
         private readonly SpellComponentTable? _componentTable;
         private readonly IDatReaderWriter? _dats;
+        private uint _extraBitfieldBits;
+        private uint _extraTargetTypeBits;
 
         public SpellDetailViewModel(uint id, SpellBase spell, SpellComponentTable? componentTable,
             Dictionary<uint, SpellBase> allSpells, IDatReaderWriter dats) {
@@ -350,14 +367,17 @@ namespace WorldBuilder.Editors.Spell {
             DegradeModifier = spell.DegradeModifier;
             DegradeLimit = spell.DegradeLimit;
             PortalLifetime = spell.PortalLifetime;
-            CasterEffect = (uint)spell.CasterEffect;
-            TargetEffect = (uint)spell.TargetEffect;
-            FizzleEffect = (uint)spell.FizzleEffect;
+            CasterEffect = spell.CasterEffect;
+            TargetEffect = spell.TargetEffect;
+            FizzleEffect = spell.FizzleEffect;
             RecoveryInterval = spell.RecoveryInterval;
             RecoveryAmount = spell.RecoveryAmount;
             DisplayOrder = spell.DisplayOrder;
             NonComponentTargetType = (uint)spell.NonComponentTargetType;
             ManaMod = spell.ManaMod;
+
+            InitBitfieldFlags(Bitfield);
+            InitTargetTypeFlags(NonComponentTargetType);
 
             BuildAllComponents();
             BuildComponentSlots(spell.Components);
@@ -479,6 +499,52 @@ namespace WorldBuilder.Editors.Spell {
             ComponentSlots.Move(idx, idx + 1);
         }
 
+        private void InitBitfieldFlags(uint bitfield) {
+            uint knownBits = 0;
+            foreach (var flag in Enum.GetValues<SpellIndex>()) {
+                var val = (uint)flag;
+                if (val == 0 || (val & (val - 1)) != 0) continue;
+                knownBits |= val;
+                var item = new FlagItem(flag.ToString(), val, (bitfield & val) != 0);
+                item.PropertyChanged += (_, e) => {
+                    if (e.PropertyName == nameof(FlagItem.IsChecked)) UpdateBitfieldFromFlags();
+                };
+                BitfieldFlags.Add(item);
+            }
+            _extraBitfieldBits = bitfield & ~knownBits;
+        }
+
+        private void UpdateBitfieldFromFlags() {
+            uint val = _extraBitfieldBits;
+            foreach (var f in BitfieldFlags)
+                if (f.IsChecked) val |= f.Value;
+            Bitfield = val;
+            OnPropertyChanged(nameof(BitfieldDisplay));
+        }
+
+        private void InitTargetTypeFlags(uint targetType) {
+            uint knownBits = 0;
+            foreach (var flag in Enum.GetValues<ItemType>()) {
+                var val = (uint)flag;
+                if (val == 0 || (val & (val - 1)) != 0) continue;
+                knownBits |= val;
+                var item = new FlagItem(flag.ToString(), val, (targetType & val) != 0);
+                item.PropertyChanged += (_, e) => {
+                    if (e.PropertyName == nameof(FlagItem.IsChecked)) UpdateTargetTypeFromFlags();
+                };
+                TargetTypeFlags.Add(item);
+            }
+            _extraTargetTypeBits = targetType & ~knownBits;
+        }
+
+        private void UpdateTargetTypeFromFlags() {
+            uint val = _extraTargetTypeBits;
+            foreach (var f in TargetTypeFlags)
+                if (f.IsChecked) val |= f.Value;
+            NonComponentTargetType = val;
+            OnPropertyChanged(nameof(TargetTypeDisplay));
+        }
+
         public void ApplyTo(SpellBase spell) {
             spell.Name = Name;
             spell.Description = Description;
@@ -493,25 +559,38 @@ namespace WorldBuilder.Editors.Spell {
             spell.SpellEconomyMod = SpellEconomyMod;
             spell.FormulaVersion = FormulaVersion;
             spell.ComponentLoss = ComponentLoss;
-            spell.Bitfield = (DatReaderWriter.Enums.SpellIndex)Bitfield;
+            spell.Bitfield = (SpellIndex)Bitfield;
             spell.MetaSpellId = MetaSpellId;
             spell.Duration = Duration;
             spell.DegradeModifier = DegradeModifier;
             spell.DegradeLimit = DegradeLimit;
             spell.PortalLifetime = PortalLifetime;
-            spell.CasterEffect = (DatReaderWriter.Enums.PlayScript)CasterEffect;
-            spell.TargetEffect = (DatReaderWriter.Enums.PlayScript)TargetEffect;
-            spell.FizzleEffect = (DatReaderWriter.Enums.PlayScript)FizzleEffect;
+            spell.CasterEffect = CasterEffect;
+            spell.TargetEffect = TargetEffect;
+            spell.FizzleEffect = FizzleEffect;
             spell.RecoveryInterval = RecoveryInterval;
             spell.RecoveryAmount = RecoveryAmount;
             spell.DisplayOrder = DisplayOrder;
-            spell.NonComponentTargetType = (DatReaderWriter.Enums.ItemType)NonComponentTargetType;
+            spell.NonComponentTargetType = (ItemType)NonComponentTargetType;
             spell.ManaMod = ManaMod;
 
             spell.Components = ComponentSlots
                 .Where(s => s.SelectedComponent != null)
                 .Select(s => s.SelectedComponent!.Id)
                 .ToList();
+        }
+    }
+
+    public partial class FlagItem : ObservableObject {
+        public string Name { get; }
+        public uint Value { get; }
+
+        [ObservableProperty] private bool _isChecked;
+
+        public FlagItem(string name, uint value, bool isChecked) {
+            Name = name;
+            Value = value;
+            _isChecked = isChecked;
         }
     }
 }
