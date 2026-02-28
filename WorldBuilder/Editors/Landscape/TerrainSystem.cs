@@ -83,9 +83,13 @@ namespace WorldBuilder.Editors.Landscape {
             Scene = new GameScene(this);
         }
 
-        private async Task InitAsync(IDatReaderWriter dats) {
-            TerrainDoc = (TerrainDocument?)await LoadDocumentAsync("terrain", typeof(TerrainDocument))
-                         ?? throw new InvalidOperationException("Failed to load terrain document");
+        private Task InitAsync(IDatReaderWriter dats) {
+            // Run on thread pool to avoid SynchronizationContext capture — prevents
+            // deadlock when the constructor blocks with .GetAwaiter().GetResult().
+            return Task.Run(async () => {
+                TerrainDoc = (TerrainDocument?)await LoadDocumentAsync("terrain", typeof(TerrainDocument))
+                             ?? throw new InvalidOperationException("Failed to load terrain document");
+            });
         }
 
         public TerrainEntry[]? GetLandblockTerrain(ushort lbKey) {
