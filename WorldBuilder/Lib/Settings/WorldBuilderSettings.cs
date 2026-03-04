@@ -29,6 +29,12 @@ namespace WorldBuilder.Lib.Settings {
             set => SetProperty(ref _landscape, value);
         }
 
+        private DungeonEditorSettings _dungeon = new();
+        public DungeonEditorSettings Dungeon {
+            get => _dungeon;
+            set => SetProperty(ref _dungeon, value);
+        }
+
         private InputSettings _input = new();
         public InputSettings Input {
             get => _input;
@@ -69,6 +75,7 @@ namespace WorldBuilder.Lib.Settings {
         public void Save() {
             var tmpFile = Path.GetTempFileName();
             try {
+                SanitizeFloats(this);
                 var json = JsonSerializer.Serialize(this, SourceGenerationContext.Default.WorldBuilderSettings)
                     ?? throw new Exception("Failed to serialize settings to json");
                 File.WriteAllText(tmpFile, json);
@@ -80,6 +87,32 @@ namespace WorldBuilder.Lib.Settings {
             finally {
                 File.Delete(tmpFile);
             }
+        }
+
+        private static void SanitizeFloats(object obj) {
+            if (obj == null) return;
+            try {
+                foreach (var prop in obj.GetType().GetProperties(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance)) {
+                    if (!prop.CanRead || !prop.CanWrite) continue;
+                    if (prop.GetIndexParameters().Length > 0) continue;
+                    try {
+                        if (prop.PropertyType == typeof(float)) {
+                            var val = (float)prop.GetValue(obj)!;
+                            if (!float.IsFinite(val)) prop.SetValue(obj, 0f);
+                        }
+                        else if (prop.PropertyType == typeof(double)) {
+                            var val = (double)prop.GetValue(obj)!;
+                            if (!double.IsFinite(val)) prop.SetValue(obj, 0.0);
+                        }
+                        else if (prop.PropertyType.IsClass && prop.PropertyType != typeof(string)
+                            && prop.PropertyType.Namespace?.StartsWith("WorldBuilder") == true) {
+                            SanitizeFloats(prop.GetValue(obj)!);
+                        }
+                    }
+                    catch { }
+                }
+            }
+            catch { }
         }
     }
 }

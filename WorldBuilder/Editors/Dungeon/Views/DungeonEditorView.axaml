@@ -5,9 +5,51 @@
              xmlns:vm="using:WorldBuilder.Editors.Dungeon"
              xmlns:local="using:WorldBuilder.Editors.Dungeon.Views"
              xmlns:dh="using:DialogHostAvalonia"
+             xmlns:docking="clr-namespace:WorldBuilder.Lib.Docking;assembly=WorldBuilder"
+             xmlns:dockingViews="clr-namespace:WorldBuilder.Lib.Docking.Views;assembly=WorldBuilder"
+             xmlns:converters="clr-namespace:WorldBuilder.Lib.Converters;assembly=WorldBuilder"
              mc:Ignorable="d" d:DesignWidth="1200" d:DesignHeight="800"
              x:Class="WorldBuilder.Editors.Dungeon.Views.DungeonEditorView"
-             x:DataType="vm:DungeonEditorViewModel">
+             x:DataType="vm:DungeonEditorViewModel"
+             DragDrop.AllowDrop="True">
+
+    <UserControl.Resources>
+        <converters:OrientationToColumnsConverter x:Key="OrientationToColumns" />
+        <converters:OrientationToRowsConverter x:Key="OrientationToRows" />
+
+        <DataTemplate x:Key="DockTabContentTemplate" x:DataType="docking:DockablePanelViewModel">
+            <DockPanel>
+                <Border DockPanel.Dock="Top" Padding="2,2" BorderBrush="#2a1d42" BorderThickness="0,0,0,1">
+                    <Border.Background>
+                        <LinearGradientBrush StartPoint="0%,0%" EndPoint="0%,100%">
+                            <GradientStop Offset="0" Color="#1a0e30" />
+                            <GradientStop Offset="1" Color="#16102a" />
+                        </LinearGradientBrush>
+                    </Border.Background>
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="1">
+                        <Button Classes="dng-toolbar-btn" ToolTip.Tip="Move to Dock" Foreground="#5a4a6e" FontSize="11" Padding="4,2">
+                            <TextBlock Text="&#x2630;" FontSize="11" />
+                            <Button.Flyout>
+                                <MenuFlyout Placement="BottomEdgeAlignedRight">
+                                    <MenuItem Header="Dock Left"   Command="{Binding DockToCommand}" CommandParameter="Left" />
+                                    <MenuItem Header="Dock Right"  Command="{Binding DockToCommand}" CommandParameter="Right" />
+                                    <MenuItem Header="Dock Top"    Command="{Binding DockToCommand}" CommandParameter="Top" />
+                                    <MenuItem Header="Dock Bottom" Command="{Binding DockToCommand}" CommandParameter="Bottom" />
+                                    <Separator />
+                                    <MenuItem Header="Center"      Command="{Binding DockToCommand}" CommandParameter="Center" />
+                                    <MenuItem Header="Float"       Command="{Binding FloatCommand}" />
+                                </MenuFlyout>
+                            </Button.Flyout>
+                        </Button>
+                        <Button Classes="dng-toolbar-btn" Content="&#x25C0;" ToolTip.Tip="Move Tab Left" Command="{Binding MoveUpCommand}" FontSize="9" Padding="4,2" />
+                        <Button Classes="dng-toolbar-btn" Content="&#x25B6;" ToolTip.Tip="Move Tab Right" Command="{Binding MoveDownCommand}" FontSize="9" Padding="4,2" />
+                        <Button Classes="dng-toolbar-btn" Content="&#x2715;" ToolTip.Tip="Close" Command="{Binding CloseCommand}" Foreground="#cc6666" FontSize="9" Padding="4,2" />
+                    </StackPanel>
+                </Border>
+                <ContentControl Content="{Binding Content}" />
+            </DockPanel>
+        </DataTemplate>
+    </UserControl.Resources>
 
     <UserControl.Styles>
         <Style Selector="Button.dng-toolbar-btn">
@@ -24,475 +66,239 @@
             <Setter Property="Background" Value="#33ffffff" />
             <Setter Property="Foreground" Value="#c0b0d8" />
         </Style>
+        <Style Selector="TabControl.dock-tabs">
+            <Setter Property="Padding" Value="0" />
+        </Style>
+        <Style Selector="TabControl.dock-tabs > TabItem">
+            <Setter Property="FontSize" Value="11" />
+            <Setter Property="Padding" Value="8,4" />
+            <Setter Property="Foreground" Value="#8a7a9e" />
+        </Style>
+        <Style Selector="TabControl.dock-tabs > TabItem:selected">
+            <Setter Property="Foreground" Value="#c0b0d8" />
+        </Style>
     </UserControl.Styles>
 
     <dh:DialogHost Identifier="DungeonDialogHost"
                    DialogMargin="0"
                    CloseOnClickAway="True"
                    OverlayBackground="#80000000">
-        <DockPanel>
+        <Grid x:Name="RootGrid">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
             <!-- Toolbar -->
-            <Border DockPanel.Dock="Top"
+            <Border Grid.Row="0"
                     Background="#120c22"
                     BorderBrush="#2a1d42"
                     BorderThickness="0,0,0,1"
                     Padding="4,2">
                 <DockPanel>
                     <StackPanel Orientation="Horizontal" Spacing="4" DockPanel.Dock="Left">
-                        <Button Classes="dng-toolbar-btn"
-                                Content="Open Dungeon..."
-                                Command="{Binding OpenLandblockCommand}" />
-                        <Button Classes="dng-toolbar-btn"
-                                Content="New Dungeon..."
-                                Command="{Binding NewDungeonCommand}" />
-                        <Button Classes="dng-toolbar-btn"
-                                Content="Save"
-                                Command="{Binding SaveDungeonCommand}"
-                                Foreground="#6ec07a" />
-                        <Button Classes="dng-toolbar-btn"
-                                Content="Analyze Rooms..."
-                                Command="{Binding AnalyzeRoomsCommand}"
-                                Foreground="#7c4dbd" />
+                        <Button Classes="dng-toolbar-btn" Content="Open Dungeon..." Command="{Binding OpenLandblockCommand}" />
+                        <Button Classes="dng-toolbar-btn" Content="New Dungeon..." Command="{Binding NewDungeonCommand}" />
+                        <Button Classes="dng-toolbar-btn" Content="Save" Command="{Binding SaveDungeonCommand}" Foreground="#6ec07a" />
+                        <Button Classes="dng-toolbar-btn" Content="Compute Visibility" Command="{Binding ComputeVisibilityCommand}" Foreground="#4dbd7c"
+                                ToolTip.Tip="Compute VisibleCells (stab lists) for all cells via BFS through portals." />
+                        <Button Classes="dng-toolbar-btn" Content="Validate" Command="{Binding ValidateDungeonCommand}" Foreground="#bd974d"
+                                ToolTip.Tip="Run comprehensive validation checks." />
+                        <Button Classes="dng-toolbar-btn" Content="Generate..." Command="{Binding GenerateDungeonCommand}" Foreground="#4dbdbd"
+                                ToolTip.Tip="Build a new dungeon using proven room connections from real game data." />
                         <Border Width="1" Background="#2a1d42" Margin="4,2" />
-                        <CheckBox IsChecked="{Binding ShowConnectionLines}"
-                                  Content="Show connections"
-                                  FontSize="11"
-                                  Foreground="#8a7a9e"
-                                  VerticalAlignment="Center"
-                                  ToolTip.Tip="Draw lines between connected cells (blue = connected portals, green = open)" />
+                        <CheckBox IsChecked="{Binding ShowConnectionLines}" Content="Show connections" FontSize="11" Foreground="#8a7a9e" VerticalAlignment="Center" />
+                        <CheckBox IsChecked="{Binding ShowPortalIndicators}" Content="Show doorways" FontSize="11" Foreground="#8a7a9e" VerticalAlignment="Center" />
+                        <Button Classes="dng-toolbar-btn" Content="{Binding CameraModeText}" Command="{Binding ToggleCameraModeCommand}" ToolTip.Tip="Toggle between perspective and top-down view" />
                         <Border Width="1" Background="#2a1d42" Margin="4,2" />
-                        <TextBlock Text="{Binding StatusText}"
-                                   VerticalAlignment="Center"
-                                   FontSize="12"
-                                   Foreground="#8a7a9e" />
+                        <TextBlock Text="{Binding StatusText}" VerticalAlignment="Center" FontSize="12" Foreground="#8a7a9e" />
                     </StackPanel>
-
                     <StackPanel Orientation="Horizontal" Spacing="8" DockPanel.Dock="Right" HorizontalAlignment="Right">
-                        <!-- Object placement indicator -->
-                        <Border Background="#33421d2a"
-                                CornerRadius="4"
-                                Padding="8,4"
-                                IsVisible="{Binding IsObjectPlacementMode}">
-                            <StackPanel Orientation="Horizontal" Spacing="6">
-                                <TextBlock Text="{Binding PlacementStatusText}"
-                                           FontSize="11"
-                                           Foreground="#bd7c4d"
-                                           VerticalAlignment="Center" />
-                                <Button Classes="dng-toolbar-btn"
-                                        Content="Cancel"
-                                        Command="{Binding CancelObjectPlacementCommand}"
-                                        Foreground="#cc6666"
-                                        FontSize="10" />
-                            </StackPanel>
-                        </Border>
-                        <!-- Room placement indicator -->
-                        <Border Background="#332a1d42"
-                                CornerRadius="4"
-                                Padding="8,4"
-                                IsVisible="{Binding IsPlacementMode}">
-                            <StackPanel Orientation="Horizontal" Spacing="6">
-                                <TextBlock Text="{Binding PlacementStatusText}"
-                                           FontSize="11"
-                                           Foreground="#7c4dbd"
-                                           VerticalAlignment="Center" />
-                                <Button Classes="dng-toolbar-btn"
-                                        Content="Cancel"
-                                        Command="{Binding CancelPlacementCommand}"
-                                        Foreground="#cc6666"
-                                        FontSize="10" />
-                            </StackPanel>
-                        </Border>
-                        <TextBlock Text="{Binding CurrentPositionText}"
-                                   VerticalAlignment="Center"
-                                   FontSize="11"
-                                   Foreground="#5a4a6e" />
+                        <TextBlock Text="{Binding CurrentPositionText}" VerticalAlignment="Center" FontSize="11" Foreground="#5a4a6e" />
                     </StackPanel>
                 </DockPanel>
             </Border>
 
-            <!-- Status Bar -->
-            <Border DockPanel.Dock="Bottom"
-                    Background="#120c22"
-                    BorderBrush="#2a1d42"
-                    BorderThickness="0,1,0,0"
-                    Padding="10,4">
-                <DockPanel>
-                    <TextBlock DockPanel.Dock="Left"
-                               FontSize="11"
-                               Foreground="#8a7a9e"
-                               VerticalAlignment="Center"
-                               Text="Dungeon Editor" />
-                    <TextBlock DockPanel.Dock="Right"
-                               HorizontalAlignment="Right"
-                               FontSize="11"
-                               Foreground="#5a4a6e"
-                               VerticalAlignment="Center">
-                        <TextBlock.Text>
-                            <MultiBinding StringFormat="Cells: {0}">
-                                <Binding Path="CellCount" />
-                            </MultiBinding>
-                        </TextBlock.Text>
-                    </TextBlock>
-                    <!-- Hover: show cell info when hovering (no selection) -->
-                    <TextBlock FontSize="11"
-                               Foreground="#6a5a7e"
-                               VerticalAlignment="Center"
-                               Margin="20,0,0,0"
-                               IsVisible="{Binding ShowHoveredCellInfo}"
-                               Text="{Binding HoveredCellInfo}"
-                               ToolTip.Tip="{Binding HoveredCellInfo}" />
-                    <!-- Selected: show cell info when a cell is selected -->
-                    <TextBlock FontSize="11"
-                               Foreground="#7c4dbd"
-                               VerticalAlignment="Center"
-                               Margin="20,0,0,0"
-                               IsVisible="{Binding HasSelectedCell}"
-                               Text="{Binding SelectedCellInfo}" />
-                </DockPanel>
+            <!-- Top Panels (dockable) -->
+            <Border Grid.Row="1" Background="#0e0a1a" BorderBrush="#2a1d42" BorderThickness="0,0,0,1"
+                    MaxHeight="300" IsVisible="{Binding DockingManager.TopPanels.Count}">
+                <TabControl Classes="dock-tabs"
+                            ItemsSource="{Binding DockingManager.TopPanels}"
+                            ContentTemplate="{StaticResource DockTabContentTemplate}">
+                    <TabControl.ItemTemplate>
+                        <DataTemplate x:DataType="docking:IDockable">
+                            <TextBlock Text="{Binding Title}" />
+                        </DataTemplate>
+                    </TabControl.ItemTemplate>
+                </TabControl>
             </Border>
 
-            <!-- Main content: Room Palette + Viewport + Properties -->
-            <Grid ColumnDefinitions="260,Auto,*,Auto,220">
-                <!-- Left panel: Rooms / Objects / Surfaces tabs -->
-                <Border Grid.Column="0"
-                        Background="#0e0a1a"
-                        BorderBrush="#2a1d42"
-                        BorderThickness="0,0,1,0">
-                    <TabControl FontSize="11" Padding="0">
-                        <TabItem Header="Rooms">
-                            <local:RoomPaletteView DataContext="{Binding RoomPalette}" />
-                        </TabItem>
-                        <TabItem Header="Objects">
-                            <local:DungeonObjectBrowserView DataContext="{Binding ObjectBrowser}" />
-                        </TabItem>
-                        <TabItem Header="Surfaces">
-                            <local:SurfaceBrowserView DataContext="{Binding SurfaceBrowser}" />
-                        </TabItem>
-                    </TabControl>
+            <!-- Main content area -->
+            <Grid x:Name="MainGrid" Grid.Row="2">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="280" MinWidth="200" MaxWidth="500" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="220" MinWidth="180" MaxWidth="500" />
+                </Grid.ColumnDefinitions>
+
+                <!-- Left Panels (dockable) -->
+                <Border Grid.Column="0" Background="#0e0a1a" BorderBrush="#2a1d42" BorderThickness="0,0,1,0"
+                        IsVisible="{Binding DockingManager.LeftPanels.Count}">
+                    <DockPanel>
+                        <Border DockPanel.Dock="Top" Padding="2,1" Background="#16102a" BorderBrush="#2a1d42" BorderThickness="0,0,0,1">
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                                <Button Classes="dng-toolbar-btn" Content="&#x25A4;" FontSize="9" Padding="4,2"
+                                        ToolTip.Tip="Toggle Tabbed/Sections"
+                                        Command="{Binding DockingManager.ToggleLeftModeCommand}" />
+                            </StackPanel>
+                        </Border>
+                        <TabControl Classes="dock-tabs"
+                                    IsVisible="{Binding DockingManager.IsLeftTabbed}"
+                                    ItemsSource="{Binding DockingManager.LeftPanels}"
+                                    ContentTemplate="{StaticResource DockTabContentTemplate}">
+                            <TabControl.ItemTemplate>
+                                <DataTemplate x:DataType="docking:IDockable">
+                                    <TextBlock Text="{Binding Title}" />
+                                </DataTemplate>
+                            </TabControl.ItemTemplate>
+                        </TabControl>
+                        <ItemsControl IsVisible="{Binding DockingManager.IsLeftSectioned}"
+                                      ItemsSource="{Binding DockingManager.LeftPanels}">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <UniformGrid Rows="0" Columns="1" />
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate x:DataType="docking:DockablePanelViewModel">
+                                    <docking:DockablePanelView />
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </DockPanel>
                 </Border>
 
-                <!-- Left Splitter -->
                 <GridSplitter Grid.Column="1" Width="4" Background="#2a1d42" />
 
-                <!-- 3D Viewport -->
+                <!-- Center: 3D Viewport -->
                 <Grid Grid.Column="2">
                     <local:DungeonViewportControl />
 
-                    <!-- Empty state: getting started -->
-                    <Border Background="#CC0a0614"
-                            IsVisible="{Binding !HasDungeon}"
-                            IsHitTestVisible="True">
+                    <!-- Placement mode overlay at top of viewport -->
+                    <Border VerticalAlignment="Top" HorizontalAlignment="Center"
+                            Margin="0,8,0,0" Padding="16,8" CornerRadius="6"
+                            Background="#DD0a3040" BorderBrush="#4dbdbd" BorderThickness="1"
+                            IsVisible="{Binding IsPlacementMode}" IsHitTestVisible="False">
+                        <StackPanel Spacing="2" HorizontalAlignment="Center">
+                            <TextBlock Text="{Binding PlacementStatusText}" FontSize="14" FontWeight="SemiBold"
+                                       Foreground="#4dbdbd" HorizontalAlignment="Center" />
+                            <TextBlock Text="Click near a green doorway to attach  |  Escape to cancel"
+                                       FontSize="11" Foreground="#6a8a8a" HorizontalAlignment="Center" />
+                        </StackPanel>
+                    </Border>
+
+                    <!-- Empty state -->
+                    <Border Background="#CC0a0614" IsVisible="{Binding !HasDungeon}" IsHitTestVisible="True">
                         <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" Spacing="16">
-                            <TextBlock Text="Get started"
-                                       FontSize="20"
-                                       FontWeight="SemiBold"
-                                       Foreground="#8a7a9e"
-                                       HorizontalAlignment="Center" />
+                            <TextBlock Text="Get started" FontSize="20" FontWeight="SemiBold" Foreground="#8a7a9e" HorizontalAlignment="Center" />
                             <TextBlock Text="Open an existing dungeon to edit, or create a new one and place rooms from the palette."
-                                       FontSize="12"
-                                       Foreground="#5a4a6e"
-                                       HorizontalAlignment="Center"
-                                       TextWrapping="Wrap"
-                                       MaxWidth="360"
-                                       TextAlignment="Center" />
+                                       FontSize="12" Foreground="#5a4a6e" HorizontalAlignment="Center" TextWrapping="Wrap" MaxWidth="360" TextAlignment="Center" />
                             <StackPanel Orientation="Horizontal" Spacing="12" HorizontalAlignment="Center">
-                                <Button Content="Open Dungeon..."
-                                        Command="{Binding OpenLandblockCommand}"
-                                        Classes="dng-toolbar-btn"
-                                        Padding="16,10"
-                                        FontSize="13" />
-                                <Button Content="Start from template..."
-                                        Command="{Binding StartFromTemplateCommand}"
-                                        Classes="dng-toolbar-btn"
-                                        Padding="16,10"
-                                        FontSize="13"
-                                        Foreground="#7c4dbd" />
-                                <Button Content="New Dungeon..."
-                                        Command="{Binding NewDungeonCommand}"
-                                        Classes="dng-toolbar-btn"
-                                        Padding="16,10"
-                                        FontSize="13" />
+                                <Button Content="Open Dungeon..." Command="{Binding OpenLandblockCommand}" Classes="dng-toolbar-btn" Padding="16,10" FontSize="13" />
+                                <Button Content="Start from template..." Command="{Binding StartFromTemplateCommand}" Classes="dng-toolbar-btn" Padding="16,10" FontSize="13" Foreground="#7c4dbd" />
+                                <Button Content="New Dungeon..." Command="{Binding NewDungeonCommand}" Classes="dng-toolbar-btn" Padding="16,10" FontSize="13" />
+                                <Button Content="Generate..." Command="{Binding GenerateDungeonCommand}" Classes="dng-toolbar-btn" Padding="16,10" FontSize="13" Foreground="#4dbdbd" />
                             </StackPanel>
-                            <TextBlock Text="First time? Run Analyze Rooms... to build recommended presets from your DAT."
-                                       FontSize="11"
-                                       Foreground="#4a3a5e"
-                                       HorizontalAlignment="Center" />
+                            <TextBlock Text="Pick rooms from the catalog on the left to build your dungeon piece by piece."
+                                       FontSize="11" Foreground="#4a3a5e" HorizontalAlignment="Center" />
                         </StackPanel>
                     </Border>
                 </Grid>
 
-                <!-- Right Splitter (visible when either cell or object is selected) -->
-                <GridSplitter Grid.Column="3" Width="4" Background="#2a1d42">
-                    <GridSplitter.IsVisible>
-                        <MultiBinding Converter="{x:Static BoolConverters.Or}">
-                            <Binding Path="HasSelectedCell" />
-                            <Binding Path="HasSelectedObject" />
-                        </MultiBinding>
-                    </GridSplitter.IsVisible>
-                </GridSplitter>
+                <GridSplitter Grid.Column="3" Width="4" Background="#2a1d42" />
 
-                <!-- Cell Properties (right panel, shown when cell selected) -->
-                <Border Grid.Column="4"
-                        Background="#0e0a1a"
-                        BorderBrush="#2a1d42"
-                        BorderThickness="1,0,0,0"
-                        IsVisible="{Binding HasSelectedCell}">
+                <!-- Right Panel: Tools (dockable) + Cell Properties (fixed) -->
+                <Border Grid.Column="4" Background="#0e0a1a" BorderBrush="#2a1d42" BorderThickness="1,0,0,0">
                     <DockPanel>
+                        <!-- Dockable right panels (Tools) -->
                         <Border DockPanel.Dock="Top"
-                                Background="#16102a"
-                                BorderBrush="#2a1d42"
-                                BorderThickness="0,0,0,1"
-                                Padding="8,6">
-                            <TextBlock Text="{Binding SelectedCellPanelTitle}"
-                                       FontSize="12"
-                                       FontWeight="SemiBold"
-                                       Foreground="#c0b0d8" />
+                                IsVisible="{Binding DockingManager.RightPanels.Count}">
+                            <TabControl Classes="dock-tabs"
+                                        ItemsSource="{Binding DockingManager.RightPanels}"
+                                        ContentTemplate="{StaticResource DockTabContentTemplate}"
+                                        MaxHeight="350">
+                                <TabControl.ItemTemplate>
+                                    <DataTemplate x:DataType="docking:IDockable">
+                                        <TextBlock Text="{Binding Title}" />
+                                    </DataTemplate>
+                                </TabControl.ItemTemplate>
+                            </TabControl>
                         </Border>
 
-                        <ScrollViewer>
-                            <StackPanel Spacing="6" Margin="8">
-                                <!-- Cell Info -->
-                                <TextBlock Text="{Binding SelectedCellInfo}"
-                                           FontSize="10"
-                                           Foreground="#8a7a9e"
-                                           TextWrapping="Wrap" />
-
-                                <!-- Location (copyable) -->
-                                <TextBlock Text="Location" FontSize="11" Foreground="#8a7a9e" Margin="0,4,0,0" />
-                                <TextBox Text="{Binding SelectedCellTeleportCommand}"
-                                         FontSize="9"
-                                         FontFamily="Consolas"
-                                         IsReadOnly="True"
-                                         TextWrapping="Wrap"
-                                         Padding="4,3"
-                                         Background="#16102a"
-                                         BorderBrush="#2a1d42" />
-
-                                <!-- Delete -->
-                                <Button Classes="dng-toolbar-btn"
-                                        Content="Delete Cell"
-                                        Command="{Binding DeleteSelectedCellCommand}"
-                                        Foreground="#cc6666"
-                                        HorizontalAlignment="Stretch"
-                                        HorizontalContentAlignment="Center" />
-
-                                <Border Height="1" Background="#2a1d42" Margin="0,2" />
-
-                                <!-- Position: direct input -->
-                                <TextBlock Text="Position (drag cell to move)" FontSize="11" Foreground="#8a7a9e" />
-                                <Grid ColumnDefinitions="Auto,*,Auto,*,Auto,*" Margin="0,2">
-                                    <TextBlock Grid.Column="0" Text="X" FontSize="10" Foreground="#5a4a6e" VerticalAlignment="Center" Margin="0,0,3,0" />
-                                    <TextBox Grid.Column="1" Text="{Binding CellPosX}" FontSize="10" Padding="3,2" />
-                                    <TextBlock Grid.Column="2" Text="Y" FontSize="10" Foreground="#5a4a6e" VerticalAlignment="Center" Margin="4,0,3,0" />
-                                    <TextBox Grid.Column="3" Text="{Binding CellPosY}" FontSize="10" Padding="3,2" />
-                                    <TextBlock Grid.Column="4" Text="Z" FontSize="10" Foreground="#5a4a6e" VerticalAlignment="Center" Margin="4,0,3,0" />
-                                    <TextBox Grid.Column="5" Text="{Binding CellPosZ}" FontSize="10" Padding="3,2" />
-                                </Grid>
-                                <Button Classes="dng-toolbar-btn" Content="Apply Position" Command="{Binding ApplyPositionCommand}" FontSize="10"
-                                        HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
-
-                                <!-- Nudge -->
-                                <StackPanel Orientation="Horizontal" Spacing="4" Margin="0,2">
-                                    <TextBlock Text="Nudge step:" FontSize="10" Foreground="#5a4a6e" VerticalAlignment="Center" />
-                                    <NumericUpDown Value="{Binding NudgeStep}" Minimum="0.1" Maximum="100" Increment="0.5"
-                                                   Width="70" FontSize="10" FormatString="0.0" />
-                                </StackPanel>
-                                <Grid ColumnDefinitions="Auto,*,*" RowDefinitions="Auto,Auto,Auto" Margin="0,2">
-                                    <TextBlock Grid.Row="0" Grid.Column="0" Text="X" FontSize="10" Foreground="#5a4a6e" VerticalAlignment="Center" Margin="0,0,6,0" />
-                                    <Button Grid.Row="0" Grid.Column="1" Classes="dng-toolbar-btn" Content="-" Command="{Binding NudgeCellXNegCommand}" FontSize="10" Padding="4,2" />
-                                    <Button Grid.Row="0" Grid.Column="2" Classes="dng-toolbar-btn" Content="+" Command="{Binding NudgeCellXPosCommand}" FontSize="10" Padding="4,2" />
-                                    <TextBlock Grid.Row="1" Grid.Column="0" Text="Y" FontSize="10" Foreground="#5a4a6e" VerticalAlignment="Center" Margin="0,0,6,0" />
-                                    <Button Grid.Row="1" Grid.Column="1" Classes="dng-toolbar-btn" Content="-" Command="{Binding NudgeCellYNegCommand}" FontSize="10" Padding="4,2" />
-                                    <Button Grid.Row="1" Grid.Column="2" Classes="dng-toolbar-btn" Content="+" Command="{Binding NudgeCellYPosCommand}" FontSize="10" Padding="4,2" />
-                                    <TextBlock Grid.Row="2" Grid.Column="0" Text="Z" FontSize="10" Foreground="#5a4a6e" VerticalAlignment="Center" Margin="0,0,6,0" />
-                                    <Button Grid.Row="2" Grid.Column="1" Classes="dng-toolbar-btn" Content="-" Command="{Binding NudgeCellZNegCommand}" FontSize="10" Padding="4,2" />
-                                    <Button Grid.Row="2" Grid.Column="2" Classes="dng-toolbar-btn" Content="+" Command="{Binding NudgeCellZPosCommand}" FontSize="10" Padding="4,2" />
-                                </Grid>
-
-                                <Border Height="1" Background="#2a1d42" Margin="0,2" />
-
-                                <!-- Rotation (XYZ) -->
-                                <TextBlock Text="Rotation (degrees)" FontSize="11" Foreground="#8a7a9e" />
-                                <Grid ColumnDefinitions="Auto,*,Auto,*,Auto,*" Margin="0,2">
-                                    <TextBlock Grid.Column="0" Text="X" FontSize="10" Foreground="#5a4a6e" VerticalAlignment="Center" Margin="0,0,3,0" />
-                                    <TextBox Grid.Column="1" Text="{Binding CellRotX}" FontSize="10" Padding="3,2" />
-                                    <TextBlock Grid.Column="2" Text="Y" FontSize="10" Foreground="#5a4a6e" VerticalAlignment="Center" Margin="4,0,3,0" />
-                                    <TextBox Grid.Column="3" Text="{Binding CellRotY}" FontSize="10" Padding="3,2" />
-                                    <TextBlock Grid.Column="4" Text="Z" FontSize="10" Foreground="#5a4a6e" VerticalAlignment="Center" Margin="4,0,3,0" />
-                                    <TextBox Grid.Column="5" Text="{Binding CellRotZ}" FontSize="10" Padding="3,2" />
-                                </Grid>
-                                <Button Classes="dng-toolbar-btn" Content="Apply Rotation" Command="{Binding ApplyRotationCommand}" FontSize="10"
-                                        HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
-                                <Grid ColumnDefinitions="Auto,*,*" RowDefinitions="Auto,Auto,Auto" Margin="0,2">
-                                    <TextBlock Grid.Row="0" Grid.Column="0" Text="X" FontSize="10" Foreground="#5a4a6e" VerticalAlignment="Center" Margin="0,0,6,0" />
-                                    <Button Grid.Row="0" Grid.Column="1" Classes="dng-toolbar-btn" Content="-90" Command="{Binding RotateCellXNegCommand}" FontSize="10" Padding="4,2" />
-                                    <Button Grid.Row="0" Grid.Column="2" Classes="dng-toolbar-btn" Content="+90" Command="{Binding RotateCellXPosCommand}" FontSize="10" Padding="4,2" />
-                                    <TextBlock Grid.Row="1" Grid.Column="0" Text="Y" FontSize="10" Foreground="#5a4a6e" VerticalAlignment="Center" Margin="0,0,6,0" />
-                                    <Button Grid.Row="1" Grid.Column="1" Classes="dng-toolbar-btn" Content="-90" Command="{Binding RotateCellYNegCommand}" FontSize="10" Padding="4,2" />
-                                    <Button Grid.Row="1" Grid.Column="2" Classes="dng-toolbar-btn" Content="+90" Command="{Binding RotateCellYPosCommand}" FontSize="10" Padding="4,2" />
-                                    <TextBlock Grid.Row="2" Grid.Column="0" Text="Z" FontSize="10" Foreground="#5a4a6e" VerticalAlignment="Center" Margin="0,0,6,0" />
-                                    <Button Grid.Row="2" Grid.Column="1" Classes="dng-toolbar-btn" Content="-90" Command="{Binding RotateCellZNegCommand}" FontSize="10" Padding="4,2" />
-                                    <Button Grid.Row="2" Grid.Column="2" Classes="dng-toolbar-btn" Content="+90" Command="{Binding RotateCellZPosCommand}" FontSize="10" Padding="4,2" />
-                                </Grid>
-                                <StackPanel Orientation="Horizontal" Spacing="4">
-                                    <TextBlock Text="Z fine:" FontSize="10" Foreground="#5a4a6e" VerticalAlignment="Center" />
-                                    <Button Classes="dng-toolbar-btn" Content="-45" Command="{Binding RotateCellZ45NegCommand}" FontSize="10" Padding="6,2" />
-                                    <Button Classes="dng-toolbar-btn" Content="+45" Command="{Binding RotateCellZ45PosCommand}" FontSize="10" Padding="6,2" />
-                                </StackPanel>
-
-                                <Border Height="1" Background="#2a1d42" Margin="0,2" />
-
-                                <!-- Portal Management -->
-                                <TextBlock Text="Portals (green: open, blue: connected)" FontSize="11" Foreground="#8a7a9e" />
-                                <Button Classes="dng-toolbar-btn"
-                                        Content="Disconnect Last Portal"
-                                        Command="{Binding DisconnectPortalCommand}"
-                                        FontSize="10"
-                                        HorizontalAlignment="Stretch"
-                                        HorizontalContentAlignment="Center" />
-
-                                <Border Height="1" Background="#2a1d42" Margin="0,2" />
-
-                                <!-- Surface Slots -->
-                                <TextBlock Text="Surface Slots (click slot, then pick from Surfaces tab). Ctrl+Click cells to multi-select and apply textures to many at once." FontSize="10" Foreground="#6a5a7e" TextWrapping="Wrap" />
-                                <ListBox ItemsSource="{Binding SurfaceSlots}"
-                                         SelectedIndex="{Binding SelectedSurfaceSlot}"
-                                         FontSize="10"
-                                         MaxHeight="140"
-                                         Background="Transparent">
-                                    <ListBox.ItemTemplate>
-                                        <DataTemplate x:DataType="vm:CellSurfaceSlot">
-                                            <StackPanel Orientation="Horizontal" Spacing="6" Margin="2">
-                                                <Panel Width="24" Height="24">
-                                                    <Border Background="#FF2A2A2A" CornerRadius="2"
-                                                            IsVisible="{Binding Thumbnail, Converter={x:Static ObjectConverters.IsNull}}" />
-                                                    <Image Width="24" Height="24" Source="{Binding Thumbnail}" Stretch="Uniform"
-                                                           IsVisible="{Binding Thumbnail, Converter={x:Static ObjectConverters.IsNotNull}}" />
-                                                </Panel>
-                                                <TextBlock Text="{Binding DisplayText}" VerticalAlignment="Center"
-                                                           Foreground="#c0b0d8" FontFamily="Consolas" />
-                                            </StackPanel>
-                                        </DataTemplate>
-                                    </ListBox.ItemTemplate>
-                                </ListBox>
-
-                                <Border Height="1" Background="#2a1d42" Margin="0,2" />
-
-                                <!-- Surfaces manual entry fallback -->
-                                <TextBlock Text="Surfaces (hex, comma-separated)" FontSize="10" Foreground="#5a4a6e" />
-                                <TextBox Text="{Binding SelectedCellSurfaces}"
-                                         FontSize="10"
-                                         TextWrapping="Wrap"
-                                         AcceptsReturn="False" />
-                                <Button Classes="dng-toolbar-btn"
-                                        Content="Apply Surfaces"
-                                        Command="{Binding ApplySurfacesCommand}"
-                                        FontSize="10"
-                                        HorizontalAlignment="Stretch"
-                                        HorizontalContentAlignment="Center" />
-
-                                <Border Height="1" Background="#2a1d42" Margin="0,2" />
-
-                                <!-- Static Object Placement -->
-                                <TextBlock Text="Place Object" FontSize="11" Foreground="#8a7a9e" />
-                                <Grid ColumnDefinitions="*,Auto" Margin="0,2">
-                                    <TextBox Grid.Column="0"
-                                             Text="{Binding ObjectIdInput}"
-                                             Watermark="Hex ID (e.g. 02000001)"
-                                             FontSize="10" />
-                                    <Button Grid.Column="1"
-                                            Classes="dng-toolbar-btn"
-                                            Content="Place"
-                                            Command="{Binding StartObjectPlacementCommand}"
-                                            FontSize="10"
-                                            Margin="4,0,0,0" />
-                                </Grid>
-                            </StackPanel>
-                        </ScrollViewer>
-                    </DockPanel>
-                </Border>
-
-                <!-- Object Properties (right panel, shown when static object selected) -->
-                <Border Grid.Column="4"
-                        Background="#0e0a1a"
-                        BorderBrush="#2a1d42"
-                        BorderThickness="1,0,0,0"
-                        IsVisible="{Binding HasSelectedObject}">
-                    <DockPanel>
-                        <Border DockPanel.Dock="Top"
-                                Background="#16102a"
-                                BorderBrush="#2a1d42"
-                                BorderThickness="0,0,0,1"
-                                Padding="8,6">
-                            <TextBlock Text="Object Properties"
-                                       FontSize="12"
-                                       FontWeight="SemiBold"
-                                       Foreground="#d8c0a0" />
+                        <!-- Room Properties (always visible below tools) -->
+                        <Border>
+                            <Grid>
+                                <local:CellPropertiesView DataContext="{Binding}" IsVisible="{Binding HasSelectedCell}" />
+                                <TextBlock Text="Select a room to view properties"
+                                           FontSize="11" Foreground="#5a4a6e"
+                                           HorizontalAlignment="Center" VerticalAlignment="Center"
+                                           IsVisible="{Binding !HasSelectedCell}" />
+                            </Grid>
                         </Border>
-
-                        <ScrollViewer>
-                            <StackPanel Spacing="6" Margin="8">
-                                <TextBlock Text="{Binding SelectedObjectInfo}"
-                                           FontSize="10"
-                                           Foreground="#8a7a9e"
-                                           TextWrapping="Wrap" />
-
-                                <Button Classes="dng-toolbar-btn"
-                                        Content="Delete Object"
-                                        Command="{Binding DeleteSelectedObjectCommand}"
-                                        Foreground="#cc6666"
-                                        HorizontalAlignment="Stretch"
-                                        HorizontalContentAlignment="Center" />
-
-                                <Border Height="1" Background="#2a1d42" Margin="0,2" />
-
-                                <TextBlock Text="Position (drag object to move)" FontSize="11" Foreground="#8a7a9e" />
-                                <Grid ColumnDefinitions="Auto,*,Auto,*,Auto,*" Margin="0,2">
-                                    <TextBlock Grid.Column="0" Text="X" FontSize="10" Foreground="#5a4a6e" VerticalAlignment="Center" Margin="0,0,3,0" />
-                                    <TextBox Grid.Column="1" Text="{Binding ObjPosX}" FontSize="10" Padding="3,2" />
-                                    <TextBlock Grid.Column="2" Text="Y" FontSize="10" Foreground="#5a4a6e" VerticalAlignment="Center" Margin="4,0,3,0" />
-                                    <TextBox Grid.Column="3" Text="{Binding ObjPosY}" FontSize="10" Padding="3,2" />
-                                    <TextBlock Grid.Column="4" Text="Z" FontSize="10" Foreground="#5a4a6e" VerticalAlignment="Center" Margin="4,0,3,0" />
-                                    <TextBox Grid.Column="5" Text="{Binding ObjPosZ}" FontSize="10" Padding="3,2" />
-                                </Grid>
-                                <Button Classes="dng-toolbar-btn" Content="Apply Position" Command="{Binding ApplyObjPositionCommand}" FontSize="10"
-                                        HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
-
-                                <StackPanel Orientation="Horizontal" Spacing="4" Margin="0,2">
-                                    <TextBlock Text="Nudge step:" FontSize="10" Foreground="#5a4a6e" VerticalAlignment="Center" />
-                                    <NumericUpDown Value="{Binding NudgeStep}" Minimum="0.1" Maximum="100" Increment="0.5"
-                                                   Width="70" FontSize="10" FormatString="0.0" />
-                                </StackPanel>
-                                <Grid ColumnDefinitions="Auto,*,*" RowDefinitions="Auto,Auto,Auto" Margin="0,2">
-                                    <TextBlock Grid.Row="0" Grid.Column="0" Text="X" FontSize="10" Foreground="#5a4a6e" VerticalAlignment="Center" Margin="0,0,6,0" />
-                                    <Button Grid.Row="0" Grid.Column="1" Classes="dng-toolbar-btn" Content="-" Command="{Binding NudgeObjXNegCommand}" FontSize="10" Padding="4,2" />
-                                    <Button Grid.Row="0" Grid.Column="2" Classes="dng-toolbar-btn" Content="+" Command="{Binding NudgeObjXPosCommand}" FontSize="10" Padding="4,2" />
-                                    <TextBlock Grid.Row="1" Grid.Column="0" Text="Y" FontSize="10" Foreground="#5a4a6e" VerticalAlignment="Center" Margin="0,0,6,0" />
-                                    <Button Grid.Row="1" Grid.Column="1" Classes="dng-toolbar-btn" Content="-" Command="{Binding NudgeObjYNegCommand}" FontSize="10" Padding="4,2" />
-                                    <Button Grid.Row="1" Grid.Column="2" Classes="dng-toolbar-btn" Content="+" Command="{Binding NudgeObjYPosCommand}" FontSize="10" Padding="4,2" />
-                                    <TextBlock Grid.Row="2" Grid.Column="0" Text="Z" FontSize="10" Foreground="#5a4a6e" VerticalAlignment="Center" Margin="0,0,6,0" />
-                                    <Button Grid.Row="2" Grid.Column="1" Classes="dng-toolbar-btn" Content="-" Command="{Binding NudgeObjZNegCommand}" FontSize="10" Padding="4,2" />
-                                    <Button Grid.Row="2" Grid.Column="2" Classes="dng-toolbar-btn" Content="+" Command="{Binding NudgeObjZPosCommand}" FontSize="10" Padding="4,2" />
-                                </Grid>
-
-                                <Border Height="1" Background="#2a1d42" Margin="0,2" />
-
-                                <TextBlock Text="Rotation (Z axis)" FontSize="11" Foreground="#8a7a9e" />
-                                <Grid ColumnDefinitions="*,Auto" Margin="0,2">
-                                    <TextBox Grid.Column="0" Text="{Binding ObjRotDegrees}" FontSize="10" Padding="3,2" Watermark="degrees" />
-                                    <Button Grid.Column="1" Classes="dng-toolbar-btn" Content="Apply" Command="{Binding ApplyObjRotationCommand}" FontSize="10" Margin="4,0,0,0" />
-                                </Grid>
-                                <StackPanel Orientation="Horizontal" Spacing="4">
-                                    <Button Classes="dng-toolbar-btn" Content="-90" Command="{Binding RotateObjCWCommand}" FontSize="10" Padding="6,2" />
-                                    <Button Classes="dng-toolbar-btn" Content="-45" Command="{Binding RotateObjCW45Command}" FontSize="10" Padding="6,2" />
-                                    <Button Classes="dng-toolbar-btn" Content="+45" Command="{Binding RotateObjCCW45Command}" FontSize="10" Padding="6,2" />
-                                    <Button Classes="dng-toolbar-btn" Content="+90" Command="{Binding RotateObjCCWCommand}" FontSize="10" Padding="6,2" />
-                                </StackPanel>
-                            </StackPanel>
-                        </ScrollViewer>
                     </DockPanel>
                 </Border>
             </Grid>
-        </DockPanel>
+
+            <!-- Bottom Panels (dockable) -->
+            <GridSplitter Grid.Row="3" Height="4" Background="#2a1d42"
+                          IsVisible="{Binding DockingManager.BottomPanels.Count}" />
+            <Border Grid.Row="4" Background="#0e0a1a" BorderBrush="#2a1d42" BorderThickness="0,1,0,0"
+                    MaxHeight="300" IsVisible="{Binding DockingManager.BottomPanels.Count}">
+                <TabControl Classes="dock-tabs"
+                            ItemsSource="{Binding DockingManager.BottomPanels}"
+                            ContentTemplate="{StaticResource DockTabContentTemplate}">
+                    <TabControl.ItemTemplate>
+                        <DataTemplate x:DataType="docking:IDockable">
+                            <TextBlock Text="{Binding Title}" />
+                        </DataTemplate>
+                    </TabControl.ItemTemplate>
+                </TabControl>
+            </Border>
+
+            <!-- Status Bar overlay at bottom of viewport row -->
+            <Border Grid.Row="2" VerticalAlignment="Bottom"
+                    Background="#DD120c22" BorderBrush="#2a1d42" BorderThickness="0,1,0,0" Padding="10,4"
+                    IsHitTestVisible="False">
+                <DockPanel>
+                    <TextBlock DockPanel.Dock="Left" FontSize="11" Foreground="#8a7a9e" VerticalAlignment="Center" Text="Dungeon Editor" />
+                    <TextBlock DockPanel.Dock="Right" HorizontalAlignment="Right" FontSize="11" Foreground="#5a4a6e" VerticalAlignment="Center">
+                        <TextBlock.Text>
+                            <MultiBinding StringFormat="Rooms: {0}">
+                                <Binding Path="CellCount" />
+                            </MultiBinding>
+                        </TextBlock.Text>
+                    </TextBlock>
+                    <TextBlock FontSize="11" Foreground="#6a5a7e" VerticalAlignment="Center" Margin="20,0,0,0"
+                               IsVisible="{Binding ShowHoveredCellInfo}" Text="{Binding HoveredCellInfo}" />
+                    <TextBlock FontSize="11" Foreground="#7c4dbd" VerticalAlignment="Center" Margin="20,0,0,0"
+                               IsVisible="{Binding HasSelectedCell}" Text="{Binding SelectedCellInfo}" />
+                </DockPanel>
+            </Border>
+
+            <!-- Drop ghosts for drag-to-dock -->
+            <Border Name="LeftGhost" Grid.Row="0" Grid.RowSpan="5" HorizontalAlignment="Left" Width="200"
+                    Background="#4400aaff" IsVisible="False" IsHitTestVisible="False" />
+            <Border Name="RightGhost" Grid.Row="0" Grid.RowSpan="5" HorizontalAlignment="Right" Width="200"
+                    Background="#4400aaff" IsVisible="False" IsHitTestVisible="False" />
+            <Border Name="TopGhost" Grid.Row="0" Grid.RowSpan="5" VerticalAlignment="Top" Height="150"
+                    Background="#4400aaff" IsVisible="False" IsHitTestVisible="False" />
+            <Border Name="BottomGhost" Grid.Row="0" Grid.RowSpan="5" VerticalAlignment="Bottom" Height="150"
+                    Background="#4400aaff" IsVisible="False" IsHitTestVisible="False" />
+        </Grid>
     </dh:DialogHost>
 </UserControl>

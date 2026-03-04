@@ -1,4 +1,4 @@
-﻿using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
@@ -319,11 +319,6 @@ public class CommandHistory {
         else {
             composite.Commands.Add(second);
         }
-        // Merge AffectedDocumentIds
-        composite.AffectedDocumentIds = new List<string>();
-        if (first.AffectedDocumentIds != null) composite.AffectedDocumentIds.AddRange(first.AffectedDocumentIds);
-        if (second.AffectedDocumentIds != null) composite.AffectedDocumentIds.AddRange(second.AffectedDocumentIds);
-        composite.AffectedDocumentIds = composite.AffectedDocumentIds.Distinct().ToList();
         return composite;
     }
 

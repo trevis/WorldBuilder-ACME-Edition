@@ -46,6 +46,8 @@ namespace WorldBuilder.Editors.Landscape {
 
         // Track which landblocks are dungeon-only (vs building interiors)
         private readonly HashSet<ushort> _dungeonOnlyLandblocks = new();
+        // Track landblocks that contain both building AND dungeon cells
+        private readonly HashSet<ushort> _mixedLandblocks = new();
 
         // Fast lookup from full cell ID to LoadedEnvCell (for portal traversal neighbor lookups)
         private readonly Dictionary<uint, LoadedEnvCell> _cellLookup = new();
@@ -59,6 +61,11 @@ namespace WorldBuilder.Editors.Landscape {
         /// When set, only render dungeon cells from this landblock. Null = show all.
         /// </summary>
         public ushort? FocusedDungeonLB { get; set; }
+
+        /// <summary>
+        /// Landblock key used for placement/hover previews. Always rendered regardless of FocusedDungeonLB.
+        /// </summary>
+        public const ushort PreviewLandblockKey = 0xFFFE;
 
         /// <summary>
         /// Controls whether dungeon-only cells are rendered.
@@ -138,12 +145,15 @@ namespace WorldBuilder.Editors.Landscape {
         public int LoadedCellCount => _loadedCells.Values.Sum(list => list.Count);
 
         /// <summary>
-        /// Returns the number of loaded cells in dungeon-only landblocks (excludes building interiors).
+        /// Returns the number of loaded dungeon cells (excludes building interiors).
+        /// For pure-dungeon landblocks, all cells count. For mixed landblocks, only non-building cells count.
         /// Used for cap enforcement -- building interior cells are small and always allowed.
         /// </summary>
         public int LoadedDungeonCellCount => _loadedCells
-            .Where(kvp => _dungeonOnlyLandblocks.Contains(kvp.Key))
-            .Sum(kvp => kvp.Value.Count);
+            .Where(kvp => _dungeonOnlyLandblocks.Contains(kvp.Key) || _mixedLandblocks.Contains(kvp.Key))
+            .Sum(kvp => _dungeonOnlyLandblocks.Contains(kvp.Key)
+                ? kvp.Value.Count
+                : kvp.Value.Count(c => !c.IsBuilding));
 
         #region CPU Preparation (background thread safe)
 
@@ -163,12 +173,13 @@ namespace WorldBuilder.Editors.Landscape {
         /// <summary>World-space Z offset so building floor sits above terrain and wins depth; 0.05 was insufficient.</summary>
         private const float BuildingFloorOffset = 0.2f;
 
-        public PreparedEnvCellBatch? PrepareLandblockEnvCells(ushort lbKey, uint lbId, List<EnvCell> envCells, bool isDungeonOnly = false) {
+        public PreparedEnvCellBatch? PrepareLandblockEnvCells(ushort lbKey, uint lbId, List<EnvCell> envCells, bool isDungeonOnly = false, HashSet<ushort>? buildingCellIds = null) {
             if (envCells.Count == 0) return null;
 
             var batch = new PreparedEnvCellBatch {
                 LandblockKey = lbKey,
                 IsDungeonOnly = isDungeonOnly,
+                HasMixedCells = false,
                 Cells = new List<PreparedEnvCell>()
             };
 
@@ -176,26 +187,48 @@ namespace WorldBuilder.Editors.Landscape {
             var blockY = lbId & 0xFF;
             var lbOffset = new Vector3(blockX * 192f, blockY * 192f, 0f);
 
-            // Dungeon-only landblocks get pushed well below terrain. Building interiors
-            // get a small positive Z bump so the floor renders above terrain and avoids Z-fighting.
-            float dungeonZBump = isDungeonOnly ? DungeonDepthOffset : 0f;
-            float buildingZBump = isDungeonOnly ? 0f : BuildingFloorOffset;
+            int buildingCellCount = 0;
+            int dungeonCellCount = 0;
 
             foreach (var envCell in envCells) {
                 try {
-                    float cellZBump = isDungeonOnly ? dungeonZBump : buildingZBump;
+                    ushort cellNum = (ushort)(envCell.Id & 0xFFFF);
+
+                    // Per-cell classification:
+                    // 1) If isDungeonOnly (no buildings at all) -> all cells are dungeon
+                    // 2) If buildingCellIds provided -> check membership
+                    // 3) Fallback: use SeenOutside flag (building interiors see outside; dungeons don't)
+                    bool isBuildingCell;
+                    if (isDungeonOnly) {
+                        isBuildingCell = false;
+                    } else if (buildingCellIds != null) {
+                        isBuildingCell = buildingCellIds.Contains(cellNum);
+                    } else {
+                        isBuildingCell = envCell.Flags.HasFlag(EnvCellFlags.SeenOutside);
+                    }
+
+                    float cellZBump;
+                    if (isBuildingCell) {
+                        cellZBump = BuildingFloorOffset;
+                        buildingCellCount++;
+                    } else if (isDungeonOnly) {
+                        cellZBump = DungeonDepthOffset;
+                        dungeonCellCount++;
+                    } else {
+                        cellZBump = 0f;
+                        dungeonCellCount++;
+                    }
+
                     var prepared = PrepareEnvCell(envCell, lbOffset, lbKey, cellZBump);
                     if (prepared != null) {
+                        prepared.IsBuilding = isBuildingCell;
                         batch.Cells.Add(prepared);
                     }
 
-                    // Extract static objects (furniture, torches, etc.) from inside this EnvCell.
-                    // Stab Frame.Origin is in landblock-local space (confirmed by diagnostic).
-                    // Route to dungeon vs building list based on landblock type.
                     if (envCell.StaticObjects != null && envCell.StaticObjects.Count > 0) {
                         var stabZOffset = new Vector3(0, 0, cellZBump);
-                        var targetList = isDungeonOnly ? batch.DungeonStaticObjects : batch.BuildingStaticObjects;
-                        var parentCellList = isDungeonOnly ? batch.DungeonStaticParentCells : batch.BuildingStaticParentCells;
+                        var targetList = isBuildingCell ? batch.BuildingStaticObjects : batch.DungeonStaticObjects;
+                        var parentCellList = isBuildingCell ? batch.BuildingStaticParentCells : batch.DungeonStaticParentCells;
                         foreach (var stab in envCell.StaticObjects) {
                             targetList.Add(new StaticObject {
                                 Id = stab.Id,
@@ -213,9 +246,12 @@ namespace WorldBuilder.Editors.Landscape {
                 }
             }
 
+            batch.HasMixedCells = buildingCellCount > 0 && dungeonCellCount > 0;
+
+            string typeLabel = isDungeonOnly ? "dungeon" : (batch.HasMixedCells ? "MIXED" : "building");
             Console.WriteLine($"[EnvCellMgr] LB 0x{lbKey:X4}: {envCells.Count} EnvCells in, {batch.Cells.Count} prepared OK, " +
-                $"{batch.DungeonStaticObjects.Count} dungeon statics, {batch.BuildingStaticObjects.Count} building statics" +
-                (isDungeonOnly ? " [dungeon]" : " [building]"));
+                $"{batch.DungeonStaticObjects.Count} dungeon statics, {batch.BuildingStaticObjects.Count} building statics " +
+                $"[{typeLabel}: {buildingCellCount} building + {dungeonCellCount} dungeon cells]");
 
             return batch.Cells.Count > 0 || batch.DungeonStaticObjects.Count > 0 || batch.BuildingStaticObjects.Count > 0 ? batch : null;
         }
@@ -297,6 +333,20 @@ namespace WorldBuilder.Editors.Landscape {
             var meshData = PrepareCellStructMesh(cellStruct, surfaceIds, portalPolyIds);
             if (meshData == null) return null;
 
+            // Compute local-space AABB and centroid from CellStruct vertices.
+            // Centroid is needed for portal-side determination below.
+            var boundsMin = new Vector3(float.MaxValue);
+            var boundsMax = new Vector3(float.MinValue);
+            var cellCentroid = Vector3.Zero;
+            int vtxCount = cellStruct.VertexArray.Vertices.Count;
+            foreach (var vtx in cellStruct.VertexArray.Vertices.Values) {
+                boundsMin = Vector3.Min(boundsMin, vtx.Origin);
+                boundsMax = Vector3.Max(boundsMax, vtx.Origin);
+                cellCentroid += vtx.Origin;
+            }
+            if (vtxCount > 0)
+                cellCentroid /= vtxCount;
+
             // Extract portal connectivity and clip planes from CellPortals
             var portals = new List<CellPortalInfo>();
             var clipPlanes = new List<PortalClipPlane>();
@@ -324,22 +374,20 @@ namespace WorldBuilder.Editors.Landscape {
                             var normal = Vector3.Normalize(Vector3.Cross(edge1, edge2));
                             float d = -Vector3.Dot(normal, v0Pos.Value);
 
+                            // Determine InsideSide from geometry: check which side of the
+                            // portal plane the cell centroid falls on. This is always correct
+                            // regardless of stored flags (which may be 0 for editor-created portals).
+                            float centroidDot = Vector3.Dot(normal, cellCentroid) + d;
+                            int insideSide = centroidDot >= 0 ? 0 : 1;
+
                             clipPlanes.Add(new PortalClipPlane {
                                 Normal = normal,
                                 D = d,
-                                InsideSide = portalSide
+                                InsideSide = insideSide
                             });
                         }
                     }
                 }
-            }
-
-            // Compute local-space AABB from CellStruct vertices for point-in-cell testing
-            var boundsMin = new Vector3(float.MaxValue);
-            var boundsMax = new Vector3(float.MinValue);
-            foreach (var vtx in cellStruct.VertexArray.Vertices.Values) {
-                boundsMin = Vector3.Min(boundsMin, vtx.Origin);
-                boundsMax = Vector3.Max(boundsMax, vtx.Origin);
             }
 
             return new PreparedEnvCell {
@@ -663,6 +711,7 @@ namespace WorldBuilder.Editors.Landscape {
                     EnvironmentId = prepared.EnvironmentId,
                     SurfaceCount = prepared.SurfaceCount,
                     LoadedLandblockKey = prepared.LoadedLandblockKey,
+                    IsBuilding = prepared.IsBuilding,
                     Portals = prepared.Portals,
                     ClipPlanes = prepared.ClipPlanes,
                     InverseWorldTransform = inverseTransform,
@@ -679,6 +728,10 @@ namespace WorldBuilder.Editors.Landscape {
                     _dungeonOnlyLandblocks.Add(batch.LandblockKey);
                 else
                     _dungeonOnlyLandblocks.Remove(batch.LandblockKey);
+                if (batch.HasMixedCells)
+                    _mixedLandblocks.Add(batch.LandblockKey);
+                else
+                    _mixedLandblocks.Remove(batch.LandblockKey);
                 Console.WriteLine($"[EnvCellMgr] GPU upload LB 0x{batch.LandblockKey:X4}: {cells.Count} cells, {_gpuCache.Count} unique GPU entries total");
 
                 if (!batch.IsDungeonOnly && cells.Count > 0) {
@@ -822,27 +875,30 @@ namespace WorldBuilder.Editors.Landscape {
             bool cameraInDungeon = cameraLbKey.HasValue && _dungeonOnlyLandblocks.Contains(cameraLbKey.Value);
 
             foreach (var kvp in _loadedCells) {
-                bool isDungeon = _dungeonOnlyLandblocks.Contains(kvp.Key);
+                bool lbIsDungeon = _dungeonOnlyLandblocks.Contains(kvp.Key);
+                bool lbIsMixed = _mixedLandblocks.Contains(kvp.Key);
 
-                if (isDungeon) {
+                if (lbIsDungeon) {
                     if (!ShowDungeonCells) continue;
-                    if (FocusedDungeonLB.HasValue && kvp.Key != FocusedDungeonLB.Value) continue;
-                } else {
-                    // Building interiors: render when camera is inside a building cell
-                    // in this landblock, OR when AlwaysShowBuildingInteriors is enabled
-                    // (force-show for top-down editing with frustum culling).
+                    if (FocusedDungeonLB.HasValue && kvp.Key != FocusedDungeonLB.Value && kvp.Key != PreviewLandblockKey) continue;
+                } else if (!lbIsMixed) {
                     bool cameraInThisBuilding = visibility != null && !cameraInDungeon && kvp.Key == cameraLbKey;
                     if (!cameraInThisBuilding && !AlwaysShowBuildingInteriors) continue;
+                } else {
+                    // Mixed landblocks (building + dungeon cells): the portal visibility
+                    // system handles traversal between connected cells seamlessly.
+                    // Show when camera is inside (portal filter) or when force-showing interiors.
+                    bool cameraInsideMixed = visibility != null && kvp.Key == cameraLbKey;
+                    if (!cameraInsideMixed && !AlwaysShowBuildingInteriors && !ShowDungeonCells) continue;
                 }
 
-                // Portal filtering only applies to the landblock the camera is in.
-                // Other landblocks (dungeon or building) use normal frustum culling.
                 bool usePortalFilter = visibility != null && kvp.Key == cameraLbKey;
-
-                var targetBuffer = isDungeon ? _cellGroupBuffer : _buildingCellGroupBuffer;
+                bool isPreview = kvp.Key == PreviewLandblockKey;
 
                 foreach (var cell in kvp.Value) {
-                    if (usePortalFilter) {
+                    if (isPreview) {
+                        // Preview cells always render — no frustum or portal culling
+                    } else if (usePortalFilter) {
                         if (!visibility!.VisibleCellIds.Contains(cell.CellId)) continue;
                     } else {
                         var cellBounds = new BoundingBox(
@@ -851,6 +907,7 @@ namespace WorldBuilder.Editors.Landscape {
                         if (!frustum.IntersectsBoundingBox(cellBounds)) continue;
                     }
 
+                    var targetBuffer = cell.IsBuilding ? _buildingCellGroupBuffer : _cellGroupBuffer;
                     if (!targetBuffer.TryGetValue(cell.GpuKey, out var list)) {
                         list = new List<Matrix4x4>();
                         targetBuffer[cell.GpuKey] = list;
@@ -1035,6 +1092,7 @@ namespace WorldBuilder.Editors.Landscape {
 
             _loadedCells.Remove(lbKey);
             _dungeonOnlyLandblocks.Remove(lbKey);
+            _mixedLandblocks.Remove(lbKey);
 
             // Check if any remaining landblocks still reference these GPU keys
             foreach (var otherCells in _loadedCells.Values) {
@@ -1374,6 +1432,7 @@ namespace WorldBuilder.Editors.Landscape {
             _gpuCache.Clear();
             _loadedCells.Clear();
             _dungeonOnlyLandblocks.Clear();
+            _mixedLandblocks.Clear();
             _cellLookup.Clear();
             _lastCameraCell = null;
             _environmentCache.Clear();
@@ -1451,6 +1510,8 @@ namespace WorldBuilder.Editors.Landscape {
         public int SurfaceCount { get; set; }
         /// <summary>Landblock key this cell was loaded under (from GameScene, always correct).</summary>
         public ushort LoadedLandblockKey { get; set; }
+        /// <summary>True if this cell belongs to a building interior; false for dungeon cells.</summary>
+        public bool IsBuilding { get; set; }
 
         /// <summary>Portal connections to neighboring cells (extracted from EnvCell.CellPortals).</summary>
         public List<CellPortalInfo> Portals { get; set; } = new();
@@ -1508,6 +1569,8 @@ namespace WorldBuilder.Editors.Landscape {
     public class PreparedEnvCellBatch {
         public ushort LandblockKey { get; set; }
         public bool IsDungeonOnly { get; set; }
+        /// <summary>True when the landblock contains both building AND dungeon cells.</summary>
+        public bool HasMixedCells { get; set; }
         public List<PreparedEnvCell> Cells { get; set; } = new();
         /// <summary>
         /// Static objects from inside dungeon-only EnvCells (underground).
@@ -1542,6 +1605,8 @@ namespace WorldBuilder.Editors.Landscape {
         public uint EnvironmentId { get; set; }
         public int SurfaceCount { get; set; }
         public ushort LoadedLandblockKey { get; set; }
+        /// <summary>True if this cell belongs to a building interior (SeenOutside); false for dungeon cells.</summary>
+        public bool IsBuilding { get; set; }
         /// <summary>Portal connections extracted during CPU preparation.</summary>
         public List<CellPortalInfo> Portals { get; set; } = new();
         /// <summary>Clip planes extracted during CPU preparation.</summary>

@@ -33,18 +33,22 @@ namespace WorldBuilder.Editors.Dungeon {
         [ObservableProperty]
         private WriteableBitmap? _thumbnail;
 
+        [ObservableProperty]
+        private bool _isFavorite;
+
         /// <summary>When set by preset loader, shows a friendly name instead of the raw ID.</summary>
         [ObservableProperty]
         [NotifyPropertyChangedFor(nameof(DisplayName))]
         private string? _presetDisplayName;
 
-        public string DisplayName => !string.IsNullOrEmpty(PresetDisplayName) ? PresetDisplayName : $"0x{EnvironmentFileId:X8} / #{CellStructureIndex}";
-        public string DetailText => $"{PortalCount} portal{(PortalCount != 1 ? "s" : "")}, {PolygonCount} poly, {VertexCount} vert";
+        public string DisplayName => !string.IsNullOrEmpty(PresetDisplayName) ? PresetDisplayName : $"Room ({PortalCount} door{(PortalCount != 1 ? "s" : "")})";
+        public string DetailText => $"{PortalCount} door{(PortalCount != 1 ? "s" : "")}, {PolygonCount} faces";
     }
 
     public partial class RoomPaletteViewModel : ViewModelBase {
         private readonly IDatReaderWriter _dats;
         private List<RoomEntry> _allRooms = new();
+        private readonly HashSet<(uint envFileId, ushort cellStructIdx)> _favoriteKeys = new();
 
         [ObservableProperty]
         [NotifyPropertyChangedFor(nameof(RoomsToShow))]
@@ -54,14 +58,80 @@ namespace WorldBuilder.Editors.Dungeon {
         private ObservableCollection<RoomEntry> _starterRooms = new();
         [ObservableProperty]
         [NotifyPropertyChangedFor(nameof(RoomsToShow))]
-        private bool _showStarterMode = true;
+        private ObservableCollection<RoomEntry> _favoriteRooms = new();
+        [ObservableProperty]
+        [NotifyPropertyChangedFor(nameof(RoomsToShow))]
+        private bool _showStarterMode;
+        [ObservableProperty]
+        [NotifyPropertyChangedFor(nameof(RoomsToShow))]
+        private bool _showFavoritesMode;
+        [ObservableProperty]
+        [NotifyPropertyChangedFor(nameof(RoomsToShow))]
+        [NotifyPropertyChangedFor(nameof(ShowPrefabList))]
+        private bool _showPrefabsMode;
+        [ObservableProperty]
+        [NotifyPropertyChangedFor(nameof(RoomsToShow))]
+        private bool _showCatalogMode = true;
 
-        /// <summary>Rooms to display: Starter presets or filtered browse list.</summary>
-        public IEnumerable<RoomEntry> RoomsToShow => ShowStarterMode && StarterRooms.Count > 0 ? StarterRooms : FilteredRooms;
+        partial void OnShowStarterModeChanged(bool value) {
+            if (value) { ShowCatalogMode = false; ShowFavoritesMode = false; ShowPrefabsMode = false; }
+        }
+        partial void OnShowFavoritesModeChanged(bool value) {
+            if (value) { ShowCatalogMode = false; ShowStarterMode = false; ShowPrefabsMode = false; }
+        }
+        partial void OnShowPrefabsModeChanged(bool value) {
+            if (value) { ShowCatalogMode = false; ShowStarterMode = false; ShowFavoritesMode = false; }
+        }
+        [ObservableProperty]
+        [NotifyPropertyChangedFor(nameof(RoomsToShow))]
+        private ObservableCollection<RoomEntry> _catalogRooms = new();
+        [ObservableProperty]
+        [NotifyPropertyChangedFor(nameof(RoomsToShow))]
+        private string _catalogCategory = "All";
+
+        [ObservableProperty]
+        [NotifyPropertyChangedFor(nameof(RoomsToShow))]
+        private ObservableCollection<PrefabListEntry> _prefabEntries = new();
+
+        [ObservableProperty]
+        private PrefabListEntry? _selectedPrefab;
+
+        /// <summary>True when the catalog (prefab) list should be shown instead of the room list.</summary>
+        public bool ShowPrefabList => (ShowCatalogMode && PrefabEntries.Count > 0) || (ShowPrefabsMode && PrefabEntries.Count > 0);
+
+        public event EventHandler<DungeonPrefab>? PrefabSelected;
+        public event EventHandler<DungeonPrefab?>? PrefabHoverChanged;
+
+        public PortalCompatibilityIndex? PortalIndex { get; set; }
+
+        private List<(ushort envId, ushort cs, ushort polyId)> _activeOpenPortals = new();
+
+        /// <summary>
+        /// Set by the editor when the dungeon has open portals. When non-empty, the palette
+        /// filters prefabs to show only those with proven connections to these portal faces.
+        /// </summary>
+        public void SetActiveOpenPortals(List<(ushort envId, ushort cs, ushort polyId)> portals) {
+            _activeOpenPortals = portals ?? new();
+            ApplyPrefabFilter();
+        }
+
+        public IEnumerable<RoomEntry> RoomsToShow =>
+            ShowCatalogMode ? Enumerable.Empty<RoomEntry>() :
+            ShowPrefabsMode ? Enumerable.Empty<RoomEntry>() :
+            ShowFavoritesMode && FavoriteRooms.Count > 0 ? FavoriteRooms :
+            ShowStarterMode && StarterRooms.Count > 0 ? StarterRooms :
+            FilteredRooms;
+
+        public List<string> CatalogCategories { get; } = new() {
+            "All", "Hallway", "Corner", "T-Junction", "Hub", "Dead End", "Chamber", "Full Dungeon"
+        };
+        [ObservableProperty] private bool _showCompatibleOnly;
         [ObservableProperty] private RoomEntry? _selectedRoom;
         [ObservableProperty] private string _searchText = "";
         [ObservableProperty] private string _statusText = "Loading...";
         [ObservableProperty] private bool _isLoaded;
+        [ObservableProperty] private bool _isBuildingKnowledgeBase;
+        [ObservableProperty] private string _buildingMessage = "";
         [ObservableProperty] private int _minPortals;
         [ObservableProperty] private int _maxPortals = 99;
 
@@ -113,9 +183,74 @@ namespace WorldBuilder.Editors.Dungeon {
             StatusText = $"{_allRooms.Count} rooms loaded";
             ApplyFilter();
 
+            LoadFavorites();
+            ApplyFavoritesToRooms();
+
             _ = Task.Run(() => PopulateDefaultSurfaces(rooms));
             _ = GenerateThumbnailsAsync();
             LoadStarterPresets(rooms);
+            LoadPrefabEntries();
+            LoadCatalogRooms();
+
+            _ = AutoAnalyzeIfNeeded(rooms);
+        }
+
+        /// <summary>
+        /// If no analysis file exists yet, run room analysis in the background
+        /// so starter presets are available on first launch without manual action.
+        /// </summary>
+        private async Task AutoAnalyzeIfNeeded(List<RoomEntry> rooms) {
+            try {
+                var appDir = Path.Combine(
+                    System.Environment.GetFolderPath(System.Environment.SpecialFolder.LocalApplicationData),
+                    "ACME WorldBuilder");
+                var analysisPath = Path.Combine(appDir, "dungeon_room_analysis.json");
+                var kbPath = Path.Combine(appDir, "dungeon_knowledge.json");
+
+                // Run room analysis if it hasn't been done yet
+                if (!File.Exists(analysisPath)) {
+                    Console.WriteLine("[RoomPalette] No analysis file found — running auto-analysis...");
+                    await Dispatcher.UIThread.InvokeAsync(() => StatusText = $"{_allRooms.Count} rooms loaded — analyzing...");
+
+                    var report = await Task.Run(() => DungeonRoomAnalyzer.Run(_dats));
+                    DungeonRoomAnalyzer.SaveReport(report, Path.Combine(appDir, "dungeon_room_analysis"));
+
+                    Console.WriteLine($"[RoomPalette] Auto-analysis complete: {report.TotalCellsScanned} cells, {report.UniqueRoomTypes} room types");
+                }
+
+                bool needsKbRebuild = !File.Exists(kbPath);
+                if (!needsKbRebuild) {
+                    var existingKb = DungeonKnowledgeBuilder.LoadCached();
+                    needsKbRebuild = existingKb == null || existingKb.Prefabs.Count < 100;
+                }
+                if (needsKbRebuild) {
+                    Console.WriteLine("[RoomPalette] Building knowledge base (expanded prefabs)...");
+                    await Dispatcher.UIThread.InvokeAsync(() => {
+                        IsBuildingKnowledgeBase = true;
+                        BuildingMessage = "Scanning 3400+ dungeons to build piece catalog...\nThis only happens once.";
+                        StatusText = "Building prefab catalog...";
+                    });
+                    await Task.Run(() => DungeonKnowledgeBuilder.Build(_dats));
+                    Console.WriteLine("[RoomPalette] Knowledge base built.");
+
+                    await Dispatcher.UIThread.InvokeAsync(() => {
+                        IsBuildingKnowledgeBase = false;
+                        BuildingMessage = "";
+                        LoadPrefabEntries();
+                        LoadCatalogRooms();
+                    });
+                }
+
+                await Dispatcher.UIThread.InvokeAsync(() => {
+                    LoadStarterPresets(rooms);
+                    StatusText = _allPrefabs.Count > 0
+                        ? $"{_allPrefabs.Count} pieces ready"
+                        : $"{_allRooms.Count} rooms loaded";
+                });
+            }
+            catch (Exception ex) {
+                Console.WriteLine($"[RoomPalette] Auto-analysis failed (non-fatal): {ex.Message}");
+            }
         }
 
         private void LoadStarterPresets(List<RoomEntry> allRooms) {
@@ -177,6 +312,324 @@ namespace WorldBuilder.Editors.Dungeon {
         public void ReloadStarterPresets() {
             if (_allRooms.Count == 0) return;
             LoadStarterPresets(_allRooms);
+            LoadPrefabEntries();
+        }
+
+        public void LoadCatalogRooms() {
+            try {
+                var kb = DungeonKnowledgeBuilder.LoadCached();
+                if (kb == null || kb.Catalog.Count == 0) return;
+
+                var roomLookup = _allRooms.ToDictionary(r => (r.EnvironmentFileId, r.CellStructureIndex), r => r);
+
+                foreach (var cr in kb.Catalog) {
+                    uint envFileId = (uint)(cr.EnvId | 0x0D000000);
+                    if (roomLookup.TryGetValue((envFileId, cr.CellStruct), out var room)) {
+                        room.PresetDisplayName = cr.DisplayName;
+                    }
+                }
+
+                ApplyCatalogFilter();
+                Console.WriteLine($"[RoomPalette] Loaded {kb.Catalog.Count} catalog rooms");
+                if (ShowCatalogMode) _ = GenerateThumbnailsForCatalogAsync();
+            }
+            catch (Exception ex) {
+                Console.WriteLine($"[RoomPalette] LoadCatalogRooms: {ex.Message}");
+            }
+        }
+
+        private void ApplyCatalogFilter() {
+            var kb = DungeonKnowledgeBuilder.LoadCached();
+            if (kb == null) return;
+
+            var roomLookup = _allRooms.ToDictionary(r => (r.EnvironmentFileId, r.CellStructureIndex), r => r);
+            var query = SearchText?.Trim() ?? "";
+
+            var filtered = kb.Catalog.AsEnumerable();
+
+            if (CatalogCategory != "All") {
+                filtered = filtered.Where(cr => cr.Category == CatalogCategory);
+            }
+
+            if (!string.IsNullOrEmpty(query)) {
+                filtered = filtered.Where(cr =>
+                    cr.DisplayName.Contains(query, StringComparison.OrdinalIgnoreCase) ||
+                    cr.Style.Contains(query, StringComparison.OrdinalIgnoreCase) ||
+                    cr.SourceDungeons.Any(d => d.Contains(query, StringComparison.OrdinalIgnoreCase)));
+            }
+
+            var result = new List<RoomEntry>();
+            foreach (var cr in filtered.Take(200)) {
+                uint envFileId = (uint)(cr.EnvId | 0x0D000000);
+                if (roomLookup.TryGetValue((envFileId, cr.CellStruct), out var room)) {
+                    if (string.IsNullOrEmpty(room.PresetDisplayName))
+                        room.PresetDisplayName = cr.DisplayName;
+                    result.Add(room);
+                }
+            }
+
+            CatalogRooms = new ObservableCollection<RoomEntry>(result);
+        }
+
+        partial void OnShowCompatibleOnlyChanged(bool value) {
+            ApplyPrefabFilter();
+        }
+
+        partial void OnCatalogCategoryChanged(string value) {
+            if (ShowCatalogMode || ShowPrefabsMode) ApplyPrefabFilter();
+        }
+
+        partial void OnShowCatalogModeChanged(bool value) {
+            if (value) {
+                ShowStarterMode = false; ShowFavoritesMode = false; ShowPrefabsMode = false;
+                ApplyPrefabFilter();
+                _ = GeneratePrefabThumbnailsAsync();
+            }
+        }
+
+        private async Task GenerateThumbnailsForCatalogAsync() {
+            await Task.Delay(100);
+            var snapshot = CatalogRooms.ToArray();
+            foreach (var room in snapshot) {
+                if (room.Thumbnail != null) continue;
+                var thumb = await Task.Run(() => RenderRoomThumbnail(room));
+                if (thumb != null) {
+                    Dispatcher.UIThread.Post(() => room.Thumbnail = thumb);
+                }
+            }
+        }
+
+        private List<DungeonPrefab> _allPrefabs = new();
+
+        public void LoadPrefabEntries() {
+            try {
+                var kb = DungeonKnowledgeBuilder.LoadCached();
+                if (kb == null || kb.Prefabs.Count == 0) return;
+
+                // Name prefabs if the cached KB predates the naming system
+                if (kb.Prefabs.Any(p => string.IsNullOrEmpty(p.DisplayName))) {
+                    Console.WriteLine($"[RoomPalette] Naming {kb.Prefabs.Count} prefabs from cached KB...");
+                    PrefabNamer.NameAll(kb.Prefabs, kb.Catalog);
+                }
+
+                _allPrefabs = kb.Prefabs;
+                ApplyPrefabFilter();
+                Console.WriteLine($"[RoomPalette] Loaded {_allPrefabs.Count} prefab entries");
+                _ = GeneratePrefabThumbnailsAsync();
+            }
+            catch (Exception ex) {
+                Console.WriteLine($"[RoomPalette] LoadPrefabEntries: {ex.Message}");
+            }
+        }
+
+        private void ApplyPrefabFilter() {
+            var query = SearchText?.Trim() ?? "";
+            var category = CatalogCategory;
+
+            // When we have open portals and a compatibility index, prioritize compatible prefabs
+            HashSet<(ushort, ushort)>? compatibleRoomTypes = null;
+            if (_activeOpenPortals.Count > 0 && PortalIndex != null) {
+                compatibleRoomTypes = PortalIndex.GetCompatibleRoomTypesForAny(_activeOpenPortals);
+            }
+
+            var filtered = _allPrefabs.AsEnumerable();
+
+            if (category != "All") {
+                filtered = filtered.Where(p => p.Category.Equals(category, StringComparison.OrdinalIgnoreCase));
+            }
+
+            if (!string.IsNullOrEmpty(query)) {
+                filtered = filtered.Where(p =>
+                    p.DisplayName.Contains(query, StringComparison.OrdinalIgnoreCase) ||
+                    p.Style.Contains(query, StringComparison.OrdinalIgnoreCase) ||
+                    p.SourceDungeonName.Contains(query, StringComparison.OrdinalIgnoreCase) ||
+                    p.Tags.Any(t => t.Contains(query, StringComparison.OrdinalIgnoreCase)));
+            }
+
+            var entries = new List<PrefabListEntry>();
+
+            if (compatibleRoomTypes != null && compatibleRoomTypes.Count > 0) {
+                var compatible = new List<DungeonPrefab>();
+                var others = new List<DungeonPrefab>();
+                foreach (var prefab in filtered) {
+                    bool isCompat = prefab.OpenFaces.Any(of =>
+                        compatibleRoomTypes.Contains((of.EnvId, of.CellStruct)));
+                    if (isCompat) compatible.Add(prefab);
+                    else others.Add(prefab);
+                }
+
+                foreach (var prefab in compatible.Take(100)) {
+                    var name = !string.IsNullOrEmpty(prefab.DisplayName) ? prefab.DisplayName : $"Prefab ({prefab.Cells.Count} rooms)";
+                    entries.Add(new PrefabListEntry(prefab, name) {
+                        DetailOverride = $"\u2713 {prefab.Cells.Count} room{(prefab.Cells.Count != 1 ? "s" : "")}, {prefab.OpenFaces.Count} open door{(prefab.OpenFaces.Count != 1 ? "s" : "")}"
+                    });
+                }
+                if (!ShowCompatibleOnly) {
+                    foreach (var prefab in others.Take(100)) {
+                        var name = !string.IsNullOrEmpty(prefab.DisplayName) ? prefab.DisplayName : $"Prefab ({prefab.Cells.Count} rooms)";
+                        entries.Add(new PrefabListEntry(prefab, name) {
+                            DetailOverride = $"{prefab.Cells.Count} room{(prefab.Cells.Count != 1 ? "s" : "")}, {prefab.OpenFaces.Count} open door{(prefab.OpenFaces.Count != 1 ? "s" : "")}"
+                        });
+                    }
+                }
+            }
+            else {
+                foreach (var prefab in filtered.Take(200)) {
+                    var name = !string.IsNullOrEmpty(prefab.DisplayName) ? prefab.DisplayName : $"Prefab ({prefab.Cells.Count} rooms)";
+                    entries.Add(new PrefabListEntry(prefab, name) {
+                        DetailOverride = $"{prefab.Cells.Count} room{(prefab.Cells.Count != 1 ? "s" : "")}, {prefab.OpenFaces.Count} open door{(prefab.OpenFaces.Count != 1 ? "s" : "")}"
+                    });
+                }
+            }
+
+            PrefabEntries = new ObservableCollection<PrefabListEntry>(entries);
+        }
+
+        partial void OnSelectedPrefabChanged(PrefabListEntry? value) {
+            if (value != null) {
+                PrefabSelected?.Invoke(this, value.Prefab);
+            }
+        }
+
+        public void NotifyPrefabHover(DungeonPrefab? prefab) {
+            PrefabHoverChanged?.Invoke(this, prefab);
+        }
+
+        private async Task GeneratePrefabThumbnailsAsync() {
+            await Task.Delay(200);
+            var snapshot = PrefabEntries.ToArray();
+            foreach (var entry in snapshot) {
+                if (entry.Thumbnail != null) continue;
+                var thumb = await Task.Run(() => RenderPrefabThumbnail(entry.Prefab));
+                if (thumb != null) {
+                    Dispatcher.UIThread.Post(() => entry.Thumbnail = thumb);
+                }
+            }
+        }
+
+        private WriteableBitmap? RenderPrefabThumbnail(DungeonPrefab prefab) {
+            const int size = 96;
+            try {
+                var allVerts = new List<(Vector3 pos, int cellIdx)>();
+                var allPolys = new List<(List<(int x, int y)> pts, int cellIdx, bool isPortal)>();
+
+                const float cosA = 0.866f;
+                const float sinA = 0.5f;
+                Vector2 ProjectIso(Vector3 p) => new Vector2((p.X - p.Y) * cosA, (p.X + p.Y) * sinA - p.Z);
+
+                float sMinX = float.MaxValue, sMaxX = float.MinValue;
+                float sMinY = float.MaxValue, sMaxY = float.MinValue;
+
+                for (int ci = 0; ci < prefab.Cells.Count; ci++) {
+                    var cell = prefab.Cells[ci];
+                    uint envFileId = (uint)(cell.EnvId | 0x0D000000);
+                    if (!_dats.TryGet<DatReaderWriter.DBObjs.Environment>(envFileId, out var env)) continue;
+                    if (!env.Cells.TryGetValue(cell.CellStruct, out var cs)) continue;
+                    if (cs.VertexArray?.Vertices == null || cs.Polygons == null) continue;
+
+                    var cellRot = new Quaternion(cell.RotX, cell.RotY, cell.RotZ, cell.RotW);
+                    if (cellRot.LengthSquared() < 0.01f) cellRot = Quaternion.Identity;
+                    cellRot = Quaternion.Normalize(cellRot);
+                    var cellOffset = new Vector3(cell.OffsetX, cell.OffsetY, cell.OffsetZ);
+
+                    var portalIds = cs.Portals != null ? new HashSet<ushort>(cs.Portals) : new HashSet<ushort>();
+
+                    foreach (var kvp in cs.Polygons) {
+                        var poly = kvp.Value;
+                        if (poly.VertexIds.Count < 3) continue;
+                        bool isPortal = portalIds.Contains(kvp.Key);
+
+                        var screenPts = new List<(int x, int y)>();
+                        bool valid = true;
+                        foreach (var vid in poly.VertexIds) {
+                            if (!cs.VertexArray.Vertices.TryGetValue((ushort)vid, out var vtx)) { valid = false; break; }
+                            var worldPos = Vector3.Transform(vtx.Origin, cellRot) + cellOffset;
+                            var sp = ProjectIso(worldPos);
+                            if (sp.X < sMinX) sMinX = sp.X; if (sp.X > sMaxX) sMaxX = sp.X;
+                            if (sp.Y < sMinY) sMinY = sp.Y; if (sp.Y > sMaxY) sMaxY = sp.Y;
+                            screenPts.Add((0, 0));
+                        }
+                        if (!valid || screenPts.Count < 3) continue;
+                        allPolys.Add((screenPts, ci, isPortal));
+                    }
+                }
+
+                float rangeX = sMaxX - sMinX;
+                float rangeY = sMaxY - sMinY;
+                if (rangeX < 0.1f && rangeY < 0.1f) return null;
+                float range = MathF.Max(rangeX, rangeY) * 1.1f;
+                float centerSX = (sMinX + sMaxX) * 0.5f;
+                float centerSY = (sMinY + sMaxY) * 0.5f;
+                int margin = 3;
+                float scale = (size - margin * 2) / range;
+
+                int ToPixX(float sx) => Math.Clamp((int)((sx - centerSX) * scale + size * 0.5f), 0, size - 1);
+                int ToPixY(float sy) => Math.Clamp((int)((sy - centerSY) * scale + size * 0.5f), 0, size - 1);
+
+                // Re-compute screen positions with proper scaling
+                allPolys.Clear();
+                for (int ci = 0; ci < prefab.Cells.Count; ci++) {
+                    var cell = prefab.Cells[ci];
+                    uint envFileId = (uint)(cell.EnvId | 0x0D000000);
+                    if (!_dats.TryGet<DatReaderWriter.DBObjs.Environment>(envFileId, out var env)) continue;
+                    if (!env.Cells.TryGetValue(cell.CellStruct, out var cs)) continue;
+                    if (cs.VertexArray?.Vertices == null || cs.Polygons == null) continue;
+
+                    var cellRot = new Quaternion(cell.RotX, cell.RotY, cell.RotZ, cell.RotW);
+                    if (cellRot.LengthSquared() < 0.01f) cellRot = Quaternion.Identity;
+                    cellRot = Quaternion.Normalize(cellRot);
+                    var cellOffset = new Vector3(cell.OffsetX, cell.OffsetY, cell.OffsetZ);
+                    var portalIds = cs.Portals != null ? new HashSet<ushort>(cs.Portals) : new HashSet<ushort>();
+
+                    foreach (var kvp in cs.Polygons) {
+                        var poly = kvp.Value;
+                        if (poly.VertexIds.Count < 3) continue;
+                        bool isPortal = portalIds.Contains(kvp.Key);
+
+                        var screenPts = new List<(int x, int y)>();
+                        bool valid = true;
+                        foreach (var vid in poly.VertexIds) {
+                            if (!cs.VertexArray.Vertices.TryGetValue((ushort)vid, out var vtx)) { valid = false; break; }
+                            var worldPos = Vector3.Transform(vtx.Origin, cellRot) + cellOffset;
+                            var sp = ProjectIso(worldPos);
+                            screenPts.Add((ToPixX(sp.X), ToPixY(sp.Y)));
+                        }
+                        if (!valid || screenPts.Count < 3) continue;
+                        allPolys.Add((screenPts, ci, isPortal));
+                    }
+                }
+
+                var pixels = new byte[size * size * 4];
+                for (int i = 0; i < pixels.Length; i += 4) {
+                    pixels[i] = 14; pixels[i + 1] = 10; pixels[i + 2] = 22; pixels[i + 3] = 255;
+                }
+
+                byte[][] cellColors = {
+                    new byte[] { 60, 40, 90 },
+                    new byte[] { 40, 70, 80 },
+                    new byte[] { 70, 50, 50 },
+                    new byte[] { 50, 60, 40 },
+                    new byte[] { 60, 50, 70 },
+                };
+
+                foreach (var (pts, cellIdx, isPortal) in allPolys) {
+                    if (isPortal) {
+                        DrawPolyOutline(pixels, size, pts, 80, 255, 100);
+                    }
+                    else {
+                        var cc = cellColors[cellIdx % cellColors.Length];
+                        FillPolygon(pixels, size, pts, (byte)(cc[0] / 2), (byte)(cc[1] / 2), (byte)(cc[2] / 2));
+                        DrawPolyOutline(pixels, size, pts, cc[0], cc[1], cc[2]);
+                    }
+                }
+
+                var bitmap = new WriteableBitmap(new PixelSize(size, size), new Avalonia.Vector(96, 96), Avalonia.Platform.PixelFormat.Rgba8888);
+                using (var fb = bitmap.Lock()) {
+                    System.Runtime.InteropServices.Marshal.Copy(pixels, 0, fb.Address, Math.Min(pixels.Length, fb.RowBytes * size));
+                }
+                return bitmap;
+            }
+            catch { return null; }
         }
 
         private async Task GenerateThumbnailsAsync() {
@@ -396,6 +849,27 @@ namespace WorldBuilder.Editors.Dungeon {
         }
 
         /// <summary>
+        /// Determines how many surface slots a room needs by inspecting its CellStruct polygons.
+        /// Used as a fallback when no existing EnvCell reference can be found in the DAT.
+        /// </summary>
+        private int CountRequiredSurfaceSlots(RoomEntry room) {
+            try {
+                uint envFileId = room.EnvironmentFileId;
+                if (!_dats.TryGet<DatReaderWriter.DBObjs.Environment>(envFileId, out var env)) return 0;
+                if (!env.Cells.TryGetValue(room.CellStructureIndex, out var cellStruct)) return 0;
+
+                var portalIds = cellStruct.Portals != null ? new HashSet<ushort>(cellStruct.Portals) : new HashSet<ushort>();
+                int maxIndex = -1;
+                foreach (var kvp in cellStruct.Polygons) {
+                    if (portalIds.Contains(kvp.Key)) continue;
+                    if (kvp.Value.PosSurface > maxIndex) maxIndex = kvp.Value.PosSurface;
+                }
+                return maxIndex + 1;
+            }
+            catch { return 0; }
+        }
+
+        /// <summary>
         /// Scans existing dungeon EnvCells to find default surface lists for each Environment+CellStruct.
         /// Rooms without surfaces render as invisible, so this is critical for placing new cells.
         /// </summary>
@@ -434,7 +908,17 @@ namespace WorldBuilder.Editors.Dungeon {
                     }
                 }
 
-                Console.WriteLine($"[RoomPalette] Populated default surfaces for {populated}/{rooms.Count} rooms from {lookup.Count} unique EnvCell entries");
+                int fallbackCount = 0;
+                foreach (var room in rooms) {
+                    if (room.DefaultSurfaces.Count > 0) continue;
+                    int slotCount = CountRequiredSurfaceSlots(room);
+                    if (slotCount > 0) {
+                        room.DefaultSurfaces = Enumerable.Repeat((ushort)0x032A, slotCount).ToList();
+                        fallbackCount++;
+                    }
+                }
+
+                Console.WriteLine($"[RoomPalette] Populated default surfaces for {populated}/{rooms.Count} rooms from {lookup.Count} unique EnvCell entries, {fallbackCount} filled with fallback");
 
                 // Diagnostic: dump a sample dungeon's cells and check if they match room palette entries
                 uint sampleLbId = 0x01D9;
@@ -459,7 +943,10 @@ namespace WorldBuilder.Editors.Dungeon {
             }
         }
 
-        partial void OnSearchTextChanged(string value) => ApplyFilter();
+        partial void OnSearchTextChanged(string value) {
+            ApplyFilter();
+            if (ShowCatalogMode || ShowPrefabsMode) ApplyPrefabFilter();
+        }
         partial void OnMinPortalsChanged(int value) => ApplyFilter();
         partial void OnMaxPortalsChanged(int value) => ApplyFilter();
 
@@ -497,6 +984,71 @@ namespace WorldBuilder.Editors.Dungeon {
         /// Returns a friendly display name for a room (e.g. "Corridor (2P, used 17k)") given env file id and cell struct.
         /// Returns null if not found in the room list.
         /// </summary>
+        public List<RoomEntry> GetAllRooms() => _allRooms;
+
+        public bool IsFavorite(RoomEntry room) =>
+            _favoriteKeys.Contains((room.EnvironmentFileId, room.CellStructureIndex));
+
+        public void ToggleFavorite(RoomEntry room) {
+            var key = (room.EnvironmentFileId, room.CellStructureIndex);
+            if (_favoriteKeys.Contains(key)) {
+                _favoriteKeys.Remove(key);
+                FavoriteRooms.Remove(room);
+            }
+            else {
+                _favoriteKeys.Add(key);
+                FavoriteRooms.Add(room);
+            }
+            room.IsFavorite = _favoriteKeys.Contains(key);
+            SaveFavorites();
+            OnPropertyChanged(nameof(RoomsToShow));
+        }
+
+        private void LoadFavorites() {
+            try {
+                var path = Path.Combine(
+                    System.Environment.GetFolderPath(System.Environment.SpecialFolder.LocalApplicationData),
+                    "ACME WorldBuilder", "dungeon_room_favorites.json");
+                if (!File.Exists(path)) return;
+
+                var json = File.ReadAllText(path);
+                using var doc = JsonDocument.Parse(json);
+                foreach (var item in doc.RootElement.EnumerateArray()) {
+                    if (item.TryGetProperty("e", out var e) && item.TryGetProperty("c", out var c))
+                        _favoriteKeys.Add((e.GetUInt32(), (ushort)c.GetUInt16()));
+                }
+            }
+            catch (Exception ex) {
+                Console.WriteLine($"[RoomPalette] LoadFavorites: {ex.Message}");
+            }
+        }
+
+        private void SaveFavorites() {
+            try {
+                var path = Path.Combine(
+                    System.Environment.GetFolderPath(System.Environment.SpecialFolder.LocalApplicationData),
+                    "ACME WorldBuilder", "dungeon_room_favorites.json");
+                var dir = Path.GetDirectoryName(path);
+                if (dir != null) Directory.CreateDirectory(dir);
+
+                var entries = _favoriteKeys.Select(k => $"{{\"e\":{k.envFileId},\"c\":{k.cellStructIdx}}}");
+                File.WriteAllText(path, $"[{string.Join(",", entries)}]");
+            }
+            catch (Exception ex) {
+                Console.WriteLine($"[RoomPalette] SaveFavorites: {ex.Message}");
+            }
+        }
+
+        private void ApplyFavoritesToRooms() {
+            FavoriteRooms.Clear();
+            foreach (var room in _allRooms) {
+                var key = (room.EnvironmentFileId, room.CellStructureIndex);
+                room.IsFavorite = _favoriteKeys.Contains(key);
+                if (room.IsFavorite)
+                    FavoriteRooms.Add(room);
+            }
+        }
+
         public string? GetRoomDisplayName(uint envFileId, ushort cellStructIndex) {
             var room = _allRooms.FirstOrDefault(r => r.EnvironmentFileId == envFileId && r.CellStructureIndex == cellStructIndex);
             return room?.DisplayName;
@@ -509,8 +1061,12 @@ namespace WorldBuilder.Editors.Dungeon {
         public List<ushort> GetDefaultSurfaces(RoomEntry room) {
             if (room.DefaultSurfaces.Count > 0) return room.DefaultSurfaces;
 
-            // Try to find an existing EnvCell using this Environment to get default surfaces
-            // For now, return an empty list -- surfaces can be assigned later
+            int slotCount = CountRequiredSurfaceSlots(room);
+            if (slotCount > 0) {
+                room.DefaultSurfaces = Enumerable.Repeat((ushort)0x032A, slotCount).ToList();
+                return room.DefaultSurfaces;
+            }
+
             return new List<ushort>();
         }
     }

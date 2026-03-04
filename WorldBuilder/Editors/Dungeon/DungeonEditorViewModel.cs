@@ -26,18 +26,18 @@ using WorldBuilder.Shared.Lib;
 using WorldBuilder.Services;
 using WorldBuilder.Shared.Models;
 using WorldBuilder.ViewModels;
+using WorldBuilder.Editors.Dungeon.Tools;
 using WorldBuilder.Editors.Landscape;
 
 namespace WorldBuilder.Editors.Dungeon {
     public partial class DungeonEditorViewModel : ViewModelBase {
-        [ObservableProperty] private string _statusText = "No dungeon loaded";
+        [ObservableProperty] private string _statusText = "No dungeon loaded — open or create one to get started.  Pick rooms from the catalog to build your dungeon.";
         [ObservableProperty] private string _landblockInputText = "";
         [ObservableProperty] private string _currentPositionText = "";
         [ObservableProperty] private string _selectedCellInfo = "";
         [ObservableProperty]
         [NotifyPropertyChangedFor(nameof(ShowHoveredCellInfo))]
         private string _hoveredCellInfo = "";
-        /// <summary>True when hovering over a cell and no cell is selected.</summary>
         public bool ShowHoveredCellInfo => !string.IsNullOrEmpty(HoveredCellInfo) && !HasSelectedCell;
         [ObservableProperty] private int _cellCount;
         [ObservableProperty] private bool _hasDungeon;
@@ -49,6 +49,21 @@ namespace WorldBuilder.Editors.Dungeon {
         [ObservableProperty] private bool _isObjectPlacementMode;
         [ObservableProperty] private string _objectIdInput = "";
         [ObservableProperty] private float _nudgeStep = 1.0f;
+        [ObservableProperty] private bool _gridSnapEnabled;
+        [ObservableProperty] private float _gridSnapSize = 5.0f;
+
+        [ObservableProperty]
+        [NotifyPropertyChangedFor(nameof(CameraModeText))]
+        private bool _isOrthographic;
+
+        public string CameraModeText => IsOrthographic ? "3D View" : "Top-Down";
+
+        // Tool system
+        public ObservableCollection<DungeonToolBase> Tools { get; } = new();
+        [ObservableProperty] private DungeonToolBase? _selectedTool;
+        [ObservableProperty] private DungeonSubToolBase? _selectedSubTool;
+        public DungeonEditingContext EditingContext { get; } = new();
+        public DungeonToolboxViewModel? Toolbox { get; private set; }
         [ObservableProperty] private string _cellPosX = "";
         [ObservableProperty] private string _cellPosY = "";
         [ObservableProperty] private string _cellPosZ = "";
@@ -57,6 +72,7 @@ namespace WorldBuilder.Editors.Dungeon {
         [ObservableProperty] private string _cellRotZ = "";
         [ObservableProperty] private ObservableCollection<CellSurfaceSlot> _surfaceSlots = new();
         [ObservableProperty] private int _selectedSurfaceSlot = -1;
+        [ObservableProperty] private ObservableCollection<PortalListEntry> _portalList = new();
         [ObservableProperty] private bool _isDraggingCell;
 
         [ObservableProperty] private bool _hasSelectedObject;
@@ -68,33 +84,52 @@ namespace WorldBuilder.Editors.Dungeon {
         [ObservableProperty] private bool _isDraggingObject;
 
         [ObservableProperty] private bool _showConnectionLines = true;
+        [ObservableProperty] private bool _showPortalIndicators = true;
         [ObservableProperty]
         [NotifyPropertyChangedFor(nameof(SelectedCellPanelTitle))]
         private int _selectedCellCount; // 0 = none, 1 = single, >1 = multi
 
+        [RelayCommand]
+        private void ToggleCameraMode() {
+            if (_scene == null) return;
+            IsOrthographic = !IsOrthographic;
+            if (IsOrthographic) {
+                _savedPerspectivePos = _scene.Camera.Position;
+                _savedPerspectiveYaw = _scene.Camera.Yaw;
+                _savedPerspectivePitch = _scene.Camera.Pitch;
+            }
+            else {
+                _scene.Camera.SetPosition(_savedPerspectivePos);
+                _scene.Camera.SetYawPitch(_savedPerspectiveYaw, _savedPerspectivePitch);
+            }
+        }
+
         public string SelectedCellPanelTitle =>
-            SelectedCellCount <= 1 ? "Cell Properties" : $"Cell Properties ({SelectedCellCount} selected)";
+            SelectedCellCount <= 1 ? "Room Properties" : $"Room Properties ({SelectedCellCount} selected)";
 
         /// <summary>Full cell ID in 0x01D90101 format for copy/paste into in-game commands.</summary>
         public string SelectedCellLocationHex =>
-            _selectedCell != null ? $"0x{_selectedCell.CellId:X8}" : "";
+            Selection?.SelectedCell != null ? $"0x{Selection.SelectedCell.CellId:X8}" : "";
 
         /// <summary>Full teleport line: cellId x y z qx qy qz qw (center of cell, char spawn).</summary>
         public string SelectedCellTeleportCommand =>
-            _selectedCell != null ? ComputeCellTeleportLine(_selectedCell) : "";
+            Selection?.SelectedCell != null ? DungeonSelectionManager.ComputeCellTeleportLine(Selection.SelectedCell, _document) : "";
 
-        private ushort _selectedObjCellNum;
-        private int _selectedObjIndex = -1;
-
-        private LoadedEnvCell? _selectedCell; // Primary (first selected), used for position/rotation UI
-        private readonly List<LoadedEnvCell> _selectedCells = new(); // Full multi-selection
-        private List<DungeonCellData>? _cellClipboard;
         private bool _needsCameraFocus;
-        private Vector3 _dragStartHit;
-        private Vector3 _dragStartOrigin;
+
+        private Vector3 _savedPerspectivePos;
+        private float _savedPerspectiveYaw;
+        private float _savedPerspectivePitch;
+        private bool _orthoDragging;
+        private Vector2 _orthoDragPrev;
 
         private IReadOnlyList<(Vector3 From, Vector3 To)> _cachedConnectionLines = Array.Empty<(Vector3, Vector3)>();
         private bool _connectionLinesDirty = true;
+
+        public DungeonSelectionManager Selection { get; private set; } = null!;
+        public CellEditingService CellEditing { get; private set; } = null!;
+        public ObjectEditingService ObjectEditing { get; private set; } = null!;
+        public DungeonDialogService Dialogs { get; } = new();
 
         public WorldBuilderSettings Settings { get; }
 
@@ -107,9 +142,11 @@ namespace WorldBuilder.Editors.Dungeon {
         public DungeonScene? Scene => _scene;
         public DungeonDocument? Document => _document;
         public RoomPaletteViewModel? RoomPalette { get; private set; }
+        private Views.DungeonGraphView? _graphView;
         public DungeonObjectBrowserViewModel? ObjectBrowser { get; private set; }
         public SurfaceBrowserViewModel? SurfaceBrowser { get; private set; }
         public DungeonCommandHistory CommandHistory { get; } = new();
+        public Lib.Docking.DockingManager DockingManager { get; } = new();
 
         private readonly TextureImportService? _textureImport;
 
@@ -123,9 +160,42 @@ namespace WorldBuilder.Editors.Dungeon {
             _dats = project.DocumentManager.Dats;
             _scene = new DungeonScene(_dats, Settings);
 
+            // Initialize editing context
+            EditingContext.Dats = _dats;
+            EditingContext.Scene = _scene;
+            EditingContext.CommandHistory = CommandHistory;
+            CommandHistory.HistoryLimit = Settings.App.HistoryLimit;
+            EditingContext.SelectionChanged += SyncSelectionFromContext;
+            EditingContext.RenderingRefreshNeeded += () => {
+                _connectionLinesDirty = true;
+                NotifyDungeonChanged();
+            };
+            EditingContext.StatusTextChanged += text => StatusText = text;
+            EditingContext.CameraFocusRequested += () => _needsCameraFocus = true;
+
+            Selection = new DungeonSelectionManager(EditingContext);
+            Selection.CellSelectionChanged += OnCellSelectionChanged;
+            Selection.CellDeselected += OnCellDeselected;
+            Selection.ObjectSelectionChanged += OnObjectSelectionChanged;
+            Selection.ObjectDeselected += OnObjectDeselected;
+
+            CellEditing = new CellEditingService(EditingContext, Selection, () => _dats, () => RoomPalette);
+            ObjectEditing = new ObjectEditingService(EditingContext, Selection);
+
             RoomPalette = new RoomPaletteViewModel(_dats);
+            EditingContext.RoomPalette = RoomPalette;
             RoomPalette.RoomSelected += OnRoomSelected;
+            RoomPalette.PrefabSelected += OnPrefabSelected;
+            RoomPalette.PrefabHoverChanged += OnPrefabHoverChanged;
             OnPropertyChanged(nameof(RoomPalette));
+
+            // Build portal compatibility index from knowledge base
+            var kb = DungeonKnowledgeBuilder.LoadCached();
+            if (kb != null) {
+                EditingContext.PortalIndex = PortalCompatibilityIndex.Build(kb);
+                EditingContext.GeometryCache = new PortalGeometryCache(_dats);
+                RoomPalette.PortalIndex = EditingContext.PortalIndex;
+            }
 
             ObjectBrowser = new DungeonObjectBrowserViewModel(_dats,
                 () => _scene?.ThumbnailService);
@@ -136,7 +206,132 @@ namespace WorldBuilder.Editors.Dungeon {
             SurfaceBrowser.SurfaceSelected += OnSurfaceSelected;
             OnPropertyChanged(nameof(SurfaceBrowser));
 
+            InitTools();
+            InitDocking();
+
             _ = RoomPalette.LoadRoomsAsync();
+        }
+
+        private void InitTools() {
+            var selectTool = new SelectTool(EditingContext);
+            var roomTool = new RoomPlacementTool();
+            var objectTool = new ObjectPlacementTool();
+            var portalConnectTool = new PortalConnectTool();
+
+            roomTool.CancelRequested += () => SelectTool(selectTool);
+            objectTool.CancelRequested += () => SelectTool(selectTool);
+
+            Tools.Add(selectTool);
+            Tools.Add(roomTool);
+            Tools.Add(objectTool);
+            Tools.Add(portalConnectTool);
+
+            Toolbox = new DungeonToolboxViewModel(this);
+            OnPropertyChanged(nameof(Toolbox));
+
+            SelectTool(selectTool);
+        }
+
+        [RelayCommand]
+        public void SelectTool(DungeonToolBase tool) {
+            if (SelectedTool != null) {
+                SelectedTool.IsSelected = false;
+                SelectedTool.OnDeactivated();
+            }
+            SelectedTool = tool;
+            tool.IsSelected = true;
+            SelectedSubTool = tool.SelectedSubTool;
+            tool.OnActivated();
+            OnPropertyChanged(nameof(SelectedTool));
+            OnPropertyChanged(nameof(SelectedSubTool));
+        }
+
+        [RelayCommand]
+        public void SelectSubTool(DungeonSubToolBase subTool) {
+            if (SelectedTool == null) return;
+            SelectedTool.ActivateSubTool(subTool);
+            SelectedSubTool = subTool;
+            OnPropertyChanged(nameof(SelectedSubTool));
+        }
+
+        /// <summary>Sync UI-bound selection properties from the editing context.</summary>
+        private void SyncSelectionFromContext() {
+            var (cellArgs, objArgs) = Selection.SyncFromContext();
+
+            HasSelectedCell = cellArgs?.HasSelection ?? false;
+            SelectedCellCount = cellArgs?.Count ?? 0;
+            HasSelectedObject = objArgs?.HasSelection ?? false;
+
+            if (cellArgs?.HasSelection == true) {
+                OnCellSelectionChanged(cellArgs);
+            }
+            else if (!HasSelectedObject) {
+                OnCellDeselected();
+            }
+
+            if (objArgs?.HasSelection == true) {
+                SelectObject(objArgs.CellNum, objArgs.ObjectIndex, objArgs.Stab!, objArgs.Stab!.Origin);
+            }
+
+            OnPropertyChanged(nameof(SelectedCellLocationHex));
+            OnPropertyChanged(nameof(SelectedCellTeleportCommand));
+            CellCount = _document?.Cells.Count ?? 0;
+        }
+
+        private void InitDocking() {
+            var layouts = Settings.Dungeon.UIState.DockingLayout;
+
+            // Clear stale layout entries for panels whose default location changed
+            layouts.RemoveAll(l => l.Id == "Toolbox");
+
+            void Register(string id, string title, object content, Lib.Docking.DockLocation defaultLoc) {
+                var panel = new Lib.Docking.DockablePanelViewModel(id, title, content, DockingManager);
+                var saved = layouts.FirstOrDefault(l => l.Id == id);
+                if (saved != null) {
+                    if (Enum.TryParse<Lib.Docking.DockLocation>(saved.Location, out var loc)) panel.Location = loc;
+                    panel.IsVisible = saved.IsVisible;
+                }
+                else {
+                    panel.Location = defaultLoc;
+                }
+                DockingManager.RegisterPanel(panel);
+            }
+
+            if (RoomPalette != null) Register("RoomPalette", "Dungeon Pieces", RoomPalette, Lib.Docking.DockLocation.Left);
+            if (ObjectBrowser != null) Register("ObjectBrowser", "Object Browser", ObjectBrowser, Lib.Docking.DockLocation.Left);
+            if (SurfaceBrowser != null) Register("SurfaceBrowser", "Surfaces", SurfaceBrowser, Lib.Docking.DockLocation.Left);
+            if (Toolbox != null) Register("Toolbox", "Tools", Toolbox, Lib.Docking.DockLocation.Right);
+            _graphView = new Views.DungeonGraphView { DataContext = this };
+            Register("DungeonGraph", "Dungeon Map", _graphView, Lib.Docking.DockLocation.Bottom);
+
+            var uiState = Settings.Dungeon.UIState;
+            if (Enum.TryParse<Lib.Docking.DockRegionMode>(uiState.LeftDockMode, out var leftMode))
+                DockingManager.LeftMode = leftMode;
+            if (Enum.TryParse<Lib.Docking.DockRegionMode>(uiState.RightDockMode, out var rightMode))
+                DockingManager.RightMode = rightMode;
+            if (Enum.TryParse<Lib.Docking.DockRegionMode>(uiState.TopDockMode, out var topMode))
+                DockingManager.TopMode = topMode;
+            if (Enum.TryParse<Lib.Docking.DockRegionMode>(uiState.BottomDockMode, out var bottomMode))
+                DockingManager.BottomMode = bottomMode;
+
+            OnPropertyChanged(nameof(DockingManager));
+        }
+
+        private void SaveDockingState() {
+            var uiState = Settings.Dungeon.UIState;
+            uiState.DockingLayout.Clear();
+            foreach (var panel in DockingManager.AllPanels.OfType<Lib.Docking.DockablePanelViewModel>()) {
+                uiState.DockingLayout.Add(new Lib.Settings.DockingPanelState {
+                    Id = panel.Id,
+                    Location = panel.Location.ToString(),
+                    IsVisible = panel.IsVisible
+                });
+            }
+            uiState.LeftDockMode = DockingManager.LeftMode.ToString();
+            uiState.RightDockMode = DockingManager.RightMode.ToString();
+            uiState.TopDockMode = DockingManager.TopMode.ToString();
+            uiState.BottomDockMode = DockingManager.BottomMode.ToString();
+            Settings.Save();
         }
 
         /// <summary>
@@ -170,11 +365,13 @@ namespace WorldBuilder.Editors.Dungeon {
 
             _scene.Camera.ScreenSize = new Vector2(canvasSize.Width, canvasSize.Height);
             if (_connectionLinesDirty) {
-                _cachedConnectionLines = ComputeConnectionLines();
+                _cachedConnectionLines = DungeonSelectionManager.ComputeConnectionLines(_document, _dats);
                 _connectionLinesDirty = false;
             }
             _scene.ConnectionLines = _cachedConnectionLines;
             _scene.ShowConnectionLines = ShowConnectionLines;
+            _scene.ShowPortalIndicators = ShowPortalIndicators;
+            _scene.UseOrthographic = IsOrthographic;
             _scene.Render((float)canvasSize.Width / canvasSize.Height);
 
             // Deferred camera focus: wait until cells are actually uploaded to GPU
@@ -196,6 +393,11 @@ namespace WorldBuilder.Editors.Dungeon {
         private void HandleInput(AvaloniaInputState inputState, double deltaTime) {
             if (_scene == null) return;
             var camera = _scene.Camera;
+
+            if (IsOrthographic) {
+                HandleOrthoInput(inputState, deltaTime);
+                return;
+            }
 
             camera.ProcessMouseMovement(inputState.MouseState);
 
@@ -223,6 +425,41 @@ namespace WorldBuilder.Editors.Dungeon {
                 camera.ProcessKeyboard(CameraMovement.Up, deltaTime);
             if (shiftHeld)
                 camera.ProcessKeyboard(CameraMovement.Down, deltaTime);
+        }
+
+        private void HandleOrthoInput(AvaloniaInputState inputState, double deltaTime) {
+            if (_scene == null) return;
+            var camera = _scene.Camera;
+            var mouse = inputState.MouseState;
+
+            if (mouse.RightPressed) {
+                if (!_orthoDragging) {
+                    _orthoDragging = true;
+                    _orthoDragPrev = mouse.Position;
+                }
+                else {
+                    var delta = mouse.Position - _orthoDragPrev;
+                    float pixelsToWorld = _scene.OrthoSize / camera.ScreenSize.Y;
+                    camera.SetPosition(camera.Position + new Vector3(
+                        -delta.X * pixelsToWorld,
+                        delta.Y * pixelsToWorld,
+                        0));
+                    _orthoDragPrev = mouse.Position;
+                }
+            }
+            else {
+                _orthoDragging = false;
+            }
+
+            float panSpeed = _scene.OrthoSize * 0.5f * (float)deltaTime;
+            if (inputState.IsKeyDown(Key.W) || inputState.IsKeyDown(Key.Up))
+                camera.SetPosition(camera.Position + new Vector3(0, panSpeed, 0));
+            if (inputState.IsKeyDown(Key.S) || inputState.IsKeyDown(Key.Down))
+                camera.SetPosition(camera.Position - new Vector3(0, panSpeed, 0));
+            if (inputState.IsKeyDown(Key.A) || inputState.IsKeyDown(Key.Left))
+                camera.SetPosition(camera.Position - new Vector3(panSpeed, 0, 0));
+            if (inputState.IsKeyDown(Key.D) || inputState.IsKeyDown(Key.Right))
+                camera.SetPosition(camera.Position + new Vector3(panSpeed, 0, 0));
         }
 
         internal void HandleKeyDown(KeyEventArgs e) {
@@ -259,6 +496,11 @@ namespace WorldBuilder.Editors.Dungeon {
                 else DeleteSelectedCellCommand.Execute(null);
                 return;
             }
+
+            // Delegate to active tool (handles Escape for placement tools)
+            SyncContextBeforeInput();
+            if (SelectedTool != null && SelectedTool.HandleKeyDown(e, EditingContext)) return;
+
             if (e.Key == Key.Escape) {
                 if (IsObjectPlacementMode) CancelObjectPlacement();
                 else if (IsPlacementMode) CancelPlacement();
@@ -273,7 +515,7 @@ namespace WorldBuilder.Editors.Dungeon {
             DeselectCell();
             RefreshRendering();
             CellCount = _document.Cells.Count;
-            StatusText = $"LB {_document.LandblockKey:X4}: {CellCount} cells (Undo: {CommandHistory.LastCommandDescription ?? "none"})";
+            StatusText = $"{CellCount} rooms (Undo: {CommandHistory.LastCommandDescription ?? "none"})";
         }
 
         private void UndoRedoRedo() {
@@ -282,309 +524,74 @@ namespace WorldBuilder.Editors.Dungeon {
             DeselectCell();
             RefreshRendering();
             CellCount = _document.Cells.Count;
-            StatusText = $"LB {_document.LandblockKey:X4}: {CellCount} cells";
+            StatusText = $"{CellCount} rooms";
         }
 
         internal void HandlePointerWheel(PointerWheelEventArgs e) {
-            _scene?.Camera.ProcessMouseScroll((float)e.Delta.Y);
+            if (IsOrthographic && _scene != null) {
+                _scene.OrthoSize = Math.Max(10f, _scene.OrthoSize - (float)e.Delta.Y * _scene.OrthoSize * 0.1f);
+            }
+            else {
+                _scene?.Camera.ProcessMouseScroll((float)e.Delta.Y);
+            }
         }
 
         internal void HandlePointerPressed(AvaloniaInputState inputState) {
             if (_scene?.EnvCellManager == null) return;
-
             var mouse = inputState.MouseState;
             if (!mouse.LeftPressed || mouse.RightPressed) return;
 
-            // If in placement mode and dungeon is empty, place first cell at camera target
-            if (IsPlacementMode && _pendingRoom != null) {
-                Console.WriteLine($"[Dungeon] Click in placement mode: doc={(_document != null ? "yes" : "null")}, cells={_document?.Cells.Count ?? -1}, room={_pendingRoom.DisplayName}");
-                if (_document != null && _document.Cells.Count == 0) {
-                    PlaceFirstCell();
-                    return;
-                }
-            }
+            SyncContextBeforeInput();
+            if (SelectedTool != null && SelectedTool.HandleMouseDown(mouse, EditingContext)) return;
 
-            var camera = _scene.Camera;
-            float width = camera.ScreenSize.X;
-            float height = camera.ScreenSize.Y;
-            if (width <= 0 || height <= 0) return;
-
-            float ndcX = 2.0f * mouse.Position.X / width - 1.0f;
-            float ndcY = 2.0f * mouse.Position.Y / height - 1.0f;
-
-            Matrix4x4 projection = camera.GetProjectionMatrix();
-            Matrix4x4 view = camera.GetViewMatrix();
-            if (!Matrix4x4.Invert(view * projection, out Matrix4x4 vpInverse)) return;
-
-            Vector4 nearW = Vector4.Transform(new Vector4(ndcX, ndcY, -1f, 1f), vpInverse);
-            Vector4 farW = Vector4.Transform(new Vector4(ndcX, ndcY, 1f, 1f), vpInverse);
-            nearW /= nearW.W;
-            farW /= farW.W;
-
-            var rayOrigin = new Vector3(nearW.X, nearW.Y, nearW.Z);
-            var rayDir = Vector3.Normalize(new Vector3(farW.X, farW.Y, farW.Z) - rayOrigin);
-
-            // Object placement mode
-            if (IsObjectPlacementMode && _pendingObjectId != null && _document != null) {
-                TryPlaceObject(rayOrigin, rayDir);
-                return;
-            }
-
-            // Room placement mode - snap to portal
-            if (IsPlacementMode && _pendingRoom != null && _document != null) {
-                TrySnapToPortal(rayOrigin, rayDir);
-                return;
-            }
-
-            // Normal mode: try static object raycast first, then cell raycast
-            if (!HasDungeon) return;
-
-            // 1. Raycast against static objects (AABB)
-            if (_document != null) {
-                var objHit = DungeonObjectRaycast.Raycast(rayOrigin, rayDir, _document, _scene);
-                if (objHit.Hit) {
-                    var cell = _document.GetCell(objHit.CellNumber);
-                    if (cell != null && objHit.ObjectIndex < cell.StaticObjects.Count) {
-                        bool alreadySelected = HasSelectedObject &&
-                            _selectedObjCellNum == objHit.CellNumber &&
-                            _selectedObjIndex == objHit.ObjectIndex;
-
-                        SelectObject(objHit.CellNumber, objHit.ObjectIndex,
-                            cell.StaticObjects[objHit.ObjectIndex], objHit.HitPosition);
-
-                        if (alreadySelected) {
-                            IsDraggingObject = true;
-                            _dragStartHit = objHit.HitPosition;
-                            _dragStartOrigin = cell.StaticObjects[objHit.ObjectIndex].Origin;
-                        }
-                        return;
-                    }
-                }
-            }
-
-            // 2. Raycast against cell geometry
-            var hit = _scene.EnvCellManager.Raycast(rayOrigin, rayDir);
-            if (hit.Hit) {
-                DeselectObject();
-                bool ctrlAdd = inputState.Modifiers.HasFlag(KeyModifiers.Control);
-                bool isAlreadySelected = _selectedCells.Any(c => c.CellId == hit.Cell.CellId);
-                if (ctrlAdd) {
-                    ToggleCellInSelection(hit.Cell);
-                }
-                else {
-                    SelectCell(hit.Cell);
-                }
-                if (!ctrlAdd && isAlreadySelected && _selectedCells.Count > 0 && _document != null) {
-                    var cellNum = (ushort)(hit.Cell.CellId & 0xFFFF);
-                    var dc = _document.GetCell(cellNum);
-                    if (dc != null) {
-                        IsDraggingCell = true;
-                        _dragStartHit = hit.HitPosition;
-                        _dragStartOrigin = dc.Origin;
-                    }
-                }
-            }
-            else {
-                DeselectCell();
-                DeselectObject();
+            // Legacy fallback for any unhandled cases
+            if (IsPlacementMode && _pendingRoom != null && _document != null && _document.Cells.Count == 0) {
+                PlaceFirstCell();
             }
         }
 
         internal void HandlePointerMoved(AvaloniaInputState inputState) {
             if (_scene?.EnvCellManager == null) return;
-
-            bool needsRaycast = IsDraggingCell || IsDraggingObject ||
-                (IsObjectPlacementMode && _pendingObjectId != null) ||
-                (IsPlacementMode && _pendingRoom != null) ||
-                (_document != null && HasDungeon);
-            if (!needsRaycast) return;
-
-            var mouse = inputState.MouseState;
-            var camera = _scene.Camera;
-            float width = camera.ScreenSize.X;
-            float height = camera.ScreenSize.Y;
-            if (width <= 0 || height <= 0) return;
-
-            float ndcX = 2.0f * mouse.Position.X / width - 1.0f;
-            float ndcY = 2.0f * mouse.Position.Y / height - 1.0f;
-
-            Matrix4x4 projection = camera.GetProjectionMatrix();
-            Matrix4x4 view = camera.GetViewMatrix();
-            if (!Matrix4x4.Invert(view * projection, out Matrix4x4 vpInverse)) return;
-
-            Vector4 nearW = Vector4.Transform(new Vector4(ndcX, ndcY, -1f, 1f), vpInverse);
-            Vector4 farW = Vector4.Transform(new Vector4(ndcX, ndcY, 1f, 1f), vpInverse);
-            nearW /= nearW.W;
-            farW /= farW.W;
-
-            var rayOrigin = new Vector3(nearW.X, nearW.Y, nearW.Z);
-            var rayDir = Vector3.Normalize(new Vector3(farW.X, farW.Y, farW.Z) - rayOrigin);
-
-            var hit = _scene.EnvCellManager.Raycast(rayOrigin, rayDir);
-
-            // Hover tooltip: show cell info when not dragging/placing (single line for status bar)
-            if (!IsDraggingCell && !IsDraggingObject && !IsObjectPlacementMode && !IsPlacementMode && hit.Hit) {
-                var roomName = RoomPalette?.GetRoomDisplayName(hit.Cell.EnvironmentId, (ushort)hit.Cell.GpuKey.CellStructure);
-                var roomLabel = !string.IsNullOrEmpty(roomName) ? roomName : $"Env 0x{hit.Cell.EnvironmentId:X8}";
-                HoveredCellInfo = $"0x{hit.Cell.CellId:X8}  |  {roomLabel}";
-            }
-            else {
-                HoveredCellInfo = "";
-            }
-
-            // Object placement preview: update ghost position to follow mouse
-            if (IsObjectPlacementMode && _pendingObjectId != null) {
-                if (hit.Hit) {
-                    _scene.PlacementPreview = new Shared.Documents.StaticObject {
-                        Id = _pendingObjectId.Value,
-                        IsSetup = _pendingObjectIsSetup,
-                        Origin = hit.HitPosition,
-                        Orientation = Quaternion.Identity,
-                        Scale = Vector3.One
-                    };
-                }
-                else {
-                    _scene.PlacementPreview = null;
-                }
-            }
-
-            // Room placement preview: show wireframe ghost where room would be placed
-            if (IsPlacementMode && _pendingRoom != null && _scene != null) {
-                var preview = TryComputeRoomPlacementPreview(rayOrigin, rayDir, hit);
-                if (preview.HasValue) {
-                    _scene.RoomPlacementPreview = new RoomPlacementPreviewData {
-                        Origin = preview.Value.Origin,
-                        Orientation = preview.Value.Orientation,
-                        EnvFileId = _pendingRoom.EnvironmentFileId,
-                        CellStructIndex = _pendingRoom.CellStructureIndex
-                    };
-                }
-                else {
-                    _scene.RoomPlacementPreview = null;
-                }
-            }
-
-            // Drag-to-move static object
-            if (IsDraggingObject && _document != null && hit.Hit) {
-                var cell = _document.GetCell(_selectedObjCellNum);
-                if (cell != null && _selectedObjIndex < cell.StaticObjects.Count) {
-                    // Convert world-space hit delta to landblock-local delta
-                    var worldDelta = hit.HitPosition - _dragStartHit;
-                    cell.StaticObjects[_selectedObjIndex].Origin = _dragStartOrigin + worldDelta;
-                    UpdateObjectSelectionHighlight();
-                    RefreshRendering();
-                }
-            }
-
-            // Drag-to-move cell
-            if (IsDraggingCell && _selectedCell != null && _document != null && hit.Hit) {
-                var delta = hit.HitPosition - _dragStartHit;
-                var cellNum = (ushort)(_selectedCell.CellId & 0xFFFF);
-                var dc = _document.GetCell(cellNum);
-                if (dc != null) {
-                    dc.Origin = _dragStartOrigin + delta;
-                    RefreshRendering();
-                }
-            }
+            SyncContextBeforeInput();
+            SelectedTool?.HandleMouseMove(inputState.MouseState, EditingContext);
         }
 
         internal void HandlePointerReleased(AvaloniaInputState inputState) {
-            // Finalize object drag
-            if (IsDraggingObject && _document != null) {
-                var cell = _document.GetCell(_selectedObjCellNum);
-                if (cell != null && _selectedObjIndex < cell.StaticObjects.Count) {
-                    var totalDelta = cell.StaticObjects[_selectedObjIndex].Origin - _dragStartOrigin;
-                    if (totalDelta.LengthSquared() > 0.001f) {
-                        cell.StaticObjects[_selectedObjIndex].Origin = _dragStartOrigin;
-                        CommandHistory.Execute(new MoveStaticObjectCommand(_selectedObjCellNum, _selectedObjIndex, totalDelta), _document);
-                        _document.MarkDirty();
-                        RefreshRendering();
-                        UpdateObjectSelectionHighlight();
-                        var stab = cell.StaticObjects[_selectedObjIndex];
-                        ObjPosX = stab.Origin.X.ToString("F1");
-                        ObjPosY = stab.Origin.Y.ToString("F1");
-                        ObjPosZ = stab.Origin.Z.ToString("F1");
-                        StatusText = $"Moved object 0x{stab.Id:X8}";
-                    }
-                }
-                IsDraggingObject = false;
-                return;
-            }
-
-            // Finalize cell drag
-            if (IsDraggingCell && _selectedCell != null && _document != null) {
-                var cellNum = (ushort)(_selectedCell.CellId & 0xFFFF);
-                var dc = _document.GetCell(cellNum);
-                if (dc != null) {
-                    var totalDelta = dc.Origin - _dragStartOrigin;
-                    if (totalDelta.LengthSquared() > 0.001f) {
-                        dc.Origin = _dragStartOrigin;
-                        CommandHistory.Execute(new NudgeCellCommand(cellNum, totalDelta), _document);
-                        RefreshRendering();
-                        StatusText = $"Moved cell {cellNum:X4} by ({totalDelta.X:F1}, {totalDelta.Y:F1}, {totalDelta.Z:F1})";
-                    }
-                }
-            }
-
+            SyncContextBeforeInput();
+            SelectedTool?.HandleMouseUp(inputState.MouseState, EditingContext);
             IsDraggingCell = false;
             IsDraggingObject = false;
         }
 
-        private void SelectCell(LoadedEnvCell cell) {
-            _selectedCells.Clear();
-            _selectedCells.Add(cell);
-            _selectedCell = cell;
-            HasSelectedCell = true;
-            SelectedCellCount = 1;
-            SyncSceneSelection();
-
-            SelectedCellInfo = BuildCellInfoString(cell, includeStatics: true);
-
-            var dc = _document?.GetCell((ushort)(cell.CellId & 0xFFFF));
-            if (dc != null) {
-                SelectedCellSurfaces = string.Join(", ", dc.Surfaces.Select(s => s.ToString("X4")));
-                CellPosX = dc.Origin.X.ToString("F1");
-                CellPosY = dc.Origin.Y.ToString("F1");
-                CellPosZ = dc.Origin.Z.ToString("F1");
-
-                var euler = QuatToEuler(dc.Orientation);
-                CellRotX = euler.X.ToString("F1");
-                CellRotY = euler.Y.ToString("F1");
-                CellRotZ = euler.Z.ToString("F1");
-
-                RefreshSurfaceSlots(dc);
-                SurfaceBrowser?.SetCurrentCellSurfaces(dc.Surfaces);
-            }
-            OnPropertyChanged(nameof(SelectedCellLocationHex));
-            OnPropertyChanged(nameof(SelectedCellTeleportCommand));
+        /// <summary>Push current VM state into the editing context before tool input.</summary>
+        private void SyncContextBeforeInput() {
+            EditingContext.Document = _document;
+            EditingContext.Scene = _scene;
+            EditingContext.GridSnapEnabled = GridSnapEnabled;
+            EditingContext.GridSnapSize = GridSnapSize;
         }
 
-        private void ToggleCellInSelection(LoadedEnvCell cell) {
-            var idx = _selectedCells.FindIndex(c => c.CellId == cell.CellId);
-            if (idx >= 0) {
-                _selectedCells.RemoveAt(idx);
-            }
-            else {
-                _selectedCells.Add(cell);
-            }
-            if (_selectedCells.Count == 0) {
-                DeselectCell();
-                return;
-            }
-            _selectedCell = _selectedCells[0];
-            HasSelectedCell = true;
-            SelectedCellCount = _selectedCells.Count;
-            SyncSceneSelection();
+        private void SelectCell(LoadedEnvCell cell) => Selection.SelectCell(cell);
+        private void ToggleCellInSelection(LoadedEnvCell cell) => Selection.ToggleCellInSelection(cell);
+        private void DeselectCell() => Selection.DeselectCell();
+        private void SelectObject(ushort cellNum, int objectIndex, DungeonStabData stab, Vector3 hitPosition) =>
+            Selection.SelectObject(cellNum, objectIndex, stab);
+        private void DeselectObject() => Selection.DeselectObject();
+        private void UpdateObjectSelectionHighlight(DungeonStabData? stab = null) =>
+            Selection.UpdateObjectSelectionHighlight(stab);
 
-            if (SelectedCellCount == 1) {
-                SelectedCellInfo = BuildCellInfoString(_selectedCell, includeStatics: true);
-                var dc = _document?.GetCell((ushort)(_selectedCell.CellId & 0xFFFF));
+        private void OnCellSelectionChanged(CellSelectionChangedArgs args) {
+            HasSelectedCell = true;
+            SelectedCellCount = args.Count;
+            if (args.Count == 1 && args.PrimaryCell != null) {
+                SelectedCellInfo = Selection.BuildCellInfoString(args.PrimaryCell, true, RoomPalette, _document);
+                var dc = _document?.GetCell((ushort)(args.PrimaryCell.CellId & 0xFFFF));
                 if (dc != null) {
                     SelectedCellSurfaces = string.Join(", ", dc.Surfaces.Select(s => s.ToString("X4")));
                     CellPosX = dc.Origin.X.ToString("F1");
                     CellPosY = dc.Origin.Y.ToString("F1");
                     CellPosZ = dc.Origin.Z.ToString("F1");
-                    var euler = QuatToEuler(dc.Orientation);
+                    var euler = CellEditingService.QuatToEuler(dc.Orientation);
                     CellRotX = euler.X.ToString("F1");
                     CellRotY = euler.Y.ToString("F1");
                     CellRotZ = euler.Z.ToString("F1");
@@ -592,9 +599,9 @@ namespace WorldBuilder.Editors.Dungeon {
                     SurfaceBrowser?.SetCurrentCellSurfaces(dc.Surfaces);
                 }
             }
-            else {
-                SelectedCellInfo = $"{SelectedCellCount} cells selected";
-                var primaryDc = _document?.GetCell((ushort)(_selectedCell.CellId & 0xFFFF));
+            else if (args.PrimaryCell != null) {
+                SelectedCellInfo = $"{args.Count} rooms selected";
+                var primaryDc = _document?.GetCell((ushort)(args.PrimaryCell.CellId & 0xFFFF));
                 if (primaryDc != null) {
                     SelectedCellSurfaces = string.Join(", ", primaryDc.Surfaces.Select(s => s.ToString("X4")));
                     RefreshSurfaceSlots(primaryDc);
@@ -603,213 +610,57 @@ namespace WorldBuilder.Editors.Dungeon {
                 CellPosX = ""; CellPosY = ""; CellPosZ = "";
                 CellRotX = ""; CellRotY = ""; CellRotZ = "";
             }
+            RefreshPortalList();
             OnPropertyChanged(nameof(SelectedCellLocationHex));
             OnPropertyChanged(nameof(SelectedCellTeleportCommand));
+            RefreshGraphView();
         }
 
-        private void SyncSceneSelection() {
-            if (_scene != null)
-                _scene.SelectedCells = _selectedCells.ToList();
-        }
-
-        /// <summary>AC location format: "0xCELLID [x y z] w x y z" using raw cell origin from DAT.</summary>
-        private string ComputeCellTeleportLine(LoadedEnvCell cell) {
-            var dc = _document?.GetCell((ushort)(cell.CellId & 0xFFFF));
-            if (dc == null) return $"0x{cell.CellId:X8}";
-
-            if (!Matrix4x4.Decompose(cell.WorldTransform, out _, out var q, out _))
-                q = Quaternion.Identity;
-            return $"0x{cell.CellId:X8} [{dc.Origin.X:F6} {dc.Origin.Y:F6} {dc.Origin.Z:F6}] {q.W:F6} {q.X:F6} {q.Y:F6} {q.Z:F6}";
-        }
-
-        /// <summary>Builds a human-readable cell info string, using friendly room names when available.</summary>
-        private string BuildCellInfoString(LoadedEnvCell cell, bool includeStatics) {
-            int portalCount = cell.Portals?.Count ?? 0;
-            int connectedPortals = 0;
-            if (cell.Portals != null) {
-                foreach (var p in cell.Portals) {
-                    if (p.OtherCellId != 0 && p.OtherCellId != 0xFFFF) connectedPortals++;
-                }
-            }
-
-            var roomName = RoomPalette?.GetRoomDisplayName(cell.EnvironmentId, (ushort)cell.GpuKey.CellStructure);
-            var roomLabel = !string.IsNullOrEmpty(roomName) ? roomName : $"Env 0x{cell.EnvironmentId:X8}";
-
-            var sb = new System.Text.StringBuilder();
-            sb.Append($"0x{cell.CellId:X8}  |  {roomLabel}\n");
-            sb.Append($"Portals: {connectedPortals}/{portalCount} connected  |  Surfaces: {cell.SurfaceCount}");
-            if (includeStatics && cell.Portals != null) {
-                var connected = cell.Portals
-                    .Where(p => p.OtherCellId != 0 && p.OtherCellId != 0xFFFF)
-                    .Select(p => $"0x{p.OtherCellId:X4}")
-                    .Distinct()
-                    .ToList();
-                if (connected.Count > 0) {
-                    sb.Append($"\nConnects to: {string.Join(", ", connected)}");
-                }
-            }
-            if (includeStatics) {
-                int staticCount = 0;
-                var dc = _document?.GetCell((ushort)(cell.CellId & 0xFFFF));
-                if (dc != null) staticCount = dc.StaticObjects.Count;
-                sb.Append($"\nStatics: {staticCount}");
-            }
-            return sb.ToString();
-        }
-
-        /// <summary>
-        /// Computes connection lines between portal centroids for all connected cells.
-        /// Used to visualize "what connects to what" in the 3D view.
-        /// </summary>
-        private IReadOnlyList<(Vector3 From, Vector3 To)> ComputeConnectionLines() {
-            var result = new List<(Vector3 From, Vector3 To)>();
-            if (_document == null || _dats == null || _document.Cells.Count == 0) return result;
-
-            uint lbId = _document.LandblockKey;
-            var blockX = (lbId >> 8) & 0xFF;
-            var blockY = lbId & 0xFF;
-            var lbOffset = new Vector3(blockX * 192f, blockY * 192f, 0f);
-            const float dungeonZBump = -50f;
-
-            var drawn = new HashSet<(ushort, ushort)>(); // (min, max) to avoid duplicate lines
-
-            foreach (var cell in _document.Cells) {
-                foreach (var cp in cell.CellPortals) {
-                    if (cp.OtherCellId == 0 || cp.OtherCellId == 0xFFFF) continue;
-
-                    var otherCell = _document.GetCell(cp.OtherCellId);
-                    if (otherCell == null) continue;
-
-                    var key = (Math.Min(cell.CellNumber, cp.OtherCellId), Math.Max(cell.CellNumber, cp.OtherCellId));
-                    if (drawn.Contains(key)) continue;
-                    drawn.Add(key);
-
-                    uint envFileId = (uint)(cell.EnvironmentId | 0x0D000000);
-                    if (!_dats.TryGet<DatReaderWriter.DBObjs.Environment>(envFileId, out var env) ||
-                        !env.Cells.TryGetValue(cell.CellStructure, out var cellStruct)) continue;
-
-                    var geomA = PortalSnapper.GetPortalGeometry(cellStruct, cp.PolygonId);
-                    if (geomA == null) continue;
-
-                    var worldOriginA = cell.Origin + lbOffset + new Vector3(0, 0, dungeonZBump);
-                    var (centroidA, _) = PortalSnapper.TransformPortalToWorld(geomA.Value, worldOriginA, cell.Orientation);
-
-                    uint otherEnvFileId = (uint)(otherCell.EnvironmentId | 0x0D000000);
-                    if (!_dats.TryGet<DatReaderWriter.DBObjs.Environment>(otherEnvFileId, out var otherEnv) ||
-                        !otherEnv.Cells.TryGetValue(otherCell.CellStructure, out var otherCellStruct)) continue;
-
-                    var backPortal = otherCell.CellPortals.FirstOrDefault(p => p.OtherCellId == cell.CellNumber);
-                    if (backPortal == null) continue; // no matching back-link
-
-                    var geomB = PortalSnapper.GetPortalGeometry(otherCellStruct, backPortal.PolygonId);
-                    if (geomB == null) continue;
-
-                    var worldOriginB = otherCell.Origin + lbOffset + new Vector3(0, 0, dungeonZBump);
-                    var (centroidB, _) = PortalSnapper.TransformPortalToWorld(geomB.Value, worldOriginB, otherCell.Orientation);
-
-                    result.Add((centroidA, centroidB));
-                }
-            }
-
-            return result;
-        }
-
-        private void DeselectCell() {
-            _selectedCells.Clear();
-            _selectedCell = null;
+        private void OnCellDeselected() {
             HasSelectedCell = false;
             SelectedCellCount = 0;
             SelectedCellInfo = "";
             SurfaceSlots.Clear();
+            PortalList.Clear();
             SelectedSurfaceSlot = -1;
             CellPosX = ""; CellPosY = ""; CellPosZ = "";
             CellRotX = ""; CellRotY = ""; CellRotZ = "";
-            if (_scene != null) _scene.SelectedCells = null;
             SurfaceBrowser?.SetCurrentCellSurfaces(null);
             OnPropertyChanged(nameof(SelectedCellLocationHex));
             OnPropertyChanged(nameof(SelectedCellTeleportCommand));
         }
 
-        private void SelectObject(ushort cellNum, int objectIndex, DungeonStabData stab, Vector3 hitPosition) {
-            DeselectCell();
-            DeselectObject();
-
-            _selectedObjCellNum = cellNum;
-            _selectedObjIndex = objectIndex;
+        private void OnObjectSelectionChanged(ObjectSelectionChangedArgs args) {
             HasSelectedObject = true;
-
-            bool isSetup = (stab.Id & 0xFF000000) == 0x02000000;
-            SelectedObjectInfo = $"Object 0x{stab.Id:X8}  |  Cell {cellNum:X4}\n" +
-                $"Pos: ({stab.Origin.X:F1}, {stab.Origin.Y:F1}, {stab.Origin.Z:F1})";
-
-            ObjPosX = stab.Origin.X.ToString("F1");
-            ObjPosY = stab.Origin.Y.ToString("F1");
-            ObjPosZ = stab.Origin.Z.ToString("F1");
-
-            var q = stab.Orientation;
-            float deg = MathF.Atan2(2f * (q.W * q.Z + q.X * q.Y), 1f - 2f * (q.Y * q.Y + q.Z * q.Z)) * 180f / MathF.PI;
-            ObjRotDegrees = deg.ToString("F1");
-
-            UpdateObjectSelectionHighlight(stab);
+            if (args.Stab != null) {
+                var stab = args.Stab;
+                SelectedObjectInfo = $"Object 0x{stab.Id:X8}  |  Room {args.CellNum:X4}\n" +
+                    $"Pos: ({stab.Origin.X:F1}, {stab.Origin.Y:F1}, {stab.Origin.Z:F1})";
+                ObjPosX = stab.Origin.X.ToString("F1");
+                ObjPosY = stab.Origin.Y.ToString("F1");
+                ObjPosZ = stab.Origin.Z.ToString("F1");
+                var q = stab.Orientation;
+                float deg = MathF.Atan2(2f * (q.W * q.Z + q.X * q.Y), 1f - 2f * (q.Y * q.Y + q.Z * q.Z)) * 180f / MathF.PI;
+                ObjRotDegrees = deg.ToString("F1");
+            }
         }
 
-        private void DeselectObject() {
-            _selectedObjCellNum = 0;
-            _selectedObjIndex = -1;
+        private void OnObjectDeselected() {
             HasSelectedObject = false;
             SelectedObjectInfo = "";
             ObjPosX = ""; ObjPosY = ""; ObjPosZ = "";
             ObjRotDegrees = "";
-            if (_scene != null) _scene.SelectedObjectBounds = null;
-        }
-
-        private void UpdateObjectSelectionHighlight(DungeonStabData? stab = null) {
-            if (_scene == null || _document == null) return;
-
-            if (stab == null) {
-                var cell = _document.GetCell(_selectedObjCellNum);
-                if (cell == null || _selectedObjIndex >= cell.StaticObjects.Count) {
-                    _scene.SelectedObjectBounds = null;
-                    return;
-                }
-                stab = cell.StaticObjects[_selectedObjIndex];
-            }
-
-            bool isSetup = (stab.Id & 0xFF000000) == 0x02000000;
-            var bounds = _scene.GetObjectBounds(stab.Id, isSetup);
-            if (bounds == null) { _scene.SelectedObjectBounds = null; return; }
-
-            uint lbId = _document.LandblockKey;
-            var blockX = (lbId >> 8) & 0xFF;
-            var blockY = lbId & 0xFF;
-            var lbOffset = new Vector3(blockX * 192f, blockY * 192f, 0f);
-
-            var worldOrigin = stab.Origin + lbOffset;
-            worldOrigin.Z += -50f;
-
-            var worldTransform = Matrix4x4.CreateFromQuaternion(stab.Orientation)
-                * Matrix4x4.CreateTranslation(worldOrigin);
-
-            var worldMin = Vector3.Transform(bounds.Value.Min, worldTransform);
-            var worldMax = Vector3.Transform(bounds.Value.Max, worldTransform);
-
-            _scene.SelectedObjectBounds = (Vector3.Min(worldMin, worldMax), Vector3.Max(worldMin, worldMax));
         }
 
         #region Cell Editing
 
         [RelayCommand]
         private void DeleteSelectedCell() {
-            if (_selectedCells.Count == 0 || _document == null) return;
-
-            var toRemove = _selectedCells.Select(c => (ushort)(c.CellId & 0xFFFF)).ToList();
-            DeselectCell();
-            foreach (var cellNum in toRemove) {
-                CommandHistory.Execute(new RemoveCellCommand(cellNum), _document);
-            }
+            var result = CellEditing.DeleteSelectedCells();
+            if (result == null) return;
             RefreshRendering();
-            CellCount = _document.Cells.Count;
-            StatusText = $"LB {_document.LandblockKey:X4}: removed {toRemove.Count} cell(s), {CellCount} remaining";
+            CellCount = result.Value.remaining;
+            StatusText = $"Removed {result.Value.removed} room(s), {CellCount} remaining";
         }
 
         [RelayCommand] private void NudgeCellXPos() => NudgeSelectedCell(new Vector3(NudgeStep, 0, 0));
@@ -829,307 +680,102 @@ namespace WorldBuilder.Editors.Dungeon {
         [RelayCommand] private void RotateCellZ45Neg() => RotateSelectedCell(-45, Vector3.UnitZ);
 
         private void RotateSelectedCell(float degrees, Vector3 axis) {
-            if (_selectedCell == null || _document == null) return;
-            var cellNum = (ushort)(_selectedCell.CellId & 0xFFFF);
-            CommandHistory.Execute(new RotateCellCommand(cellNum, degrees, axis), _document);
+            CellEditing.RotateSelectedCell(degrees, axis);
             RefreshRendering();
             _needsCameraFocus = false;
         }
 
         private void NudgeSelectedCell(Vector3 offset) {
-            if (_selectedCell == null || _document == null) return;
-            var cellNum = (ushort)(_selectedCell.CellId & 0xFFFF);
-            CommandHistory.Execute(new NudgeCellCommand(cellNum, offset), _document);
+            CellEditing.NudgeSelectedCell(offset);
             RefreshRendering();
             _needsCameraFocus = false;
         }
 
         [RelayCommand]
         private void ApplyPosition() {
-            if (_selectedCell == null || _document == null) return;
-            if (!float.TryParse(CellPosX, out var x) || !float.TryParse(CellPosY, out var y) || !float.TryParse(CellPosZ, out var z)) {
-                StatusText = "Invalid position values";
-                return;
-            }
-            var cellNum = (ushort)(_selectedCell.CellId & 0xFFFF);
-            var dc = _document.GetCell(cellNum);
-            if (dc == null) return;
-            var delta = new Vector3(x, y, z) - dc.Origin;
-            if (delta.LengthSquared() < 0.001f) return;
-            CommandHistory.Execute(new NudgeCellCommand(cellNum, delta), _document);
-            RefreshRendering();
-            StatusText = $"Cell {cellNum:X4} moved to ({x:F1}, {y:F1}, {z:F1})";
+            var status = CellEditing.ApplyPosition(CellPosX, CellPosY, CellPosZ);
+            if (status != null) { RefreshRendering(); StatusText = status; }
         }
 
         [RelayCommand]
         private void ApplyRotation() {
-            if (_selectedCell == null || _document == null) return;
-            if (!float.TryParse(CellRotX, out var rx) || !float.TryParse(CellRotY, out var ry) || !float.TryParse(CellRotZ, out var rz)) {
-                StatusText = "Invalid rotation values";
-                return;
-            }
-            var cellNum = (ushort)(_selectedCell.CellId & 0xFFFF);
-            var dc = _document.GetCell(cellNum);
-            if (dc == null) return;
-
-            var targetQuat = EulerToQuat(new Vector3(rx, ry, rz));
-            dc.Orientation = targetQuat;
-            _document.MarkDirty();
-            RefreshRendering();
-            StatusText = $"Cell {cellNum:X4} rotation set to ({rx:F1}, {ry:F1}, {rz:F1})";
-        }
-
-        private static Vector3 QuatToEuler(Quaternion q) {
-            // ZYX Euler angles (yaw/pitch/roll) in degrees
-            float sinr = 2f * (q.W * q.X + q.Y * q.Z);
-            float cosr = 1f - 2f * (q.X * q.X + q.Y * q.Y);
-            float rx = MathF.Atan2(sinr, cosr) * 180f / MathF.PI;
-
-            float sinp = 2f * (q.W * q.Y - q.Z * q.X);
-            float ry = MathF.Abs(sinp) >= 1f
-                ? MathF.CopySign(90f, sinp)
-                : MathF.Asin(sinp) * 180f / MathF.PI;
-
-            float siny = 2f * (q.W * q.Z + q.X * q.Y);
-            float cosy = 1f - 2f * (q.Y * q.Y + q.Z * q.Z);
-            float rz = MathF.Atan2(siny, cosy) * 180f / MathF.PI;
-
-            return new Vector3(rx, ry, rz);
-        }
-
-        private static Quaternion EulerToQuat(Vector3 eulerDeg) {
-            float rx = eulerDeg.X * MathF.PI / 180f;
-            float ry = eulerDeg.Y * MathF.PI / 180f;
-            float rz = eulerDeg.Z * MathF.PI / 180f;
-            return Quaternion.Normalize(
-                Quaternion.CreateFromAxisAngle(Vector3.UnitZ, rz) *
-                Quaternion.CreateFromAxisAngle(Vector3.UnitY, ry) *
-                Quaternion.CreateFromAxisAngle(Vector3.UnitX, rx));
+            var status = CellEditing.ApplyRotation(CellRotX, CellRotY, CellRotZ);
+            if (status != null) { RefreshRendering(); StatusText = status; }
         }
 
         [ObservableProperty] private string _selectedCellSurfaces = "";
 
         private void RefreshSurfaceSlots(DungeonCellData dc) {
-            var slots = new List<CellSurfaceSlot>(dc.Surfaces.Count);
-            for (int i = 0; i < dc.Surfaces.Count; i++) {
-                var surfId = dc.Surfaces[i];
-                var fullId = (uint)(surfId | 0x08000000);
-                var slot = new CellSurfaceSlot(i, surfId, $"Slot {i}: 0x{surfId:X4}");
-
-                var localSlot = slot;
-                var localDats = _dats;
-                if (localDats != null) {
-                    System.Threading.Tasks.Task.Run(() => {
-                        var thumb = SurfaceBrowserViewModel.CreateBitmap(
-                            GenerateSmallSurfaceThumb(localDats, fullId), 32, 32);
-                        Avalonia.Threading.Dispatcher.UIThread.Post(() => localSlot.Thumbnail = thumb);
-                    });
-                }
-                slots.Add(slot);
-            }
+            var slots = CellEditing.BuildSurfaceSlots(dc);
             SurfaceSlots = new ObservableCollection<CellSurfaceSlot>(slots);
             if (SurfaceSlots.Count > 0) SelectedSurfaceSlot = 0;
         }
 
-        private static byte[] GenerateSmallSurfaceThumb(IDatReaderWriter dats, uint surfaceId) {
-            const int sz = 32;
-            try {
-                if (!dats.TryGet<Surface>(surfaceId, out var surface))
-                    return CreateFallbackThumb(sz);
-                if (surface.Type.HasFlag(SurfaceType.Base1Solid))
-                    return TextureHelpers.CreateSolidColorTexture(surface.ColorValue, sz, sz);
-                if (!dats.TryGet<SurfaceTexture>(surface.OrigTextureId, out var surfTex) ||
-                    surfTex.Textures?.Any() != true)
-                    return CreateFallbackThumb(sz);
-                var rsId = surfTex.Textures.Last();
-                if (!dats.TryGet<RenderSurface>(rsId, out var rs))
-                    return CreateFallbackThumb(sz);
-                if (rs.Format == DatReaderWriter.Enums.PixelFormat.PFID_A8R8G8B8 && rs.SourceData.Length >= sz * sz * 4) {
-                    var downsampled = SurfaceBrowserViewModel.DownsampleNearest(rs.SourceData, rs.Width, rs.Height, sz, sz);
-                    return DatIconLoader.SwizzleBgraToRgba(downsampled, sz * sz);
-                }
-            }
-            catch { }
-            return CreateFallbackThumb(sz);
-        }
-
-        private static byte[] CreateFallbackThumb(int sz) {
-            var data = new byte[sz * sz * 4];
-            for (int i = 0; i < data.Length; i += 4) {
-                data[i] = 60; data[i + 1] = 40; data[i + 2] = 80; data[i + 3] = 255;
-            }
-            return data;
-        }
-
         [RelayCommand]
         private void ApplySurfaces() {
-            if (_selectedCells.Count == 0 || _document == null) return;
-
-            var newSurfaces = new List<ushort>();
-            foreach (var part in SelectedCellSurfaces.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)) {
-                var hex = part.TrimStart('0', 'x', 'X');
-                if (string.IsNullOrEmpty(hex)) hex = "0";
-                if (ushort.TryParse(hex, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var surfId))
-                    newSurfaces.Add(surfId);
-            }
-
-            if (newSurfaces.Count == 0) return;
-
-            int updated = 0;
-            foreach (var cell in _selectedCells) {
-                var cellNum = (ushort)(cell.CellId & 0xFFFF);
-                var dc = _document.GetCell(cellNum);
-                if (dc == null) continue;
-                dc.Surfaces.Clear();
-                dc.Surfaces.AddRange(newSurfaces);
-                updated++;
-            }
-            if (updated > 0) {
-                _document.MarkDirty();
-                RefreshRendering();
-                StatusText = $"Updated surfaces on {updated} cell(s)";
-            }
+            var status = CellEditing.ApplySurfaces(SelectedCellSurfaces);
+            if (status != null) { RefreshRendering(); StatusText = status; }
         }
 
         private void OnSurfaceSelected(object? sender, ushort surfaceId) {
-            if (_selectedCells.Count == 0 || _document == null) {
-                StatusText = "Select a cell first, then pick a surface";
-                return;
-            }
-
-            int updated = 0;
-            int slotIdx = SelectedSurfaceSlot;
-            foreach (var cell in _selectedCells) {
-                var cellNum = (ushort)(cell.CellId & 0xFFFF);
-                var dc = _document.GetCell(cellNum);
-                if (dc == null) continue;
-
-                if (slotIdx >= 0 && slotIdx < dc.Surfaces.Count) {
-                    dc.Surfaces[slotIdx] = surfaceId;
-                }
-                else {
-                    for (int i = 0; i < dc.Surfaces.Count; i++)
-                        dc.Surfaces[i] = surfaceId;
-                    if (dc.Surfaces.Count == 0)
-                        dc.Surfaces.Add(surfaceId);
-                }
-                updated++;
-            }
-
-            _document.MarkDirty();
+            var (status, surfText, primaryDc) = CellEditing.ApplySurfaceFromBrowser(surfaceId, SelectedSurfaceSlot);
             RefreshRendering();
-            var primaryDc = _document.GetCell((ushort)(_selectedCell!.CellId & 0xFFFF));
-            if (primaryDc != null) {
-                SelectedCellSurfaces = string.Join(", ", primaryDc.Surfaces.Select(s => s.ToString("X4")));
-                RefreshSurfaceSlots(primaryDc);
-            }
-            StatusText = slotIdx >= 0
-                ? $"Slot {slotIdx}: applied 0x{surfaceId:X4} to {updated} cell(s)"
-                : $"Applied 0x{surfaceId:X4} to all slots on {updated} cell(s)";
+            if (surfText != null) SelectedCellSurfaces = surfText;
+            if (primaryDc != null) RefreshSurfaceSlots(primaryDc);
+            StatusText = status;
         }
 
         [RelayCommand]
         private void DisconnectPortal() {
-            if (_selectedCell == null || _document == null) return;
-
-            var cellNum = (ushort)(_selectedCell.CellId & 0xFFFF);
-            var dc = _document.GetCell(cellNum);
-            if (dc == null || dc.CellPortals.Count == 0) return;
-
-            var lastPortal = dc.CellPortals[^1];
-            var otherCellNum = lastPortal.OtherCellId;
-
-            dc.CellPortals.RemoveAt(dc.CellPortals.Count - 1);
-
-            var otherCell = _document.GetCell(otherCellNum);
-            if (otherCell != null) {
-                otherCell.CellPortals.RemoveAll(cp => cp.OtherCellId == cellNum);
-            }
-
-            _document.MarkDirty();
+            CellEditing.DisconnectLastPortal();
             RefreshRendering();
-            SelectCell(_selectedCell);
+            if (Selection.SelectedCell != null) SelectCell(Selection.SelectedCell);
+        }
+
+        [RelayCommand]
+        private void DisconnectPortalAt(int index) {
+            CellEditing.DisconnectPortalAt(index);
+            RefreshRendering();
+            if (Selection.SelectedCell != null) SelectCell(Selection.SelectedCell);
+        }
+
+        private void RefreshPortalList() {
+            PortalList.Clear();
+            foreach (var entry in CellEditing.BuildPortalList())
+                PortalList.Add(entry);
+        }
+
+        internal List<(string Label, Action Action, bool IsEnabled)> GetCellContextMenuItems(Vector3 rayOrigin, Vector3 rayDir) {
+            return CellEditing.GetCellContextMenuItems(rayOrigin, rayDir,
+                deleteAction: () => { DeleteSelectedCellCommand.Execute(null); },
+                favoriteAction: () => { FavoriteSelectedRoomCommand.Execute(null); });
         }
 
         internal void CopySelectedCells() {
-            if (_selectedCells.Count == 0 || _document == null) {
-                Console.WriteLine($"[Dungeon] Copy: nothing to copy (selected={_selectedCells.Count}, doc={(_document != null ? "yes" : "null")})");
-                return;
-            }
-
-            _cellClipboard = new List<DungeonCellData>();
-            foreach (var cell in _selectedCells) {
-                var cellNum = (ushort)(cell.CellId & 0xFFFF);
-                var dc = _document.GetCell(cellNum);
-                if (dc == null) continue;
-                _cellClipboard.Add(DeepCloneCell(dc));
-            }
-            Console.WriteLine($"[Dungeon] Copied {_cellClipboard.Count} cell(s) to clipboard");
-            StatusText = $"Copied {_cellClipboard.Count} cell(s)";
+            var status = CellEditing.CopySelectedCells();
+            if (status != null) StatusText = status;
         }
 
         internal void PasteCells() {
-            Console.WriteLine($"[Dungeon] Paste: clipboard={_cellClipboard?.Count ?? 0}, doc={(_document != null ? "yes" : "null")}");
-            if (_cellClipboard == null || _cellClipboard.Count == 0 || _document == null) return;
-
-            var offset = new Vector3(10f, 0f, 0f);
-            var cmd = new PasteCellsCommand(_cellClipboard, offset);
-            CommandHistory.Execute(cmd, _document);
-
+            var result = CellEditing.PasteCells();
+            if (result == null) return;
             RefreshRendering();
-            CellCount = _document.Cells.Count;
-            StatusText = $"Pasted {_cellClipboard.Count} cell(s)";
+            CellCount = _document?.Cells.Count ?? 0;
+            StatusText = result.Value.status;
 
-            // Auto-select the pasted cells
             DeselectCell();
-            if (_scene?.EnvCellManager != null) {
+            if (_scene?.EnvCellManager != null && _document != null) {
                 uint lbId = _document.LandblockKey;
-                foreach (var newCellNum in cmd.CreatedCellNums) {
+                LoadedEnvCell? first = null;
+                foreach (var newCellNum in result.Value.createdNums) {
                     uint fullId = ((uint)lbId << 16) | newCellNum;
                     var loaded = _scene.EnvCellManager.FindCell(fullId);
-                    if (loaded != null)
-                        _selectedCells.Add(loaded);
-                }
-                if (_selectedCells.Count > 0) {
-                    _selectedCell = _selectedCells[0];
-                    HasSelectedCell = true;
-                    SelectedCellCount = _selectedCells.Count;
-                    SyncSceneSelection();
-                    SelectedCellInfo = SelectedCellCount == 1
-                        ? BuildCellInfoString(_selectedCell, includeStatics: true)
-                        : $"{SelectedCellCount} cells selected";
+                    if (loaded != null) {
+                        if (first == null) { first = loaded; Selection.SelectCell(loaded); }
+                        else Selection.ToggleCellInSelection(loaded);
+                    }
                 }
             }
-        }
-
-        private static DungeonCellData DeepCloneCell(DungeonCellData src) {
-            var clone = new DungeonCellData {
-                CellNumber = src.CellNumber,
-                EnvironmentId = src.EnvironmentId,
-                CellStructure = src.CellStructure,
-                Origin = src.Origin,
-                Orientation = src.Orientation,
-                Flags = src.Flags,
-                RestrictionObj = src.RestrictionObj,
-            };
-            clone.Surfaces.AddRange(src.Surfaces);
-            foreach (var cp in src.CellPortals) {
-                clone.CellPortals.Add(new DungeonCellPortalData {
-                    OtherCellId = cp.OtherCellId,
-                    PolygonId = cp.PolygonId,
-                    OtherPortalId = cp.OtherPortalId,
-                    Flags = cp.Flags
-                });
-            }
-            clone.VisibleCells.AddRange(src.VisibleCells);
-            foreach (var stab in src.StaticObjects) {
-                clone.StaticObjects.Add(new DungeonStabData {
-                    Id = stab.Id,
-                    Origin = stab.Origin,
-                    Orientation = stab.Orientation
-                });
-            }
-            return clone;
         }
 
         #endregion
@@ -1149,18 +795,14 @@ namespace WorldBuilder.Editors.Dungeon {
         [RelayCommand] private void RotateObjCCW() => RotateSelectedObject(90);
 
         private void NudgeSelectedObject(Vector3 offset) {
-            if (!HasSelectedObject || _document == null) return;
-            CommandHistory.Execute(new MoveStaticObjectCommand(_selectedObjCellNum, _selectedObjIndex, offset), _document);
-            _document.MarkDirty();
+            ObjectEditing.NudgeSelectedObject(offset);
             RefreshRendering();
             UpdateObjectSelectionHighlight();
             RefreshSelectedObjectFields();
         }
 
         private void RotateSelectedObject(float degrees) {
-            if (!HasSelectedObject || _document == null) return;
-            CommandHistory.Execute(new RotateStaticObjectCommand(_selectedObjCellNum, _selectedObjIndex, degrees), _document);
-            _document.MarkDirty();
+            ObjectEditing.RotateSelectedObject(degrees);
             RefreshRendering();
             UpdateObjectSelectionHighlight();
             RefreshSelectedObjectFields();
@@ -1168,9 +810,7 @@ namespace WorldBuilder.Editors.Dungeon {
 
         [RelayCommand]
         private void DeleteSelectedObject() {
-            if (!HasSelectedObject || _document == null) return;
-            CommandHistory.Execute(new DeleteStaticObjectCommand(_selectedObjCellNum, _selectedObjIndex), _document);
-            _document.MarkDirty();
+            ObjectEditing.DeleteSelectedObject();
             DeselectObject();
             RefreshRendering();
             StatusText = "Object deleted";
@@ -1178,57 +818,34 @@ namespace WorldBuilder.Editors.Dungeon {
 
         [RelayCommand]
         private void ApplyObjPosition() {
-            if (!HasSelectedObject || _document == null) return;
-            if (!float.TryParse(ObjPosX, out var x) || !float.TryParse(ObjPosY, out var y) || !float.TryParse(ObjPosZ, out var z)) {
-                StatusText = "Invalid position values";
-                return;
+            var status = ObjectEditing.ApplyObjPosition(ObjPosX, ObjPosY, ObjPosZ);
+            if (status != null) {
+                RefreshRendering();
+                UpdateObjectSelectionHighlight();
+                RefreshSelectedObjectFields();
+                StatusText = status;
             }
-            var cell = _document.GetCell(_selectedObjCellNum);
-            if (cell == null || _selectedObjIndex >= cell.StaticObjects.Count) return;
-            var delta = new Vector3(x, y, z) - cell.StaticObjects[_selectedObjIndex].Origin;
-            if (delta.LengthSquared() < 0.001f) return;
-            CommandHistory.Execute(new MoveStaticObjectCommand(_selectedObjCellNum, _selectedObjIndex, delta), _document);
-            _document.MarkDirty();
-            RefreshRendering();
-            UpdateObjectSelectionHighlight();
-            RefreshSelectedObjectFields();
-            StatusText = $"Object moved to ({x:F1}, {y:F1}, {z:F1})";
         }
 
         [RelayCommand]
         private void ApplyObjRotation() {
-            if (!HasSelectedObject || _document == null) return;
-            if (!float.TryParse(ObjRotDegrees, out var targetDeg)) {
-                StatusText = "Invalid rotation value";
-                return;
+            var status = ObjectEditing.ApplyObjRotation(ObjRotDegrees);
+            if (status != null) {
+                RefreshRendering();
+                UpdateObjectSelectionHighlight();
+                RefreshSelectedObjectFields();
+                StatusText = status;
             }
-            var cell = _document.GetCell(_selectedObjCellNum);
-            if (cell == null || _selectedObjIndex >= cell.StaticObjects.Count) return;
-            var q = cell.StaticObjects[_selectedObjIndex].Orientation;
-            float currentDeg = MathF.Atan2(2f * (q.W * q.Z + q.X * q.Y), 1f - 2f * (q.Y * q.Y + q.Z * q.Z)) * 180f / MathF.PI;
-            float delta = targetDeg - currentDeg;
-            if (MathF.Abs(delta) < 0.01f) return;
-            CommandHistory.Execute(new RotateStaticObjectCommand(_selectedObjCellNum, _selectedObjIndex, delta), _document);
-            _document.MarkDirty();
-            RefreshRendering();
-            UpdateObjectSelectionHighlight();
-            RefreshSelectedObjectFields();
-            StatusText = $"Object rotated to {targetDeg:F1} deg";
         }
 
         private void RefreshSelectedObjectFields() {
-            if (!HasSelectedObject || _document == null) return;
-            var cell = _document.GetCell(_selectedObjCellNum);
-            if (cell == null || _selectedObjIndex >= cell.StaticObjects.Count) return;
-            var stab = cell.StaticObjects[_selectedObjIndex];
-            ObjPosX = stab.Origin.X.ToString("F1");
-            ObjPosY = stab.Origin.Y.ToString("F1");
-            ObjPosZ = stab.Origin.Z.ToString("F1");
-            var q = stab.Orientation;
-            float deg = MathF.Atan2(2f * (q.W * q.Z + q.X * q.Y), 1f - 2f * (q.Y * q.Y + q.Z * q.Z)) * 180f / MathF.PI;
-            ObjRotDegrees = deg.ToString("F1");
-            SelectedObjectInfo = $"Object 0x{stab.Id:X8}  |  Cell {_selectedObjCellNum:X4}\n" +
-                $"Pos: ({stab.Origin.X:F1}, {stab.Origin.Y:F1}, {stab.Origin.Z:F1})";
+            var fields = ObjectEditing.GetSelectedObjectFields();
+            if (fields == null) return;
+            ObjPosX = fields.Value.px;
+            ObjPosY = fields.Value.py;
+            ObjPosZ = fields.Value.pz;
+            ObjRotDegrees = fields.Value.rot;
+            SelectedObjectInfo = fields.Value.info;
         }
 
         #endregion
@@ -1236,75 +853,50 @@ namespace WorldBuilder.Editors.Dungeon {
         #region Object Placement
 
         private void OnObjectPlacementRequested(object? sender, Landscape.ViewModels.ObjectBrowserItem item) {
-            _pendingObjectId = item.Id;
-            _pendingObjectIsSetup = item.IsSetup;
+            ObjectEditing.SetPendingObject(item.Id, item.IsSetup);
             IsObjectPlacementMode = true;
             PlacementStatusText = $"Click in viewport to place 0x{item.Id:X8}";
             _scene?.WarmupModel(item.Id, item.IsSetup);
+
+            var objTool = Tools.OfType<ObjectPlacementTool>().FirstOrDefault();
+            if (objTool != null) {
+                objTool.SetObject(item.Id, item.IsSetup);
+                if (SelectedTool != objTool) SelectTool(objTool);
+            }
         }
 
         [RelayCommand]
         private void StartObjectPlacement() {
-            if (string.IsNullOrWhiteSpace(ObjectIdInput)) return;
+            var objId = ObjectEditing.ParseObjectId(ObjectIdInput);
+            if (objId == null) { StatusText = "Invalid object ID"; return; }
 
-            var hex = ObjectIdInput.Trim();
-            if (hex.StartsWith("0x", StringComparison.OrdinalIgnoreCase)) hex = hex[2..];
-            if (!uint.TryParse(hex, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var objId)) {
-                StatusText = "Invalid object ID";
-                return;
-            }
-
-            _pendingObjectId = objId;
-            _pendingObjectIsSetup = (objId & 0xFF000000) == 0x02000000;
+            bool isSetup = (objId.Value & 0xFF000000) == 0x02000000;
+            ObjectEditing.SetPendingObject(objId.Value, isSetup);
             IsObjectPlacementMode = true;
-            PlacementStatusText = $"Click in viewport to place object 0x{objId:X8}";
-            _scene?.WarmupModel(objId, _pendingObjectIsSetup);
+            PlacementStatusText = $"Click in viewport to place object 0x{objId.Value:X8}";
+            _scene?.WarmupModel(objId.Value, isSetup);
+
+            var objTool = Tools.OfType<ObjectPlacementTool>().FirstOrDefault();
+            if (objTool != null) {
+                objTool.SetObject(objId.Value, isSetup);
+                if (SelectedTool != objTool) SelectTool(objTool);
+            }
         }
 
         [RelayCommand]
         private void CancelObjectPlacement() {
-            _pendingObjectId = null;
+            ObjectEditing.ClearPendingObject();
             IsObjectPlacementMode = false;
             if (_scene != null) _scene.PlacementPreview = null;
             if (!IsPlacementMode) PlacementStatusText = "";
         }
 
-        private uint? _pendingObjectId;
-        private bool _pendingObjectIsSetup;
-
         private void TryPlaceObject(Vector3 rayOrigin, Vector3 rayDir) {
-            if (_pendingObjectId == null || _document == null || _scene == null) return;
-
-            var hit = _scene.EnvCellManager?.Raycast(rayOrigin, rayDir);
-            if (hit == null || !hit.Value.Hit) return;
-
-            var targetCell = hit.Value.Cell;
-            var cellNum = (ushort)(targetCell.CellId & 0xFFFF);
-            var dc = _document.GetCell(cellNum);
-            if (dc == null) return;
-
-            // Convert world-space hit position to landblock-local coordinates
-            uint lbId = _document.LandblockKey;
-            var blockX = (lbId >> 8) & 0xFF;
-            var blockY = lbId & 0xFF;
-            var lbOffset = new Vector3(blockX * 192f, blockY * 192f, 0f);
-
-            var localOrigin = hit.Value.HitPosition - lbOffset;
-            localOrigin.Z += 50f; // Reverse the dungeon depth offset
-
-            dc.StaticObjects.Add(new DungeonStabData {
-                Id = _pendingObjectId.Value,
-                Origin = localOrigin,
-                Orientation = Quaternion.Identity
-            });
-
-            _document.MarkDirty();
-            RefreshRendering();
-            StatusText = $"Placed 0x{_pendingObjectId.Value:X8} in cell {cellNum:X4}";
-
-            // Stay in placement mode so user can place multiple objects
-            // but clear the preview momentarily (it'll reappear on next mouse move)
-            if (_scene != null) _scene.PlacementPreview = null;
+            var status = ObjectEditing.TryPlaceObject(rayOrigin, rayDir);
+            if (status != null) {
+                RefreshRendering();
+                StatusText = status;
+            }
         }
 
         #endregion
@@ -1314,33 +906,160 @@ namespace WorldBuilder.Editors.Dungeon {
         private RoomEntry? _pendingRoom;
 
         private void OnRoomSelected(object? sender, RoomEntry room) {
-            if (_document == null) {
-                EnsureDocument();
+            if (_document == null) EnsureDocument();
+            HasDungeon = true;
+            EditingContext.Document = _document;
+
+            // Activate the RoomPlacementTool and set the pending room
+            var roomTool = Tools.OfType<RoomPlacementTool>().FirstOrDefault();
+            if (roomTool != null) {
+                roomTool.SetRoom(room);
+                if (SelectedTool != roomTool) SelectTool(roomTool);
             }
 
             _pendingRoom = room;
             IsPlacementMode = true;
+            PlacementStatusText = roomTool?.StatusText ?? $"Placing: {room.DisplayName}";
+            if (_scene != null) _scene.IsInPlacementMode = true;
+        }
 
-            if (_document!.Cells.Count == 0) {
-                PlacementStatusText = $"Click anywhere in viewport to place '{room.DisplayName}' as first cell";
-                Console.WriteLine($"[Dungeon] Room selected: {room.DisplayName} (Env=0x{room.EnvironmentId:X4}, Struct={room.CellStructureIndex}) - FIRST CELL mode");
+        private bool _hoverCameraFocused;
+
+        private void OnPrefabHoverChanged(object? sender, DungeonPrefab? prefab) {
+            if (_scene == null || _dats == null) return;
+
+            if (prefab == null) {
+                _scene.ClearPreview();
+                return;
+            }
+
+            var previewOrigin = Vector3.Zero;
+            if (_document != null && _document.Cells.Count > 0) {
+                float avgX = _document.Cells.Average(c => c.Origin.X);
+                float avgY = _document.Cells.Average(c => c.Origin.Y);
+                float avgZ = _document.Cells.Average(c => c.Origin.Z);
+                previewOrigin = new Vector3(avgX + 30f, avgY, avgZ);
+            }
+
+            var previewCells = EditingContext.BuildPrefabEnvCells(prefab, previewOrigin, Quaternion.Identity);
+
+            if (previewCells.Count > 0) {
+                _scene.PreviewEnvCells = previewCells;
+
+                if (!_hoverCameraFocused) {
+                    var worldOrigin = previewCells[0].Position.Origin;
+                    uint lbId = _document?.LandblockKey ?? 0;
+                    float bx = ((lbId >> 8) & 0xFF) * 192f;
+                    float by = (lbId & 0xFF) * 192f;
+                    var worldPos = new Vector3(bx + worldOrigin.X, by + worldOrigin.Y, worldOrigin.Z - 50f);
+                    _scene.Camera.SetPosition(worldPos + new Vector3(0, -30f, 15f));
+                    _scene.Camera.LookAt(worldPos);
+                    _hoverCameraFocused = true;
+                }
+            }
+        }
+
+        private void OnPrefabSelected(object? sender, DungeonPrefab prefab) {
+            if (_document == null) EnsureDocument();
+            HasDungeon = true;
+            EditingContext.Document = _document;
+
+            var roomTool = Tools.OfType<RoomPlacementTool>().FirstOrDefault();
+            if (roomTool != null) {
+                roomTool.SetPrefab(prefab);
+                if (SelectedTool != roomTool) SelectTool(roomTool);
+                var name = !string.IsNullOrEmpty(prefab.DisplayName) ? prefab.DisplayName : $"Prefab ({prefab.Cells.Count} cells)";
+                PlacementStatusText = $"Placing: {name}";
+                IsPlacementMode = true;
+                if (_scene != null) _scene.IsInPlacementMode = true;
+            }
+        }
+
+        [RelayCommand]
+        private void FavoriteSelectedRoom() {
+            if (Selection.SelectedCell == null || _document == null || RoomPalette == null) return;
+            var cellNum = (ushort)(Selection.SelectedCell.CellId & 0xFFFF);
+            var dc = _document.GetCell(cellNum);
+            if (dc == null) return;
+
+            uint envFileId = (uint)(dc.EnvironmentId | 0x0D000000);
+            var room = RoomPalette.GetAllRooms().FirstOrDefault(r =>
+                r.EnvironmentFileId == envFileId && r.CellStructureIndex == dc.CellStructure);
+            if (room != null) {
+                RoomPalette.ToggleFavorite(room);
+                StatusText = room.IsFavorite
+                    ? $"Added to favorites: Env 0x{dc.EnvironmentId:X4} / #{dc.CellStructure}"
+                    : $"Removed from favorites: Env 0x{dc.EnvironmentId:X4} / #{dc.CellStructure}";
             }
             else {
-                // Count cells with open portals to give useful feedback
-                int openCount = 0;
-                if (_dats != null) {
-                    foreach (var c in _document.Cells) {
-                        uint envFileId = (uint)(c.EnvironmentId | 0x0D000000);
-                        if (!_dats.TryGet<DatReaderWriter.DBObjs.Environment>(envFileId, out var env)) continue;
-                        if (!env.Cells.TryGetValue(c.CellStructure, out var cs)) continue;
-                        var portalIds = PortalSnapper.GetPortalPolygonIds(cs);
-                        var connectedIds = new HashSet<ushort>(c.CellPortals.Select(cp => (ushort)cp.PolygonId));
-                        if (portalIds.Any(p => !connectedIds.Contains(p))) openCount++;
-                    }
-                }
-                PlacementStatusText = $"Click a cell surface with an open portal ({openCount} cells have open portals)";
-                Console.WriteLine($"[Dungeon] Room selected: {room.DisplayName} - PORTAL SNAP ({openCount} cells with open portals out of {_document.Cells.Count})");
+                StatusText = $"Room type not found in palette";
             }
+        }
+
+        [RelayCommand]
+        private void ComputeVisibility() {
+            if (_document == null || _document.Cells.Count == 0) {
+                StatusText = "No rooms to compute visibility for.  Add rooms first.";
+                return;
+            }
+            int updated = _document.ComputeVisibleCells();
+            StatusText = $"Computed visibility for {updated}/{_document.Cells.Count} rooms";
+            Console.WriteLine($"[Dungeon] ComputeVisibility: updated {updated}/{_document.Cells.Count} cells");
+        }
+
+        [RelayCommand]
+        private void ValidateDungeon() {
+            if (_document == null || _document.Cells.Count == 0) {
+                StatusText = "No dungeon to validate";
+                return;
+            }
+            var results = _document.ValidateComprehensive();
+            ShowValidationDialog(results);
+        }
+
+        private void ShowValidationDialog(List<DungeonDocument.ValidationResult> results) {
+            var errors = results.Count(r => r.Severity == DungeonDocument.ValidationSeverity.Error);
+            var warnings = results.Count(r => r.Severity == DungeonDocument.ValidationSeverity.Warning);
+            StatusText = errors > 0 ? $"Validation: {errors} error(s), {warnings} warning(s)"
+                : warnings > 0 ? $"Validation: {warnings} warning(s)"
+                : "Validation: All clear";
+
+            Dialogs.ShowValidationDialog(results, SelectCellByNumber,
+                autoFixPortals: () => {
+                    if (_document == null) return;
+                    int fixed_ = _document.AutoFixPortals();
+                    RefreshRendering();
+                    StatusText = $"Auto-fixed {fixed_} one-way portal(s)";
+                },
+                computeVisibility: () => ComputeVisibility());
+        }
+
+        private void SelectCellByNumber(ushort cellNum) {
+            if (_scene?.EnvCellManager == null || _document == null) return;
+            var lbKey = _document.LandblockKey;
+            var cells = _scene.EnvCellManager.GetLoadedCellsForLandblock(lbKey);
+            if (cells == null) return;
+            var loaded = cells.FirstOrDefault(c => (c.CellId & 0xFFFF) == cellNum);
+            if (loaded != null) {
+                Selection.SelectCell(loaded);
+            }
+        }
+
+        public void SelectCellByNumberPublic(ushort cellNum) => SelectCellByNumber(cellNum);
+        public DungeonDocument? GetCurrentDocument() => _document;
+        public ushort? GetSelectedCellNumber() => Selection.SelectedCell != null ? (ushort)(Selection.SelectedCell.CellId & 0xFFFF) : null;
+
+        public event EventHandler? DungeonChanged;
+
+        private void NotifyDungeonChanged() {
+            DungeonChanged?.Invoke(this, EventArgs.Empty);
+            RefreshGraphView();
+        }
+
+        private void RefreshGraphView() {
+            _graphView?.Refresh(_document, Selection?.SelectedCell != null
+                ? (ushort)(Selection.SelectedCell.CellId & 0xFFFF)
+                : null);
         }
 
         [RelayCommand]
@@ -1349,7 +1068,7 @@ namespace WorldBuilder.Editors.Dungeon {
                 StatusText = "No DAT loaded";
                 return;
             }
-            StatusText = "Analyzing dungeon rooms...";
+            StatusText = "Analyzing dungeon rooms + building knowledge base...";
             Console.WriteLine("[Dungeon] AnalyzeRooms: starting...");
             try {
                 var report = await Task.Run(() => DungeonRoomAnalyzer.Run(_dats));
@@ -1360,7 +1079,14 @@ namespace WorldBuilder.Editors.Dungeon {
                 var outPath = Path.Combine(outDir, "dungeon_room_analysis");
                 DungeonRoomAnalyzer.SaveReport(report, outPath);
 
-                StatusText = $"Analysis complete: {report.UniqueRoomTypes} room types, {report.TotalCellsScanned} cells";
+                StatusText = "Building dungeon knowledge base (adjacency + prefabs)...";
+                var kb = DungeonKnowledgeBuilder.LoadCached();
+                if (kb == null || kb.Edges.Count == 0) {
+                    kb = await Task.Run(() => DungeonKnowledgeBuilder.Build(_dats));
+                }
+                Console.WriteLine($"[Dungeon] Knowledge base: {kb.TotalEdges} edges, {kb.TotalPrefabs} prefabs");
+
+                StatusText = $"Analysis complete: {report.UniqueRoomTypes} room types, {kb.TotalEdges} adjacency edges, {kb.TotalPrefabs} prefabs";
                 RoomPalette?.ReloadStarterPresets();
                 ShowAnalysisResultDialog(report, outPath);
             }
@@ -1371,74 +1097,103 @@ namespace WorldBuilder.Editors.Dungeon {
             }
         }
 
-        private void ShowErrorDialog(string title, string message) {
-            var win = new Window { Title = title, Width = 400, Height = 180, WindowStartupLocation = WindowStartupLocation.CenterOwner };
-            var panel = new StackPanel { Spacing = 12, Margin = new Avalonia.Thickness(24) };
-            panel.Children.Add(new TextBlock { Text = title, FontWeight = FontWeight.SemiBold, FontSize = 14 });
-            panel.Children.Add(new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap });
-            var okBtn = new Button { Content = "OK", Width = 80 };
-            okBtn.Click += (s, e) => win.Close();
-            panel.Children.Add(okBtn);
-            win.Content = panel;
-            if (Application.Current?.ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop && desktop.MainWindow != null)
-                win.Show(desktop.MainWindow);
-            else
-                win.Show();
+        [RelayCommand]
+        private async Task GenerateDungeon() {
+            if (_dats == null) {
+                StatusText = "No DAT loaded";
+                return;
+            }
+
+            var kb = DungeonKnowledgeBuilder.LoadCached();
+            if (kb == null || kb.Edges.Count == 0) {
+                StatusText = "No knowledge base — run Analyze Rooms first";
+                return;
+            }
+
+            var result = await ShowGenerateDialog(kb);
+            if (result == null) return;
+
+            StatusText = $"Generating {result.RoomCount}-room {result.Style} dungeon...";
+            try {
+                ushort lbKey = _loadedLandblockKey != 0 ? _loadedLandblockKey : (ushort)0xFFFF;
+                if (_document == null) {
+                    _loadedLandblockKey = lbKey;
+                    _document = GetOrCreateDungeonDoc(lbKey);
+                    HasDungeon = true;
+                }
+
+                var allRooms = RoomPalette?.GetAllRooms() ?? new List<RoomEntry>();
+                var generated = await Task.Run(() => DungeonGenerator.Generate(result, allRooms, _dats, lbKey));
+
+                if (generated == null || generated.Cells.Count == 0) {
+                    StatusText = "Generation failed — not enough adjacency data for this style";
+                    return;
+                }
+
+                if (_document != null) {
+                    _document.CopyFrom(generated);
+                }
+
+                RefreshRendering();
+                _needsCameraFocus = true;
+                CellCount = _document?.Cells.Count ?? 0;
+                int openPortals = CountOpenPortals();
+                StatusText = $"Generated {CellCount} rooms ({openPortals} open doorways). Disconnect doorways to branch, or add rooms from the catalog.";
+                Console.WriteLine($"[Dungeon] Generated: {CellCount} cells, {openPortals} open portals, style={result.Style}, seed={result.Seed}");
+            }
+            catch (Exception ex) {
+                StatusText = $"Generation failed: {ex.Message}";
+                Console.WriteLine($"[Dungeon] GenerateDungeon error: {ex}");
+            }
         }
 
-        private void ShowAnalysisResultDialog(DungeonRoomAnalyzer.AnalysisReport report, string outPath) {
-            var jsonPath = Path.Combine(Path.GetDirectoryName(outPath) ?? "", Path.GetFileNameWithoutExtension(outPath) + ".json");
-            var txtPath = Path.Combine(Path.GetDirectoryName(outPath) ?? "", Path.GetFileNameWithoutExtension(outPath) + ".txt");
+        private Task<GeneratorParams?> ShowGenerateDialog(DungeonKnowledgeBase kb) =>
+            Dialogs.ShowGenerateDialog(kb);
 
-            var panel = new StackPanel { Spacing = 12, Margin = new Avalonia.Thickness(24) };
-            panel.Children.Add(new TextBlock {
-                Text = "Dungeon Room Analysis Complete",
-                FontWeight = FontWeight.SemiBold,
-                FontSize = 14
-            });
-            panel.Children.Add(new TextBlock {
-                Text = $"Scanned {report.TotalLandblocksScanned} landblocks, {report.TotalCellsScanned} cells.\n" +
-                       $"Found {report.UniqueRoomTypes} unique room types.\n\n" +
-                       $"Top starter candidates (for preset list):",
-                TextWrapping = TextWrapping.Wrap
-            });
-            var sb = new System.Text.StringBuilder();
-            foreach (var r in report.TopStarterCandidates.Take(12)) {
-                sb.AppendLine($"  {r.PortalCount}P: 0x{r.EnvFileId:X8} / #{r.CellStructIndex}  (used {r.UsageCount}x)");
-            }
-            panel.Children.Add(new TextBlock {
-                Text = sb.ToString(),
-                FontFamily = "Consolas",
-                FontSize = 10,
-                TextWrapping = TextWrapping.NoWrap
-            });
-            panel.Children.Add(new TextBlock {
-                Text = $"Report saved to:\n{txtPath}\n{jsonPath}",
-                FontSize = 10,
-                Foreground = new SolidColorBrush(Color.FromArgb(255, 138, 122, 158)),
-                TextWrapping = TextWrapping.Wrap
-            });
-            var win = new Window { Title = "Dungeon Room Analysis", WindowStartupLocation = WindowStartupLocation.CenterOwner };
-            var okBtn = new Button { Content = "OK", Width = 80 };
-            okBtn.Click += (s, e) => win.Close();
-            panel.Children.Add(okBtn);
-            win.Content = new ScrollViewer { Content = panel };
-            win.Width = 480;
-            win.Height = 420;
-            if (Application.Current?.ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop && desktop.MainWindow != null) {
-                win.Show(desktop.MainWindow);
-            }
-            else {
-                win.Show();
-            }
-        }
+        private void ShowErrorDialog(string title, string message) =>
+            Dialogs.ShowErrorDialog(title, message);
+
+        private void ShowAnalysisResultDialog(DungeonRoomAnalyzer.AnalysisReport report, string outPath) =>
+            Dialogs.ShowAnalysisResultDialog(report, outPath);
 
         [RelayCommand]
         private void CancelPlacement() {
             _pendingRoom = null;
             IsPlacementMode = false;
             PlacementStatusText = "";
+            if (_scene != null) {
+                _scene.RoomPlacementPreview = null;
+                _scene.IsInPlacementMode = false;
+            }
+        }
+
+        /// <summary>
+        /// After placing a room, stay in placement mode so the user can keep building.
+        /// Clears the pending room but keeps placement mode active for the next catalog selection.
+        /// </summary>
+        private void StayInPlacementMode() {
             if (_scene != null) _scene.RoomPlacementPreview = null;
+            _pendingRoom = null;
+            IsPlacementMode = false;
+
+            int openPortalCount = CountOpenPortals();
+            PlacementStatusText = openPortalCount > 0
+                ? $"Room placed! {openPortalCount} open doorway{(openPortalCount != 1 ? "s" : "")} — pick another room from the catalog"
+                : "Room placed! No open doorways — disconnect one to continue building";
+        }
+
+        private int CountOpenPortals() {
+            if (_document == null || _dats == null) return 0;
+            int count = 0;
+            foreach (var c in _document.Cells) {
+                uint envFileId = (uint)(c.EnvironmentId | 0x0D000000);
+                if (!_dats.TryGet<DatReaderWriter.DBObjs.Environment>(envFileId, out var env)) continue;
+                if (!env.Cells.TryGetValue(c.CellStructure, out var cs)) continue;
+                var portalIds = PortalSnapper.GetPortalPolygonIds(cs);
+                var connectedIds = new HashSet<ushort>(c.CellPortals.Select(cp => (ushort)cp.PolygonId));
+                count += portalIds.Count(p => !connectedIds.Contains(p));
+            }
+            return count;
         }
 
         [RelayCommand]
@@ -1455,17 +1210,22 @@ namespace WorldBuilder.Editors.Dungeon {
             _document = GetOrCreateDungeonDoc(lbKey);
             HasDungeon = true;
             CellCount = 0;
-            StatusText = $"LB {lbKey:X4}: New dungeon (empty)";
+            StatusText = $"New dungeon — pick a room from the catalog to start building";
 
-            _scene?.Camera.SetPosition(Vector3.Zero + new Vector3(0, -20f, 10f));
-            _scene?.Camera.LookAt(Vector3.Zero);
+            // Position camera at the landblock's world-space position (where cells will render)
+            var blockX = (lbKey >> 8) & 0xFF;
+            var blockY = lbKey & 0xFF;
+            var lbCenter = new Vector3(blockX * 192f, blockY * 192f, -50f);
+            _scene?.Camera.SetPosition(lbCenter + new Vector3(0, -30f, 20f));
+            _scene?.Camera.LookAt(lbCenter);
         }
 
         private void EnsureDocument() {
             if (_document != null) return;
-            _loadedLandblockKey = 0xFFFF;
+            _loadedLandblockKey = 0xAAAA;
             _document = GetOrCreateDungeonDoc(_loadedLandblockKey);
             HasDungeon = true;
+            EditingContext.Document = _document;
         }
 
         private DungeonDocument? GetOrCreateDungeonDoc(ushort lbKey) {
@@ -1494,63 +1254,32 @@ namespace WorldBuilder.Editors.Dungeon {
             RefreshRendering();
             _needsCameraFocus = true;
 
-            StatusText = $"LB {_document.LandblockKey:X4}: {_document.Cells.Count} cells";
+            StatusText = $"{_document.Cells.Count} rooms — select next room from catalog";
             CellCount = _document.Cells.Count;
 
-            CancelPlacement();
+            StayInPlacementMode();
         }
 
         /// <summary>
         /// Computes where the room would be placed for preview. Returns (Origin, Orientation) or null if no valid placement.
+        /// Uses FindNearestOpenPortalCell so the ghost shows even when hovering empty space near the dungeon.
         /// </summary>
         private (Vector3 Origin, Quaternion Orientation)? TryComputeRoomPlacementPreview(
             Vector3 rayOrigin, Vector3 rayDir, EnvCellManager.EnvCellRaycastHit hit) {
 
             if (_pendingRoom == null || _document == null || _dats == null) return null;
 
-            // Empty dungeon: first cell goes at origin
             if (_document.Cells.Count == 0) {
                 return (Vector3.Zero, Quaternion.Identity);
             }
 
-            // Non-empty: need to hit a cell with an open portal
-            if (!hit.Hit) return null;
+            // Use the same smart search as TrySnapToPortal: find nearest open portal to the ray
+            var bestCell = FindNearestOpenPortalCell(rayOrigin, rayDir);
+            if (bestCell == null) return null;
 
-            var targetCell = hit.Cell;
-            var targetCellNum = (ushort)(targetCell.CellId & 0xFFFF);
-            var targetDocCell = _document.GetCell(targetCellNum);
-            if (targetDocCell == null) return null;
+            var (targetDocCell, targetCellStruct, openPortalId, _) = bestCell.Value;
 
-            uint targetEnvFileId = targetCell.EnvironmentId;
-            if (!_dats.TryGet<DatReaderWriter.DBObjs.Environment>(targetEnvFileId, out var targetEnv)) return null;
-            if (!targetEnv.Cells.TryGetValue((ushort)targetDocCell.CellStructure, out var targetCellStruct)) return null;
-
-            var connectedPolygons = new HashSet<ushort>();
-            foreach (var cp in targetDocCell.CellPortals) {
-                connectedPolygons.Add((ushort)cp.PolygonId);
-            }
-
-            var targetPortalIds = PortalSnapper.GetPortalPolygonIds(targetCellStruct);
-            var openPortals = targetPortalIds.Where(pid => !connectedPolygons.Contains(pid)).ToList();
-            ushort? openPortalId = null;
-            if (openPortals.Count == 1) {
-                openPortalId = openPortals[0];
-            }
-            else if (openPortals.Count > 1) {
-                var hitPos = hit.HitPosition;
-                float bestDist = float.MaxValue;
-                foreach (var pid in openPortals) {
-                    var geom = PortalSnapper.GetPortalGeometry(targetCellStruct, pid);
-                    if (geom == null) continue;
-                    var (centroid, _) = PortalSnapper.TransformPortalToWorld(geom.Value, targetDocCell.Origin, targetDocCell.Orientation);
-                    float d = (centroid - hitPos).LengthSquared();
-                    if (d < bestDist) { bestDist = d; openPortalId = pid; }
-                }
-                openPortalId ??= openPortals[0];
-            }
-            if (openPortalId == null) return null;
-
-            var targetPortalLocal = PortalSnapper.GetPortalGeometry(targetCellStruct, openPortalId.Value);
+            var targetPortalLocal = PortalSnapper.GetPortalGeometry(targetCellStruct, openPortalId);
             if (targetPortalLocal == null) return null;
 
             var (targetCentroidWorld, targetNormalWorld) = PortalSnapper.TransformPortalToWorld(
@@ -1574,105 +1303,105 @@ namespace WorldBuilder.Editors.Dungeon {
         private void TrySnapToPortal(Vector3 rayOrigin, Vector3 rayDir) {
             if (_pendingRoom == null || _document == null || _scene == null || _dats == null) return;
 
-            var hit = _scene.EnvCellManager?.Raycast(rayOrigin, rayDir);
-            if (hit == null || !hit.Value.Hit) {
-                Console.WriteLine("[Dungeon] TrySnapToPortal: raycast missed (no cell hit)");
-                PlacementStatusText = "Click on a cell to attach room";
+            // Find nearest cell with an open portal (smart search, not just raycast hit)
+            var bestCell = FindNearestOpenPortalCell(rayOrigin, rayDir);
+            if (bestCell == null) {
+                PlacementStatusText = "No open doorways — select a room and disconnect a doorway to create one";
+                Console.WriteLine("[Dungeon] TrySnapToPortal: no cells with open portals found");
                 return;
             }
 
-            var targetCell = hit.Value.Cell;
-            var targetCellNum = (ushort)(targetCell.CellId & 0xFFFF);
-            var targetDocCell = _document.GetCell(targetCellNum);
-            if (targetDocCell == null) {
-                Console.WriteLine($"[Dungeon] TrySnapToPortal: cell 0x{targetCellNum:X4} not in document");
-                return;
-            }
+            var (targetDocCell, targetCellStruct, openPortalId, targetCellNum) = bestCell.Value;
+            Console.WriteLine($"[Dungeon] TrySnapToPortal: found cell 0x{targetCellNum:X4} with open portal 0x{openPortalId:X4}");
 
-            uint targetEnvFileId = targetCell.EnvironmentId;
-            if (!_dats.TryGet<DatReaderWriter.DBObjs.Environment>(targetEnvFileId, out var targetEnv)) {
-                Console.WriteLine($"[Dungeon] TrySnapToPortal: Environment 0x{targetEnvFileId:X8} not found");
-                return;
-            }
-
-            var targetDocCellStruct = (ushort)targetDocCell.CellStructure;
-            if (!targetEnv.Cells.TryGetValue(targetDocCellStruct, out var targetCellStruct)) {
-                Console.WriteLine($"[Dungeon] TrySnapToPortal: CellStruct {targetDocCellStruct} not in Environment");
-                return;
-            }
-
-            var connectedPolygons = new HashSet<ushort>();
-            foreach (var cp in targetDocCell.CellPortals) {
-                connectedPolygons.Add((ushort)cp.PolygonId);
-            }
-
-            var targetPortalIds = PortalSnapper.GetPortalPolygonIds(targetCellStruct);
-            var openPortals = targetPortalIds.Where(pid => !connectedPolygons.Contains(pid)).ToList();
-            ushort? openPortalId = null;
-            if (openPortals.Count == 1) {
-                openPortalId = openPortals[0];
-            }
-            else if (openPortals.Count > 1) {
-                // Pick the open portal closest to the ray hit (so we attach where user clicked)
-                var hitPos = hit.Value.HitPosition;
-                float bestDist = float.MaxValue;
-                foreach (var pid in openPortals) {
-                    var geom = PortalSnapper.GetPortalGeometry(targetCellStruct, pid);
-                    if (geom == null) continue;
-                    var (centroid, _) = PortalSnapper.TransformPortalToWorld(geom.Value, targetDocCell.Origin, targetDocCell.Orientation);
-                    float d = (centroid - hitPos).LengthSquared();
-                    if (d < bestDist) { bestDist = d; openPortalId = pid; }
-                }
-                openPortalId ??= openPortals[0];
-            }
-
-            Console.WriteLine($"[Dungeon] TrySnapToPortal: cell 0x{targetCellNum:X4}, portals={targetPortalIds.Count}, connected={connectedPolygons.Count}, open={openPortalId?.ToString("X4") ?? "none"}");
-
-            if (openPortalId == null) {
-                PlacementStatusText = "No open portals on this cell - try a cell at a dead end";
-                return;
-            }
-
-            // Get target portal geometry in local space, then transform to world
-            var targetPortalLocal = PortalSnapper.GetPortalGeometry(targetCellStruct, openPortalId.Value);
+            var targetPortalLocal = PortalSnapper.GetPortalGeometry(targetCellStruct, openPortalId);
             if (targetPortalLocal == null) return;
 
             var (targetCentroidWorld, targetNormalWorld) = PortalSnapper.TransformPortalToWorld(
                 targetPortalLocal.Value, targetDocCell.Origin, targetDocCell.Orientation);
 
-            // Load the source room's CellStruct
             uint sourceEnvFileId = (uint)(_pendingRoom.EnvironmentId | 0x0D000000);
             if (!_dats.TryGet<DatReaderWriter.DBObjs.Environment>(sourceEnvFileId, out var sourceEnv)) return;
             if (!sourceEnv.Cells.TryGetValue(_pendingRoom.CellStructureIndex, out var sourceCellStruct)) return;
 
-            // Pick the source portal that best aligns with the target (facing opposite)
             var sourcePortalId = PortalSnapper.PickBestSourcePortal(sourceCellStruct, targetNormalWorld);
             if (sourcePortalId == null) {
-                PlacementStatusText = "Selected room has no portals";
+                PlacementStatusText = "Selected room has no matching portal face";
                 return;
             }
 
             var sourcePortalLocal = PortalSnapper.GetPortalGeometry(sourceCellStruct, sourcePortalId.Value);
             if (sourcePortalLocal == null) return;
 
-            // Compute snap transform
             var (newOrigin, newOrientation) = PortalSnapper.ComputeSnapTransform(
                 targetCentroidWorld, targetNormalWorld, sourcePortalLocal.Value);
 
-            // Add the new cell with portal connection via command history
             var surfaces = GetSurfacesForRoom(_pendingRoom);
             var cmd = new AddCellCommand(
                 _pendingRoom.EnvironmentId, _pendingRoom.CellStructureIndex,
                 newOrigin, newOrientation, surfaces,
-                connectToCellNum: targetCellNum, connectToPolyId: openPortalId.Value, sourcePolyId: sourcePortalId.Value);
+                connectToCellNum: targetCellNum, connectToPolyId: openPortalId, sourcePolyId: sourcePortalId.Value);
             CommandHistory.Execute(cmd, _document);
 
             RefreshRendering();
 
-            StatusText = $"LB {_document.LandblockKey:X4}: {_document.Cells.Count} cells";
             CellCount = _document.Cells.Count;
+            StatusText = $"{CellCount} rooms — select next room or click to place again";
 
-            CancelPlacement();
+            StayInPlacementMode();
+        }
+
+        private (DungeonCellData cell, DatReaderWriter.Types.CellStruct cellStruct, ushort portalId, ushort cellNum)?
+            FindNearestOpenPortalCell(Vector3 rayOrigin, Vector3 rayDir) {
+
+            if (_document == null || _dats == null) return null;
+
+            // First try raycast hit cell
+            var hit = _scene?.EnvCellManager?.Raycast(rayOrigin, rayDir);
+
+            // Collect all cells with open portals + their world-space portal centroids
+            var openPortalCells = new List<(DungeonCellData dc, DatReaderWriter.Types.CellStruct cs, ushort portalId, ushort cellNum, Vector3 centroid)>();
+
+            foreach (var dc in _document.Cells) {
+                uint envFileId = (uint)(dc.EnvironmentId | 0x0D000000);
+                if (!_dats.TryGet<DatReaderWriter.DBObjs.Environment>(envFileId, out var env)) continue;
+                if (!env.Cells.TryGetValue(dc.CellStructure, out var cs)) continue;
+
+                var allPortals = PortalSnapper.GetPortalPolygonIds(cs);
+                var connected = new HashSet<ushort>(dc.CellPortals.Select(cp => cp.PolygonId));
+
+                foreach (var pid in allPortals) {
+                    if (connected.Contains(pid)) continue;
+                    var geom = PortalSnapper.GetPortalGeometry(cs, pid);
+                    if (geom == null) continue;
+                    var (centroid, _) = PortalSnapper.TransformPortalToWorld(geom.Value, dc.Origin, dc.Orientation);
+                    openPortalCells.Add((dc, cs, pid, dc.CellNumber, centroid));
+                }
+            }
+
+            if (openPortalCells.Count == 0) return null;
+
+            // If we have a raycast hit, find the nearest open portal to the hit position
+            if (hit != null && hit.Value.Hit) {
+                var hitPos = hit.Value.HitPosition;
+                var nearest = openPortalCells.OrderBy(p => (p.centroid - hitPos).LengthSquared()).First();
+                return (nearest.dc, nearest.cs, nearest.portalId, nearest.cellNum);
+            }
+
+            // No raycast hit: find the open portal nearest to the camera ray
+            float bestDist = float.MaxValue;
+            (DungeonCellData dc, DatReaderWriter.Types.CellStruct cs, ushort portalId, ushort cellNum, Vector3 centroid)? best = null;
+            foreach (var p in openPortalCells) {
+                var toPoint = p.centroid - rayOrigin;
+                var proj = Vector3.Dot(toPoint, rayDir);
+                if (proj < 0) continue;
+                var closest = rayOrigin + rayDir * proj;
+                var dist = (p.centroid - closest).LengthSquared();
+                if (dist < bestDist) { bestDist = dist; best = p; }
+            }
+
+            if (best == null) return null;
+            return (best.Value.dc, best.Value.cs, best.Value.portalId, best.Value.cellNum);
         }
 
         private List<ushort> GetSurfacesForRoom(RoomEntry room) {
@@ -1754,6 +1483,92 @@ namespace WorldBuilder.Editors.Dungeon {
             if (_scene == null || _document == null) return;
             _connectionLinesDirty = true;
             _scene.RefreshFromDocument(_document);
+            RefreshOpenPortalIndicators();
+            UpdatePaletteCompatibility();
+            NotifyDungeonChanged();
+        }
+
+        private void UpdatePaletteCompatibility() {
+            if (_document == null || _dats == null || RoomPalette == null) return;
+            var openPortals = new List<(ushort envId, ushort cs, ushort polyId)>();
+            foreach (var dc in _document.Cells) {
+                uint envFileId = (uint)(dc.EnvironmentId | 0x0D000000);
+                if (!_dats.TryGet<DatReaderWriter.DBObjs.Environment>(envFileId, out var env)) continue;
+                if (!env.Cells.TryGetValue(dc.CellStructure, out var cs)) continue;
+                var allPortals = PortalSnapper.GetPortalPolygonIds(cs);
+                var connected = new HashSet<ushort>(dc.CellPortals.Select(cp => cp.PolygonId));
+                foreach (var pid in allPortals) {
+                    if (!connected.Contains(pid))
+                        openPortals.Add((dc.EnvironmentId, dc.CellStructure, pid));
+                }
+            }
+            RoomPalette.SetActiveOpenPortals(openPortals);
+        }
+
+        private void RefreshOpenPortalIndicators() {
+            if (_scene == null || _document == null || _dats == null) {
+                if (_scene != null) {
+                    _scene.OpenPortalIndicators.Clear();
+                    _scene.ConnectedPortalIndicators.Clear();
+                }
+                return;
+            }
+
+            var openIndicators = new List<OpenPortalIndicator>();
+            var connectedIndicators = new List<OpenPortalIndicator>();
+            foreach (var dc in _document.Cells) {
+                uint envFileId = (uint)(dc.EnvironmentId | 0x0D000000);
+                if (!_dats.TryGet<DatReaderWriter.DBObjs.Environment>(envFileId, out var env)) continue;
+                if (!env.Cells.TryGetValue(dc.CellStructure, out var cs)) continue;
+
+                var allPortals = PortalSnapper.GetPortalPolygonIds(cs);
+                var connected = new HashSet<ushort>(dc.CellPortals.Select(cp => cp.PolygonId));
+
+                uint lbId = _document.LandblockKey;
+                var blockX = (lbId >> 8) & 0xFF;
+                var blockY = lbId & 0xFF;
+                var lbOffset = new Vector3(blockX * 192f, blockY * 192f, 0f);
+                const float dungeonZBump = -50f;
+                var cellOrigin = dc.Origin + lbOffset + new Vector3(0, 0, dungeonZBump);
+                var cellRot = dc.Orientation;
+                var cellTransform = Matrix4x4.CreateFromQuaternion(cellRot) * Matrix4x4.CreateTranslation(cellOrigin);
+
+                foreach (var pid in allPortals) {
+                    if (!cs.Polygons.TryGetValue(pid, out var poly)) continue;
+                    if (poly.VertexIds.Count < 3) continue;
+
+                    var worldVerts = new List<Vector3>();
+                    foreach (var vid in poly.VertexIds) {
+                        if (cs.VertexArray.Vertices.TryGetValue((ushort)vid, out var vtx))
+                            worldVerts.Add(Vector3.Transform(vtx.Origin, cellTransform));
+                    }
+                    if (worldVerts.Count < 3) continue;
+
+                    var centroid = Vector3.Zero;
+                    foreach (var v in worldVerts) centroid += v;
+                    centroid /= worldVerts.Count;
+
+                    var geom = PortalSnapper.GetPortalGeometry(cs, pid);
+                    var normal = geom != null
+                        ? Vector3.Normalize(Vector3.Transform(geom.Value.Normal, cellRot))
+                        : Vector3.UnitZ;
+
+                    var indicator = new OpenPortalIndicator {
+                        WorldVertices = worldVerts.ToArray(),
+                        Centroid = centroid,
+                        Normal = normal,
+                        CellNum = dc.CellNumber,
+                        PolyId = pid
+                    };
+
+                    if (connected.Contains(pid))
+                        connectedIndicators.Add(indicator);
+                    else
+                        openIndicators.Add(indicator);
+                }
+            }
+            _scene.OpenPortalIndicators = openIndicators;
+            _scene.ConnectedPortalIndicators = connectedIndicators;
         }
 
         #endregion
@@ -1773,173 +1588,25 @@ namespace WorldBuilder.Editors.Dungeon {
             }
 
             _document.ForceSave();
-            StatusText = $"Saved dungeon LB {_document.LandblockKey:X4} ({_document.Cells.Count} cells) to project. Use File > Export to write DATs.";
+            StatusText = $"Saved dungeon ({_document.Cells.Count} rooms) to project. Use File > Export to write DATs.";
             Console.WriteLine($"[DungeonSave] Saved to project: LB {_document.LandblockKey:X4}, {_document.Cells.Count} cells");
         }
 
         #endregion
 
-        private async Task<uint?> ShowNewDungeonDialog() {
-            uint? result = null;
-            var textBox = new TextBox {
-                Text = "",
-                Width = 300,
-                Watermark = "Landblock hex ID for new dungeon (e.g. FFFF)"
-            };
-            var errorText = new TextBlock {
-                Text = "",
-                Foreground = Brushes.Red,
-                FontSize = 12,
-                IsVisible = false
-            };
-
-            await DialogHost.Show(new StackPanel {
-                Margin = new Avalonia.Thickness(20),
-                Spacing = 10,
-                Children = {
-                    new TextBlock {
-                        Text = "New Dungeon",
-                        FontSize = 16,
-                        FontWeight = FontWeight.Bold
-                    },
-                    new TextBlock {
-                        Text = "Enter a landblock ID for the new dungeon.",
-                        FontSize = 12,
-                        Opacity = 0.7
-                    },
-                    textBox,
-                    errorText,
-                    new StackPanel {
-                        Orientation = Avalonia.Layout.Orientation.Horizontal,
-                        HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right,
-                        Spacing = 10,
-                        Children = {
-                            new Button {
-                                Content = "Cancel",
-                                Command = new RelayCommand(() => DialogHost.Close("DungeonDialogHost"))
-                            },
-                            new Button {
-                                Content = "Create",
-                                Command = new RelayCommand(() => {
-                                    var parsed = ParseLandblockInput(textBox.Text);
-                                    if (parsed != null) {
-                                        result = parsed;
-                                        DialogHost.Close("DungeonDialogHost");
-                                    }
-                                    else {
-                                        errorText.Text = "Invalid hex ID.";
-                                        errorText.IsVisible = true;
-                                    }
-                                })
-                            }
-                        }
-                    }
-                }
-            }, "DungeonDialogHost");
-
-            return result;
-        }
+        private Task<uint?> ShowNewDungeonDialog() =>
+            Dialogs.ShowNewDungeonDialog();
 
         [RelayCommand]
         private async Task StartFromTemplate() {
             if (_dats == null || _project == null) return;
 
-            var dungeons = WorldBuilder.Lib.LocationDatabase.Dungeons
-                .OrderBy(d => d.Name)
-                .Take(200)
-                .ToList();
-
-            if (dungeons.Count == 0) {
+            if (!WorldBuilder.Lib.LocationDatabase.Dungeons.Any()) {
                 StatusText = "No dungeon templates found";
                 return;
             }
 
-            var listBox = new ListBox {
-                MaxHeight = 280,
-                Width = 450,
-                FontSize = 12,
-                ItemsSource = dungeons.Select(d => $"{d.Name}  [LB {d.LandblockHex}]").ToList()
-            };
-            var targetTextBox = new TextBox {
-                Text = "",
-                Width = 120,
-                Watermark = "e.g. FFFF"
-            };
-            var errorText = new TextBlock {
-                Text = "",
-                Foreground = Brushes.Red,
-                FontSize = 12,
-                IsVisible = false
-            };
-
-            await DialogHost.Show(new StackPanel {
-                Margin = new Avalonia.Thickness(20),
-                Spacing = 10,
-                Children = {
-                    new TextBlock {
-                        Text = "Start from template",
-                        FontSize = 16,
-                        FontWeight = FontWeight.Bold
-                    },
-                    new TextBlock {
-                        Text = "Pick a dungeon template, then choose the landblock where to create a copy. " +
-                            "The structure (rooms, portals, statics) is copied with new locations; portal connections are preserved.",
-                        TextWrapping = TextWrapping.Wrap,
-                        MaxWidth = 450,
-                        FontSize = 12,
-                        Opacity = 0.8
-                    },
-                    listBox,
-                    new StackPanel {
-                        Orientation = Avalonia.Layout.Orientation.Horizontal,
-                        Spacing = 8,
-                        VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center,
-                        Children = {
-                            new TextBlock { Text = "Target landblock:", VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center },
-                            targetTextBox,
-                            errorText
-                        }
-                    },
-                    new StackPanel {
-                        Orientation = Avalonia.Layout.Orientation.Horizontal,
-                        HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right,
-                        Spacing = 10,
-                        Children = {
-                            new Button {
-                                Content = "Cancel",
-                                Command = new RelayCommand(() => DialogHost.Close("DungeonDialogHost"))
-                            },
-                            new Button {
-                                Content = "Create copy",
-                                Command = new RelayCommand(() => {
-                                    var idx = listBox.SelectedIndex;
-                                    if (idx < 0 || idx >= dungeons.Count) {
-                                        errorText.Text = "Select a template.";
-                                        errorText.IsVisible = true;
-                                        return;
-                                    }
-                                    var targetParsed = ParseLandblockInput(targetTextBox.Text);
-                                    if (targetParsed == null) {
-                                        errorText.Text = "Invalid landblock ID.";
-                                        errorText.IsVisible = true;
-                                        return;
-                                    }
-                                    var sourceLb = dungeons[idx].LandblockId;
-                                    var targetLb = (ushort)(targetParsed.Value >> 16);
-                                    if (targetLb == 0) targetLb = (ushort)(targetParsed.Value & 0xFFFF);
-                                    if (sourceLb == targetLb) {
-                                        errorText.Text = "Target must differ from template.";
-                                        errorText.IsVisible = true;
-                                        return;
-                                    }
-                                    CopyTemplateToLandblock(sourceLb, targetLb);
-                                    DialogHost.Close("DungeonDialogHost");
-                                })
-                            }
-                        }
-                    }
-                }
-            }, "DungeonDialogHost");
+            await Dialogs.ShowStartFromTemplateDialog(CopyTemplateToLandblock);
         }
 
         /// <summary>
@@ -1965,7 +1632,7 @@ namespace WorldBuilder.Editors.Dungeon {
             }
             _document.MarkDirty();
             RefreshRendering();
-            StatusText = $"Applied surfaces to {updated} cell(s)";
+            StatusText = $"Applied textures to {updated} room(s)";
         }
 
         /// <summary>
@@ -2069,7 +1736,7 @@ namespace WorldBuilder.Editors.Dungeon {
             if (_document.Cells.Count > 0) {
                 _scene.RefreshFromDocument(_document);
                 CellCount = _document.Cells.Count;
-                StatusText = $"LB {landblockKey:X4}: {CellCount} cells";
+                StatusText = $"Dungeon loaded: {CellCount} rooms";
                 HasDungeon = true;
                 _needsCameraFocus = true;
             }
@@ -2077,150 +1744,25 @@ namespace WorldBuilder.Editors.Dungeon {
                 uint lbiId = ((uint)landblockKey << 16) | 0xFFFE;
                 int numCells = _dats.TryGet<LandBlockInfo>(lbiId, out var lbi) ? (int)lbi.NumCells : 0;
                 CellCount = numCells;
-                StatusText = $"LB {landblockKey:X4}: {CellCount} cells (read-only, no document data)";
+                StatusText = $"Dungeon loaded: {CellCount} rooms (read-only from DAT)";
                 HasDungeon = true;
                 _needsCameraFocus = true;
             }
             else {
-                StatusText = $"LB {landblockKey:X4}: No dungeon cells found (not in project or DAT)";
+                StatusText = $"No dungeon rooms found for this landblock";
                 HasDungeon = false;
                 CellCount = 0;
             }
         }
 
-        private async Task<uint?> ShowOpenDungeonDialog() {
-            uint? result = null;
-            var textBox = new TextBox {
-                Text = LandblockInputText,
-                Width = 400,
-                Watermark = "Search dungeon by name or enter hex ID (e.g. 01D9)"
-            };
-            var errorText = new TextBlock {
-                Text = "",
-                Foreground = Brushes.Red,
-                FontSize = 12,
-                IsVisible = false
-            };
+        private Task<uint?> ShowOpenDungeonDialog() =>
+            Dialogs.ShowOpenDungeonDialog(LandblockInputText, text => LandblockInputText = text);
 
-            var locationList = new ListBox {
-                MaxHeight = 300,
-                Width = 400,
-                IsVisible = false,
-                FontSize = 12,
-            };
-
-            void UpdateLocationResults(string? query) {
-                if (string.IsNullOrWhiteSpace(query) || query.Length < 2) {
-                    locationList.IsVisible = false;
-                    locationList.ItemsSource = null;
-                    return;
-                }
-
-                var results = LocationDatabase.Search(query, typeFilter: "Dungeon").Take(50).ToList();
-                if (results.Count > 0) {
-                    locationList.ItemsSource = results.Select(r => $"{r.Name}  [{r.LandblockHex}]").ToList();
-                    locationList.IsVisible = true;
-                }
-                else {
-                    locationList.IsVisible = false;
-                    locationList.ItemsSource = null;
-                }
-            }
-
-            textBox.TextChanged += (s, e) => {
-                errorText.IsVisible = false;
-                UpdateLocationResults(textBox.Text);
-            };
-
-            locationList.SelectionChanged += (s, e) => {
-                if (locationList.SelectedIndex < 0) return;
-                var query = textBox.Text;
-                if (string.IsNullOrWhiteSpace(query)) return;
-                var results = LocationDatabase.Search(query, typeFilter: "Dungeon").Take(50).ToList();
-                if (locationList.SelectedIndex < results.Count) {
-                    var selected = results[locationList.SelectedIndex];
-                    LandblockInputText = selected.Name;
-                    result = selected.CellId;
-                    DialogHost.Close("DungeonDialogHost");
-                }
-            };
-
-            await DialogHost.Show(new StackPanel {
-                Margin = new Avalonia.Thickness(20),
-                Spacing = 10,
-                Children = {
-                    new TextBlock {
-                        Text = "Open Dungeon",
-                        FontSize = 16,
-                        FontWeight = FontWeight.Bold
-                    },
-                    new TextBlock {
-                        Text = "Search by dungeon name or enter a\nlandblock ID in hex (e.g. 01D9).",
-                        TextWrapping = TextWrapping.Wrap,
-                        MaxWidth = 400,
-                        FontSize = 12,
-                        Opacity = 0.7
-                    },
-                    textBox,
-                    locationList,
-                    errorText,
-                    new StackPanel {
-                        Orientation = Avalonia.Layout.Orientation.Horizontal,
-                        HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right,
-                        Spacing = 10,
-                        Children = {
-                            new Button {
-                                Content = "Cancel",
-                                Command = new RelayCommand(() => DialogHost.Close("DungeonDialogHost"))
-                            },
-                            new Button {
-                                Content = "Open",
-                                Command = new RelayCommand(() => {
-                                    if (result != null) {
-                                        DialogHost.Close("DungeonDialogHost");
-                                        return;
-                                    }
-                                    var parsed = ParseLandblockInput(textBox.Text);
-                                    if (parsed != null) {
-                                        LandblockInputText = textBox.Text ?? "";
-                                        result = parsed;
-                                        DialogHost.Close("DungeonDialogHost");
-                                    }
-                                    else {
-                                        errorText.Text = "Invalid input. Try a dungeon name or hex ID.";
-                                        errorText.IsVisible = true;
-                                    }
-                                })
-                            }
-                        }
-                    }
-                }
-            }, "DungeonDialogHost");
-
-            return result;
-        }
-
-        internal static uint? ParseLandblockInput(string? input) {
-            if (string.IsNullOrWhiteSpace(input)) return null;
-            input = input.Trim();
-
-            var hex = input;
-            if (hex.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
-                hex = hex[2..];
-
-            if (hex.Length > 4 && hex.Length <= 8) {
-                if (uint.TryParse(hex, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var fullId))
-                    return fullId;
-                return null;
-            }
-
-            if (ushort.TryParse(hex, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var lbId))
-                return (uint)(lbId << 16);
-
-            return null;
-        }
+        internal static uint? ParseLandblockInput(string? input) =>
+            DungeonDialogService.ParseLandblockInput(input);
 
         public void Cleanup() {
+            SaveDockingState();
             _scene?.Dispose();
             _scene = null;
         }

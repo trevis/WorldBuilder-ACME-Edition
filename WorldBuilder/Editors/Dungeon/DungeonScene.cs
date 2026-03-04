@@ -73,10 +73,46 @@ namespace WorldBuilder.Editors.Dungeon {
         /// </summary>
         public IReadOnlyList<(Vector3 From, Vector3 To)>? ConnectionLines { get; set; }
 
-        /// <summary>
-        /// When true, connection lines are drawn. Toggle via toolbar.
-        /// </summary>
         public bool ShowConnectionLines { get; set; } = true;
+
+        /// <summary>
+        /// All open portals across the entire dungeon, for rendering green indicators.
+        /// Set by the editor whenever the dungeon changes.
+        /// </summary>
+        public List<OpenPortalIndicator> OpenPortalIndicators { get; set; } = new();
+
+        /// <summary>
+        /// All connected portals across the entire dungeon, for rendering blue indicators.
+        /// Only rendered when ShowPortalIndicators is true.
+        /// </summary>
+        public List<OpenPortalIndicator> ConnectedPortalIndicators { get; set; } = new();
+
+        /// <summary>Whether to show portal indicators on all cells (not just selected).</summary>
+        public bool ShowPortalIndicators { get; set; } = true;
+
+        /// <summary>When true, renders with an orthographic top-down projection instead of perspective.</summary>
+        public bool UseOrthographic { get; set; }
+
+        /// <summary>Orthographic view half-height in world units. Adjustable via scroll wheel.</summary>
+        public float OrthoSize { get; set; } = 50f;
+
+        /// <summary>Index of the open portal nearest to the mouse during placement. -1 = none.</summary>
+        public int NearestOpenPortalIndex { get; set; } = -1;
+
+        /// <summary>True when the editor is in placement mode (show portal highlights prominently).</summary>
+        public bool IsInPlacementMode { get; set; }
+
+        /// <summary>True when the preview is snapped to a valid portal. False when free-floating.</summary>
+        public bool PreviewIsSnapped { get; set; }
+
+        /// <summary>
+        /// Set by the placement tool: list of EnvCells to render as a textured placement preview.
+        /// Uses a separate preview landblock so it renders alongside the main dungeon.
+        /// </summary>
+        public List<DatReaderWriter.DBObjs.EnvCell>? PreviewEnvCells { get; set; }
+        private bool _previewDirty;
+        private bool _hasPreviewCells;
+        private const ushort PreviewLandblockKey = EnvCellManager.PreviewLandblockKey;
 
         private uint _lineVAO;
         private uint _lineVBO;
@@ -88,14 +124,19 @@ namespace WorldBuilder.Editors.Dungeon {
         private uint _portalConnVBO;
         private uint _portalOpenVAO;
         private uint _portalOpenVBO;
+        private uint _allOpenVAO;
+        private uint _allOpenVBO;
+        private uint _connPortalVAO;
+        private uint _connPortalVBO;
+        private readonly List<float> _connPortalVerts = new();
 
-        // Reusable vertex lists to avoid per-frame allocations
         private readonly List<float> _selBoxVerts = new();
         private readonly List<float> _connLineVerts = new();
         private readonly List<float> _portalConnVerts = new();
         private readonly List<float> _portalOpenVerts = new();
         private readonly List<Vector3> _portalWorldVerts = new();
         private readonly List<Matrix4x4> _partTransformsBuffer = new();
+        private readonly List<float> _allOpenPortalVerts = new();
 
         private ushort _loadedLandblockKey;
         private bool _hasLoadedCells;
@@ -186,6 +227,11 @@ namespace WorldBuilder.Editors.Dungeon {
             var envCells = document.ToEnvCells();
             if (envCells.Count == 0) return;
 
+            if (envCells.Count > 0) {
+                var first = envCells[0];
+                Console.WriteLine($"[DungeonScene] RefreshFromDocument: {envCells.Count} EnvCells, first has {first.Surfaces.Count} surfaces, EnvId=0x{first.EnvironmentId:X4}, Pos=({first.Position.Origin.X:F1},{first.Position.Origin.Y:F1},{first.Position.Origin.Z:F1})");
+            }
+
             _loadedLandblockKey = document.LandblockKey;
             uint lbId = document.LandblockKey;
 
@@ -197,6 +243,45 @@ namespace WorldBuilder.Editors.Dungeon {
 
             ecm.FocusedDungeonLB = _loadedLandblockKey;
             _hasLoadedCells = true;
+        }
+
+        private void UpdatePreviewLandblock(EnvCellManager ecm) {
+            var previewCells = PreviewEnvCells;
+
+            if (previewCells == null) return;
+
+            if (previewCells.Count == 0) {
+                if (_hasPreviewCells) {
+                    ecm.UnloadLandblock(PreviewLandblockKey);
+                    _hasPreviewCells = false;
+                }
+                PreviewEnvCells = null;
+                return;
+            }
+
+            if (_hasPreviewCells) {
+                ecm.UnloadLandblock(PreviewLandblockKey);
+                _hasPreviewCells = false;
+            }
+
+            uint previewLbId = _loadedLandblockKey;
+            var batch = ecm.PrepareLandblockEnvCells(PreviewLandblockKey, previewLbId, previewCells, isDungeonOnly: true);
+            if (batch != null) {
+                ecm.QueueForUpload(batch);
+                _hasPreviewCells = true;
+            }
+
+            PreviewEnvCells = null;
+        }
+
+        /// <summary>Remove preview cells (e.g. when placement is cancelled).</summary>
+        public void ClearPreview() {
+            // Set to empty list as the "clear" signal for UpdatePreviewLandblock
+            PreviewEnvCells = new List<DatReaderWriter.DBObjs.EnvCell>();
+            if (_hasPreviewCells && _sceneContext?.EnvCellManager != null) {
+                _sceneContext.EnvCellManager.UnloadLandblock(PreviewLandblockKey);
+                _hasPreviewCells = false;
+            }
         }
 
         private void IntegrateStatics(PreparedEnvCellBatch batch) {
@@ -290,8 +375,20 @@ namespace WorldBuilder.Editors.Dungeon {
             gl.Enable(EnableCap.CullFace);
             gl.CullFace(TriangleFace.Back);
 
-            var view = Camera.GetViewMatrix();
-            var projection = Camera.GetProjectionMatrix();
+            Matrix4x4 view, projection;
+            if (UseOrthographic) {
+                var pos = Camera.Position;
+                view = Matrix4x4.CreateLookAtLeftHanded(
+                    new Vector3(pos.X, pos.Y, 500f),
+                    new Vector3(pos.X, pos.Y, -500f),
+                    new Vector3(0, -1, 0));
+                projection = Matrix4x4.CreateOrthographicLeftHanded(
+                    OrthoSize * aspectRatio, OrthoSize, 0.1f, 5000f);
+            }
+            else {
+                view = Camera.GetViewMatrix();
+                projection = Camera.GetProjectionMatrix();
+            }
             var viewProjection = view * projection;
 
             if (++_diagFrame % 300 == 1 && _hasLoadedCells) {
@@ -306,6 +403,10 @@ namespace WorldBuilder.Editors.Dungeon {
             float ambient = 0.4f;
             float specular = 16f;
 
+            // Update textured placement preview (separate landblock)
+            UpdatePreviewLandblock(ecm);
+            ecm.ProcessUploads(maxPerFrame: 2);
+
             ecm.Render(viewProjection, Camera, lightDir, ambient, specular);
 
             // Process model warmup/uploads for static objects
@@ -316,7 +417,17 @@ namespace WorldBuilder.Editors.Dungeon {
                 RenderStaticObjects(gl, viewProjection);
             }
 
-            // Render portal indicators on primary selected cell
+            // Render open portal highlights on ALL cells (green quads showing where you can attach)
+            if (ShowPortalIndicators && OpenPortalIndicators.Count > 0) {
+                RenderAllOpenPortals(gl, viewProjection);
+            }
+
+            // Render connected portal highlights on ALL cells (blue outlines)
+            if (ShowPortalIndicators && ConnectedPortalIndicators.Count > 0) {
+                RenderConnectedPortals(gl, viewProjection);
+            }
+
+            // Render portal indicators on primary selected cell (detailed)
             if (SelectedCell != null) {
                 RenderPortalIndicators(gl, viewProjection);
             }
@@ -592,47 +703,33 @@ namespace WorldBuilder.Editors.Dungeon {
             if (!env.Cells.TryGetValue(preview.CellStructIndex, out var cellStruct)) return;
             if (cellStruct.VertexArray?.Vertices == null || cellStruct.VertexArray.Vertices.Count == 0) return;
 
-            var boundsMin = new Vector3(float.MaxValue);
-            var boundsMax = new Vector3(float.MinValue);
-            foreach (var vtx in cellStruct.VertexArray.Vertices.Values) {
-                boundsMin = Vector3.Min(boundsMin, vtx.Origin);
-                boundsMax = Vector3.Max(boundsMax, vtx.Origin);
-            }
-            if (boundsMin.X >= boundsMax.X) return;
-
+            // Render the actual room polygons as semi-transparent cyan
             var transform = Matrix4x4.CreateFromQuaternion(preview.Orientation) * Matrix4x4.CreateTranslation(preview.Origin);
-            Vector3[] c = new Vector3[8];
-            c[0] = Vector3.Transform(new Vector3(boundsMin.X, boundsMin.Y, boundsMin.Z), transform);
-            c[1] = Vector3.Transform(new Vector3(boundsMax.X, boundsMin.Y, boundsMin.Z), transform);
-            c[2] = Vector3.Transform(new Vector3(boundsMax.X, boundsMax.Y, boundsMin.Z), transform);
-            c[3] = Vector3.Transform(new Vector3(boundsMin.X, boundsMax.Y, boundsMin.Z), transform);
-            c[4] = Vector3.Transform(new Vector3(boundsMin.X, boundsMin.Y, boundsMax.Z), transform);
-            c[5] = Vector3.Transform(new Vector3(boundsMax.X, boundsMin.Y, boundsMax.Z), transform);
-            c[6] = Vector3.Transform(new Vector3(boundsMax.X, boundsMax.Y, boundsMax.Z), transform);
-            c[7] = Vector3.Transform(new Vector3(boundsMin.X, boundsMax.Y, boundsMax.Z), transform);
-
-            int[][] edges = { new[] { 0, 1 }, new[] { 1, 2 }, new[] { 2, 3 }, new[] { 3, 0 },
-                             new[] { 4, 5 }, new[] { 5, 6 }, new[] { 6, 7 }, new[] { 7, 4 },
-                             new[] { 0, 4 }, new[] { 1, 5 }, new[] { 2, 6 }, new[] { 3, 7 } };
-
-            const float lineWidth = 0.15f;
             var camPos = Camera.Position;
             var verts = new List<float>();
-            foreach (var e in edges) {
-                var a = c[e[0]];
-                var b = c[e[1]];
-                var edgeDir = Vector3.Normalize(b - a);
-                var midpoint = (a + b) * 0.5f;
-                var toCamera = Vector3.Normalize(camPos - midpoint);
-                var sideDir = Vector3.Normalize(Vector3.Cross(edgeDir, toCamera)) * lineWidth;
-                var normal = toCamera;
-                var a0 = a - sideDir; var a1 = a + sideDir;
-                var b0 = b - sideDir; var b1 = b + sideDir;
-                void V(Vector3 p) { verts.Add(p.X); verts.Add(p.Y); verts.Add(p.Z); verts.Add(normal.X); verts.Add(normal.Y); verts.Add(normal.Z); }
-                V(a0); V(b0); V(b1);
-                V(a0); V(b1); V(a1);
+
+            foreach (var kvp in cellStruct.Polygons) {
+                var poly = kvp.Value;
+                if (poly.VertexIds.Count < 3) continue;
+
+                var pts = new List<Vector3>();
+                foreach (var vid in poly.VertexIds) {
+                    if (cellStruct.VertexArray.Vertices.TryGetValue((ushort)vid, out var vtx))
+                        pts.Add(Vector3.Transform(vtx.Origin, transform));
+                }
+                if (pts.Count < 3) continue;
+
+                var edge1 = pts[1] - pts[0];
+                var edge2 = pts[2] - pts[0];
+                var normal = Vector3.Normalize(Vector3.Cross(edge1, edge2));
+
+                for (int i = 1; i < pts.Count - 1; i++) {
+                    void V(Vector3 p) { verts.Add(p.X); verts.Add(p.Y); verts.Add(p.Z); verts.Add(normal.X); verts.Add(normal.Y); verts.Add(normal.Z); }
+                    V(pts[0]); V(pts[i]); V(pts[i + 1]);
+                }
             }
 
+            if (verts.Count == 0) return;
             int vertCount = verts.Count / 6;
             var data = CollectionsMarshal.AsSpan(verts);
 
@@ -651,26 +748,30 @@ namespace WorldBuilder.Editors.Dungeon {
             gl.EnableVertexAttribArray(1);
             gl.VertexAttribPointer(1, 3, GLEnum.Float, false, 6 * sizeof(float), (void*)(3 * sizeof(float)));
             for (uint i = 2; i < 8; i++) gl.DisableVertexAttribArray(i);
-            gl.DisableVertexAttribArray(2);
             gl.VertexAttrib4(2, 0f, 0f, 0f, 1f);
 
             var shader = _sceneContext.SphereShader;
             shader.Bind();
             shader.SetUniform("uViewProjection", viewProjection);
             shader.SetUniform("uCameraPosition", camPos);
-            shader.SetUniform("uSphereColor", new Vector3(0.2f, 0.9f, 0.4f));
+            var previewColor = PreviewIsSnapped ? new Vector3(0.1f, 0.9f, 0.3f) : new Vector3(0.9f, 0.4f, 0.1f);
+            var glowColor = PreviewIsSnapped ? new Vector3(0f, 0.4f, 0.15f) : new Vector3(0.4f, 0.1f, 0f);
+            shader.SetUniform("uSphereColor", previewColor);
             shader.SetUniform("uLightDirection", Vector3.Normalize(new Vector3(0.3f, -0.5f, -0.8f)));
-            shader.SetUniform("uAmbientIntensity", 1.0f);
+            shader.SetUniform("uAmbientIntensity", 0.8f);
             shader.SetUniform("uSpecularPower", 0f);
-            shader.SetUniform("uGlowColor", new Vector3(0f, 0f, 0f));
-            shader.SetUniform("uGlowIntensity", 0f);
-            shader.SetUniform("uGlowPower", 1.0f);
+            shader.SetUniform("uGlowColor", glowColor);
+            shader.SetUniform("uGlowIntensity", 0.5f);
+            shader.SetUniform("uGlowPower", 2.0f);
 
-            gl.Disable(EnableCap.DepthTest);
+            gl.Enable(EnableCap.Blend);
+            gl.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
             gl.Disable(EnableCap.CullFace);
+            gl.DepthMask(false);
             gl.DrawArrays(GLEnum.Triangles, 0, (uint)vertCount);
-            gl.Enable(EnableCap.DepthTest);
+            gl.DepthMask(true);
             gl.Enable(EnableCap.CullFace);
+            gl.Disable(EnableCap.Blend);
 
             gl.BindVertexArray(0);
             gl.UseProgram(0);
@@ -796,6 +897,161 @@ namespace WorldBuilder.Editors.Dungeon {
 
             DrawPortalVerts(_portalConnVerts, ref _portalConnVAO, ref _portalConnVBO, new Vector3(0.3f, 0.5f, 1.0f));
             DrawPortalVerts(_portalOpenVerts, ref _portalOpenVAO, ref _portalOpenVBO, new Vector3(0.2f, 0.9f, 0.3f));
+        }
+
+        /// <summary>
+        /// Render open portals as bright glowing doorway outlines (not filled quads).
+        /// Thick edges trace the portal polygon shape so they look like highlighted doorframes.
+        /// </summary>
+        private unsafe void RenderAllOpenPortals(GL gl, Matrix4x4 viewProjection) {
+            if (_sceneContext == null || OpenPortalIndicators.Count == 0) return;
+
+            _allOpenPortalVerts.Clear();
+            var camPos = Camera.Position;
+            float lineWidth = IsInPlacementMode ? 0.25f : 0.15f;
+
+            for (int i = 0; i < OpenPortalIndicators.Count; i++) {
+                var indicator = OpenPortalIndicators[i];
+                if (indicator.WorldVertices == null || indicator.WorldVertices.Length < 3) continue;
+
+                var normal = Vector3.Normalize(indicator.Normal);
+                var offset = normal * 0.1f;
+
+                // Draw outline edges of the portal polygon as camera-facing strips
+                for (int v = 0; v < indicator.WorldVertices.Length; v++) {
+                    int next = (v + 1) % indicator.WorldVertices.Length;
+                    var a = indicator.WorldVertices[v] + offset;
+                    var b = indicator.WorldVertices[next] + offset;
+
+                    var edgeDir = Vector3.Normalize(b - a);
+                    var mid = (a + b) * 0.5f;
+                    var toCamera = Vector3.Normalize(camPos - mid);
+                    var sideDir = Vector3.Normalize(Vector3.Cross(edgeDir, toCamera)) * lineWidth;
+                    var n = toCamera;
+
+                    void PV(Vector3 p) {
+                        _allOpenPortalVerts.Add(p.X); _allOpenPortalVerts.Add(p.Y); _allOpenPortalVerts.Add(p.Z);
+                        _allOpenPortalVerts.Add(n.X); _allOpenPortalVerts.Add(n.Y); _allOpenPortalVerts.Add(n.Z);
+                    }
+                    PV(a - sideDir); PV(b - sideDir); PV(b + sideDir);
+                    PV(a - sideDir); PV(b + sideDir); PV(a + sideDir);
+                }
+            }
+
+            if (_allOpenPortalVerts.Count == 0) return;
+            int vertCount = _allOpenPortalVerts.Count / 6;
+            var data = CollectionsMarshal.AsSpan(_allOpenPortalVerts);
+
+            if (_allOpenVAO == 0) {
+                gl.GenVertexArrays(1, out _allOpenVAO);
+                gl.GenBuffers(1, out _allOpenVBO);
+            }
+
+            gl.BindVertexArray(_allOpenVAO);
+            gl.BindBuffer(GLEnum.ArrayBuffer, _allOpenVBO);
+            fixed (float* ptr = data) {
+                gl.BufferData(GLEnum.ArrayBuffer, (nuint)(data.Length * sizeof(float)), ptr, GLEnum.DynamicDraw);
+            }
+            gl.EnableVertexAttribArray(0);
+            gl.VertexAttribPointer(0, 3, GLEnum.Float, false, 6 * sizeof(float), (void*)0);
+            gl.EnableVertexAttribArray(1);
+            gl.VertexAttribPointer(1, 3, GLEnum.Float, false, 6 * sizeof(float), (void*)(3 * sizeof(float)));
+            for (uint a = 2; a < 8; a++) gl.DisableVertexAttribArray(a);
+            gl.VertexAttrib4(2, 0f, 0f, 0f, 1f);
+
+            var shader = _sceneContext.SphereShader;
+            shader.Bind();
+            shader.SetUniform("uViewProjection", viewProjection);
+            shader.SetUniform("uCameraPosition", camPos);
+            shader.SetUniform("uSphereColor", IsInPlacementMode ? new Vector3(0.2f, 1.0f, 0.4f) : new Vector3(0.15f, 0.7f, 0.25f));
+            shader.SetUniform("uLightDirection", Vector3.Normalize(new Vector3(0.3f, -0.5f, -0.8f)));
+            shader.SetUniform("uAmbientIntensity", 1.0f);
+            shader.SetUniform("uSpecularPower", 0f);
+            shader.SetUniform("uGlowColor", new Vector3(0f, 0f, 0f));
+            shader.SetUniform("uGlowIntensity", 0f);
+            shader.SetUniform("uGlowPower", 1.0f);
+
+            gl.Disable(EnableCap.DepthTest);
+            gl.Disable(EnableCap.CullFace);
+            gl.DrawArrays(GLEnum.Triangles, 0, (uint)vertCount);
+            gl.Enable(EnableCap.DepthTest);
+            gl.Enable(EnableCap.CullFace);
+
+            gl.BindVertexArray(0);
+            gl.UseProgram(0);
+        }
+
+        private unsafe void RenderConnectedPortals(GL gl, Matrix4x4 viewProjection) {
+            if (_sceneContext == null || ConnectedPortalIndicators.Count == 0) return;
+
+            _connPortalVerts.Clear();
+            var camPos = Camera.Position;
+            const float lineWidth = 0.1f;
+
+            foreach (var indicator in ConnectedPortalIndicators) {
+                if (indicator.WorldVertices == null || indicator.WorldVertices.Length < 3) continue;
+                var normal = Vector3.Normalize(indicator.Normal);
+                var offset = normal * 0.1f;
+
+                for (int v = 0; v < indicator.WorldVertices.Length; v++) {
+                    int next = (v + 1) % indicator.WorldVertices.Length;
+                    var a = indicator.WorldVertices[v] + offset;
+                    var b = indicator.WorldVertices[next] + offset;
+                    var edgeDir = Vector3.Normalize(b - a);
+                    var mid = (a + b) * 0.5f;
+                    var toCamera = Vector3.Normalize(camPos - mid);
+                    var sideDir = Vector3.Normalize(Vector3.Cross(edgeDir, toCamera)) * lineWidth;
+                    var n = toCamera;
+                    void PV(Vector3 p) {
+                        _connPortalVerts.Add(p.X); _connPortalVerts.Add(p.Y); _connPortalVerts.Add(p.Z);
+                        _connPortalVerts.Add(n.X); _connPortalVerts.Add(n.Y); _connPortalVerts.Add(n.Z);
+                    }
+                    PV(a - sideDir); PV(b - sideDir); PV(b + sideDir);
+                    PV(a - sideDir); PV(b + sideDir); PV(a + sideDir);
+                }
+            }
+
+            if (_connPortalVerts.Count == 0) return;
+            int vertCount = _connPortalVerts.Count / 6;
+            var data = CollectionsMarshal.AsSpan(_connPortalVerts);
+
+            if (_connPortalVAO == 0) {
+                gl.GenVertexArrays(1, out _connPortalVAO);
+                gl.GenBuffers(1, out _connPortalVBO);
+            }
+
+            gl.BindVertexArray(_connPortalVAO);
+            gl.BindBuffer(GLEnum.ArrayBuffer, _connPortalVBO);
+            fixed (float* ptr = data) {
+                gl.BufferData(GLEnum.ArrayBuffer, (nuint)(data.Length * sizeof(float)), ptr, GLEnum.DynamicDraw);
+            }
+            gl.EnableVertexAttribArray(0);
+            gl.VertexAttribPointer(0, 3, GLEnum.Float, false, 6 * sizeof(float), (void*)0);
+            gl.EnableVertexAttribArray(1);
+            gl.VertexAttribPointer(1, 3, GLEnum.Float, false, 6 * sizeof(float), (void*)(3 * sizeof(float)));
+            for (uint a = 2; a < 8; a++) gl.DisableVertexAttribArray(a);
+            gl.VertexAttrib4(2, 0f, 0f, 0f, 1f);
+
+            var shader = _sceneContext.SphereShader;
+            shader.Bind();
+            shader.SetUniform("uViewProjection", viewProjection);
+            shader.SetUniform("uCameraPosition", camPos);
+            shader.SetUniform("uSphereColor", new Vector3(0.3f, 0.5f, 0.9f));
+            shader.SetUniform("uLightDirection", Vector3.Normalize(new Vector3(0.3f, -0.5f, -0.8f)));
+            shader.SetUniform("uAmbientIntensity", 1.0f);
+            shader.SetUniform("uSpecularPower", 0f);
+            shader.SetUniform("uGlowColor", new Vector3(0f, 0f, 0f));
+            shader.SetUniform("uGlowIntensity", 0f);
+            shader.SetUniform("uGlowPower", 1.0f);
+
+            gl.Disable(EnableCap.DepthTest);
+            gl.Disable(EnableCap.CullFace);
+            gl.DrawArrays(GLEnum.Triangles, 0, (uint)vertCount);
+            gl.Enable(EnableCap.DepthTest);
+            gl.Enable(EnableCap.CullFace);
+
+            gl.BindVertexArray(0);
+            gl.UseProgram(0);
         }
 
         private unsafe void RenderConnectionLines(GL gl, Matrix4x4 viewProjection) {
@@ -1055,18 +1311,30 @@ namespace WorldBuilder.Editors.Dungeon {
                 if (_portalConnVAO != 0) gl.DeleteVertexArray(_portalConnVAO);
                 if (_portalOpenVBO != 0) gl.DeleteBuffer(_portalOpenVBO);
                 if (_portalOpenVAO != 0) gl.DeleteVertexArray(_portalOpenVAO);
+                if (_allOpenVBO != 0) gl.DeleteBuffer(_allOpenVBO);
+                if (_allOpenVAO != 0) gl.DeleteVertexArray(_allOpenVAO);
+                if (_connPortalVBO != 0) gl.DeleteBuffer(_connPortalVBO);
+                if (_connPortalVAO != 0) gl.DeleteVertexArray(_connPortalVAO);
             }
             _sceneContext?.Dispose();
         }
     }
 
-    /// <summary>
-    /// Data for rendering a room placement preview (wireframe ghost).
-    /// </summary>
     public struct RoomPlacementPreviewData {
         public Vector3 Origin;
         public Quaternion Orientation;
         public uint EnvFileId;
         public ushort CellStructIndex;
+    }
+
+    /// <summary>
+    /// Represents an open portal on any cell in the dungeon, for rendering green indicators.
+    /// </summary>
+    public struct OpenPortalIndicator {
+        public Vector3[] WorldVertices;
+        public Vector3 Centroid;
+        public Vector3 Normal;
+        public ushort CellNum;
+        public ushort PolyId;
     }
 }

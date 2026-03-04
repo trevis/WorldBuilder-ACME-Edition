@@ -47,57 +47,52 @@ in vec3 vNormal;
 
 out vec4 FragColor;
 
-vec4 maskBlend3(vec4 t0, vec4 t1, vec4 t2, float h0, float h1, float h2) {
-    float a0 = h0 == 0.0 ? 1.0 : t0.a;
-    float a1 = h1 == 0.0 ? 1.0 : t1.a;
-    float a2 = h2 == 0.0 ? 1.0 : t2.a;
-    float aR = 1.0 - (a0 * a1 * a2);
-    a0 = 1.0 - a0;
-    a1 = 1.0 - a1;
-    a2 = 1.0 - a2;
-    vec3 r0 = (a0 * t0.rgb + (1.0 - a0) * a1 * t1.rgb + (1.0 - a1) * a2 * t2.rgb);
-    vec4 r;
-    r.a = aR;
-    r.rgb = (1.0 / aR) * r0;
-    return r;
-}
-
 vec4 combineOverlays(vec3 pTexUV, vec4 pOverlay0, vec4 pOverlay1, vec4 pOverlay2) {
-    float h0 = pOverlay0.z < 0.0 ? 0.0 : 1.0;
-    float h1 = pOverlay1.z < 0.0 ? 0.0 : 1.0;
-    float h2 = pOverlay2.z < 0.0 ? 0.0 : 1.0;
-    vec4 overlay0 = vec4(0.0);
-    vec4 overlay1 = vec4(0.0);
-    vec4 overlay2 = vec4(0.0);
-    vec4 overlayAlpha0 = vec4(0.0);
-    vec4 overlayAlpha1 = vec4(0.0);
-    vec4 overlayAlpha2 = vec4(0.0);
     vec2 uvb = pTexUV.xy;
-    vec4 result = vec4(0.0);
-    if (h0 > 0.0) {
-        overlay0 = texture(xOverlays, vec3(uvb, pOverlay0.z));
-        // Only sample alpha if alphaIdx is valid
+
+    // Sequential blending matching the AC client's TexMerge::FillTempTexBuffer.
+    // Each overlay is composited onto the running result:
+    //   result = alpha * existing + (1 - alpha) * overlay
+    // where alpha comes from the alpha map (high alpha = keep base, low alpha = show overlay).
+    // We track total coverage so the caller can blend against the base texture.
+    float totalAlpha = 1.0;
+    vec3 accum = vec3(0.0);
+    bool hasAny = false;
+
+    if (pOverlay0.z >= 0.0) {
+        vec3 tex0 = texture(xOverlays, vec3(uvb, pOverlay0.z)).rgb;
+        float a0 = 1.0;
         if (pOverlay0.w >= 0.0) {
-            overlayAlpha0 = texture(xAlphas, pOverlay0.xyw);
-            overlay0.a = overlayAlpha0.a;
+            a0 = texture(xAlphas, pOverlay0.xyw).a;
+        }
+        accum = a0 * accum + (1.0 - a0) * tex0;
+        totalAlpha *= a0;
+        hasAny = true;
+
+        if (pOverlay1.z >= 0.0) {
+            vec3 tex1 = texture(xOverlays, vec3(uvb, pOverlay1.z)).rgb;
+            float a1 = 1.0;
+            if (pOverlay1.w >= 0.0) {
+                a1 = texture(xAlphas, pOverlay1.xyw).a;
+            }
+            accum = a1 * accum + (1.0 - a1) * tex1;
+            totalAlpha *= a1;
+
+            if (pOverlay2.z >= 0.0) {
+                vec3 tex2 = texture(xOverlays, vec3(uvb, pOverlay2.z)).rgb;
+                float a2 = 1.0;
+                if (pOverlay2.w >= 0.0) {
+                    a2 = texture(xAlphas, pOverlay2.xyw).a;
+                }
+                accum = a2 * accum + (1.0 - a2) * tex2;
+                totalAlpha *= a2;
+            }
         }
     }
-    if (h1 > 0.0) {
-        overlay1 = texture(xOverlays, vec3(uvb, pOverlay1.z));
-        if (pOverlay1.w >= 0.0) {
-            overlayAlpha1 = texture(xAlphas, pOverlay1.xyw);
-            overlay1.a = overlayAlpha1.a;
-        }
-    }
-    if (h2 > 0.0) {
-        overlay2 = texture(xOverlays, vec3(uvb, pOverlay2.z));
-        if (pOverlay2.w >= 0.0) {
-            overlayAlpha2 = texture(xAlphas, pOverlay2.xyw);
-            overlay2.a = overlayAlpha2.a;
-        }
-    }
-    result = maskBlend3(overlay0, overlay1, overlay2, h0, h1, h2);
-    return result;
+
+    float coverage = 1.0 - totalAlpha;
+    if (!hasAny || coverage < 0.001) return vec4(0.0);
+    return vec4(accum / coverage, coverage);
 }
 
 vec4 combineRoad(vec3 pTexUV, vec4 pRoad0, vec4 pRoad1) {

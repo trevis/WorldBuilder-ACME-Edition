@@ -141,6 +141,13 @@ namespace WorldBuilder.Shared.Documents {
             int existingBuildings = lbi.Buildings?.Count ?? 0;
             int existingObjects = lbi.Objects?.Count ?? 0;
 
+            // Step 2.5: Auto-compute VisibleCells (stab lists) if any are empty
+            bool anyEmpty = Cells.Any(c => c.VisibleCells.Count == 0);
+            if (anyEmpty) {
+                int updated = ComputeVisibleCells();
+                _logger.LogInformation("[DungeonDoc] Auto-computed VisibleCells for {Updated}/{Total} cells before export", updated, Cells.Count);
+            }
+
             // Step 3: Save all EnvCells
             var envCells = ToEnvCells(forDatExport: true);
             int saved = 0;
@@ -270,14 +277,14 @@ namespace WorldBuilder.Shared.Documents {
             cellA.CellPortals.Add(new DungeonCellPortalData {
                 OtherCellId = cellNumB,
                 PolygonId = polyIdA,
-                OtherPortalId = 0,
+                OtherPortalId = polyIdB,
                 Flags = 0
             });
 
             cellB.CellPortals.Add(new DungeonCellPortalData {
                 OtherCellId = cellNumA,
                 PolygonId = polyIdB,
-                OtherPortalId = 0,
+                OtherPortalId = polyIdA,
                 Flags = 0
             });
             MarkDirty();
@@ -416,24 +423,219 @@ namespace WorldBuilder.Shared.Documents {
             MarkDirty();
         }
 
+        public enum ValidationSeverity { Info, Warning, Error }
+
+        public record ValidationResult(ValidationSeverity Severity, string Message, ushort? CellNumber = null) {
+            public string Icon => Severity switch {
+                ValidationSeverity.Error => "[ERROR]",
+                ValidationSeverity.Warning => "[WARN]",
+                _ => "[INFO]"
+            };
+        }
+
         public List<string> Validate() {
-            var warnings = new List<string>();
+            return ValidateComprehensive()
+                .Where(r => r.Severity != ValidationSeverity.Info)
+                .Select(r => r.Message)
+                .ToList();
+        }
+
+        public List<ValidationResult> ValidateComprehensive() {
+            var results = new List<ValidationResult>();
             if (Cells.Count == 0) {
-                warnings.Add("Dungeon has no cells.");
-                return warnings;
+                results.Add(new(ValidationSeverity.Warning, "Dungeon has no cells."));
+                return results;
             }
 
             var cellNums = new HashSet<ushort>(Cells.Select(c => c.CellNumber));
+
+            // Duplicate cell numbers
+            var dupes = Cells.GroupBy(c => c.CellNumber).Where(g => g.Count() > 1);
+            foreach (var dupe in dupes)
+                results.Add(new(ValidationSeverity.Error,
+                    $"Duplicate cell number 0x{dupe.Key:X4} ({dupe.Count()} cells)", dupe.Key));
+
+            // Orphaned portal references
             foreach (var cell in Cells) {
                 foreach (var portal in cell.CellPortals) {
                     if (portal.OtherCellId != 0 && portal.OtherCellId != 0xFFFF &&
                         !cellNums.Contains(portal.OtherCellId)) {
-                        warnings.Add($"Cell {cell.CellNumber:X4} portal references non-existent cell {portal.OtherCellId:X4}");
+                        results.Add(new(ValidationSeverity.Error,
+                            $"Cell 0x{cell.CellNumber:X4} portal references non-existent cell 0x{portal.OtherCellId:X4}",
+                            cell.CellNumber));
                     }
                 }
             }
 
-            return warnings;
+            // One-way portals (A→B exists but B→A doesn't)
+            foreach (var cell in Cells) {
+                foreach (var portal in cell.CellPortals) {
+                    var other = GetCell(portal.OtherCellId);
+                    if (other != null && !other.CellPortals.Any(p => p.OtherCellId == cell.CellNumber)) {
+                        results.Add(new(ValidationSeverity.Warning,
+                            $"One-way portal: 0x{cell.CellNumber:X4} → 0x{portal.OtherCellId:X4} (no return link)",
+                            cell.CellNumber));
+                    }
+                }
+            }
+
+            // Disconnected cells (unreachable from first cell)
+            var visited = new HashSet<ushort>();
+            var queue = new Queue<ushort>();
+            var firstCell = Cells[0].CellNumber;
+            queue.Enqueue(firstCell);
+            visited.Add(firstCell);
+            while (queue.Count > 0) {
+                var current = queue.Dequeue();
+                var cell = GetCell(current);
+                if (cell == null) continue;
+                foreach (var portal in cell.CellPortals) {
+                    if (cellNums.Contains(portal.OtherCellId) && visited.Add(portal.OtherCellId))
+                        queue.Enqueue(portal.OtherCellId);
+                }
+            }
+            foreach (var cell in Cells) {
+                if (!visited.Contains(cell.CellNumber))
+                    results.Add(new(ValidationSeverity.Warning,
+                        $"Cell 0x{cell.CellNumber:X4} is disconnected from the main dungeon (unreachable from 0x{firstCell:X4})",
+                        cell.CellNumber));
+            }
+
+            // Missing surfaces
+            foreach (var cell in Cells) {
+                if (cell.Surfaces.Count == 0)
+                    results.Add(new(ValidationSeverity.Warning,
+                        $"Cell 0x{cell.CellNumber:X4} has no surfaces assigned (will be invisible in-game)",
+                        cell.CellNumber));
+            }
+
+            // Empty VisibleCells
+            int emptyStabs = Cells.Count(c => c.VisibleCells.Count == 0);
+            if (emptyStabs > 0)
+                results.Add(new(ValidationSeverity.Info,
+                    $"{emptyStabs} cell(s) have empty VisibleCells — use Compute Visibility before export"));
+
+            // Summary
+            if (results.Count == 0)
+                results.Add(new(ValidationSeverity.Info,
+                    $"All {Cells.Count} cells passed validation."));
+
+            return results;
+        }
+
+        /// <summary>
+        /// Auto-fixes common issues: adds missing back-portals for one-way connections.
+        /// Returns the number of fixes applied.
+        /// </summary>
+        public int AutoFixPortals() {
+            int fixes = 0;
+            foreach (var cell in Cells) {
+                foreach (var portal in cell.CellPortals) {
+                    var other = GetCell(portal.OtherCellId);
+                    if (other != null && !other.CellPortals.Any(p => p.OtherCellId == cell.CellNumber)) {
+                        other.CellPortals.Add(new DungeonCellPortalData {
+                            OtherCellId = cell.CellNumber,
+                            PolygonId = portal.OtherPortalId,
+                            OtherPortalId = portal.PolygonId,
+                            Flags = portal.Flags
+                        });
+                        fixes++;
+                    }
+                }
+            }
+            if (fixes > 0) MarkDirty();
+            return fixes;
+        }
+
+        /// <summary>
+        /// Computes VisibleCells (stab lists) for all cells via BFS through portal connections.
+        /// The AC client uses these to know which cells to prefetch and keep loaded.
+        /// Each cell's visible set includes itself plus all cells reachable within maxDepth portal hops.
+        /// </summary>
+        public int ComputeVisibleCells(int maxDepth = 3) {
+            var adjacency = new Dictionary<ushort, List<ushort>>();
+            foreach (var cell in Cells) {
+                adjacency[cell.CellNumber] = cell.CellPortals
+                    .Select(p => p.OtherCellId)
+                    .Where(id => id != 0 && id != 0xFFFF && Cells.Any(c => c.CellNumber == id))
+                    .ToList();
+            }
+
+            int totalUpdated = 0;
+            foreach (var cell in Cells) {
+                var visible = new HashSet<ushort> { cell.CellNumber };
+                var frontier = new Queue<(ushort id, int depth)>();
+                frontier.Enqueue((cell.CellNumber, 0));
+
+                while (frontier.Count > 0) {
+                    var (current, depth) = frontier.Dequeue();
+                    if (depth >= maxDepth) continue;
+                    if (!adjacency.TryGetValue(current, out var neighbors)) continue;
+
+                    foreach (var neighbor in neighbors) {
+                        if (visible.Add(neighbor)) {
+                            frontier.Enqueue((neighbor, depth + 1));
+                        }
+                    }
+                }
+
+                var sorted = visible.OrderBy(x => x).ToList();
+                if (!cell.VisibleCells.SequenceEqual(sorted)) {
+                    cell.VisibleCells.Clear();
+                    cell.VisibleCells.AddRange(sorted);
+                    totalUpdated++;
+                }
+            }
+
+            if (totalUpdated > 0) MarkDirty();
+            return totalUpdated;
+        }
+
+        /// <summary>
+        /// Recomputes PortalFlags for all cell portals from CellStruct geometry.
+        /// The PortalSide flag (bit 1) indicates which half-space of the portal
+        /// polygon plane is the cell interior. This must be correct for the AC client
+        /// to traverse portals properly.
+        /// </summary>
+        public int RecomputePortalFlags(IDatReaderWriter dats) {
+            int updated = 0;
+            foreach (var cell in Cells) {
+                uint envFileId = (uint)(cell.EnvironmentId | 0x0D000000);
+                if (!dats.TryGet<DatReaderWriter.DBObjs.Environment>(envFileId, out var env)) continue;
+                if (!env.Cells.TryGetValue(cell.CellStructure, out var cs)) continue;
+
+                var centroid = Vector3.Zero;
+                int vtxCount = cs.VertexArray.Vertices.Count;
+                foreach (var vtx in cs.VertexArray.Vertices.Values)
+                    centroid += vtx.Origin;
+                if (vtxCount > 0) centroid /= vtxCount;
+
+                foreach (var portal in cell.CellPortals) {
+                    if (!cs.Polygons.TryGetValue(portal.PolygonId, out var poly)) continue;
+                    if (poly.VertexIds.Count < 3) continue;
+
+                    if (!cs.VertexArray.Vertices.TryGetValue((ushort)poly.VertexIds[0], out var v0)) continue;
+                    if (!cs.VertexArray.Vertices.TryGetValue((ushort)poly.VertexIds[1], out var v1)) continue;
+                    if (!cs.VertexArray.Vertices.TryGetValue((ushort)poly.VertexIds[2], out var v2)) continue;
+
+                    var normal = Vector3.Normalize(Vector3.Cross(v1.Origin - v0.Origin, v2.Origin - v0.Origin));
+                    float d = -Vector3.Dot(normal, v0.Origin);
+                    float centroidDot = Vector3.Dot(normal, centroid) + d;
+
+                    // AC client: PortalSide flag (0x0002) SET → portal_side=0 (interior on positive side)
+                    //            PortalSide flag CLEAR        → portal_side=1 (interior on negative side)
+                    ushort newFlags = (ushort)(portal.Flags & ~0x0002);
+                    if (centroidDot >= 0)
+                        newFlags |= 0x0002;
+
+                    if (portal.Flags != newFlags) {
+                        portal.Flags = newFlags;
+                        updated++;
+                    }
+                }
+            }
+            if (updated > 0) MarkDirty();
+            return updated;
         }
 
         public DungeonCellData? GetCell(ushort cellNumber) =>

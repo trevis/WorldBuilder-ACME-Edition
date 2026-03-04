@@ -1,4 +1,4 @@
-﻿using Avalonia.Controls;
+using Avalonia.Controls;
 using Avalonia.Controls.Templates;
 using System;
 using System.Collections.Generic;
@@ -14,8 +14,9 @@ namespace WorldBuilder.Lib {
                 return new TextBlock { Text = "data was null" };
             }
 
-            var name = data.GetType().FullName?.Replace("ViewModel", "View")
+            var fullVmName = data.GetType().FullName
                 ?? throw new InvalidOperationException($"{data.GetType().FullName} is not a ViewModel");
+            var name = fullVmName.Replace("ViewModel", "View");
 #pragma warning disable IL2057 // Unrecognized value passed to the parameter of method. It's not possible to guarantee the availability of the target type.
             var type = Type.GetType(name);
 
@@ -24,6 +25,26 @@ namespace WorldBuilder.Lib {
                 var asm = System.Reflection.Assembly.GetExecutingAssembly();
                 type = asm.GetType(name);
             }
+
+            // Fallback: try inserting .Views. before the class name
+            // e.g. Namespace.FooViewModel -> Namespace.Views.FooView
+            if (type == null) {
+                var vmTypeName = data.GetType().Name.Replace("ViewModel", "View");
+                var vmNamespace = data.GetType().Namespace;
+                if (vmNamespace != null) {
+                    var viewsName = vmNamespace + ".Views." + vmTypeName;
+                    var asm = System.Reflection.Assembly.GetExecutingAssembly();
+                    type = asm.GetType(viewsName);
+                    if (type == null) {
+                        foreach (var a in AppDomain.CurrentDomain.GetAssemblies()) {
+                            type = a.GetType(viewsName);
+                            if (type != null) break;
+                        }
+                    }
+                    if (type != null) name = viewsName;
+                }
+            }
+
             // Fallback: search in all loaded assemblies
             if (type == null) {
                 foreach (var asm in AppDomain.CurrentDomain.GetAssemblies()) {
@@ -50,7 +71,12 @@ namespace WorldBuilder.Lib {
                 return (Control)control!;
             }
 
-            control = Activator.CreateInstance(type) as Control;
+            try {
+                control = Activator.CreateInstance(type) as Control;
+            }
+            catch (MissingMethodException) {
+                return new TextBlock { Text = $"No view: {type.Name}" };
+            }
 
             if (control != null) {
                 return (Control)control!;

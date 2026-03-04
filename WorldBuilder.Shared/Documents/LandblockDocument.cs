@@ -38,10 +38,17 @@ namespace WorldBuilder.Shared.Documents {
         [MemoryPackInclude]
         private LandblockData _data = new();
 
+        private bool _loadedFromProjection;
+
         public LandblockDocument(ILogger logger) : base(logger) {
         }
 
         protected override async Task<bool> InitInternal(IDatReaderWriter datreader, DocumentManager documentManager) {
+            if (_loadedFromProjection) {
+                ClearDirty();
+                return true;
+            }
+
             var lbIdHex = Id.Replace("landblock_", "");
             var lbId = uint.Parse(lbIdHex, System.Globalization.NumberStyles.HexNumber);
             var infoId = lbId << 16 | 0xFFFE;
@@ -84,6 +91,7 @@ namespace WorldBuilder.Shared.Documents {
 
         protected override bool LoadFromProjectionInternal(byte[] projection) {
             _data = MemoryPackSerializer.Deserialize<LandblockData>(projection) ?? new();
+            _loadedFromProjection = true;
             return true;
         }
 

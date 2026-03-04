@@ -119,7 +119,8 @@ namespace WorldBuilder.Shared.Documents {
                 docInstance.Id = documentId;
                 docInstance.SetCacheDirectory(_cacheDirectory);
 
-                if (dbDoc == null) {
+                bool isNewDoc = dbDoc == null;
+                if (isNewDoc) {
                     dbDoc = await DocumentStorageService.CreateDocumentAsync(documentId, docTypeName,
                         docInstance.SaveToProjection()).ConfigureAwait(false);
                     _logger.LogInformation("Creating new Document {DocumentId}({Type})", documentId, docTypeName);
@@ -134,6 +135,11 @@ namespace WorldBuilder.Shared.Documents {
                 if (!await docInstance.InitAsync(Dats, this).ConfigureAwait(false)) {
                     _logger.LogError("Failed to init document {DocumentId} of type {Type}", documentId, docTypeName);
                     return null;
+                }
+
+                if (isNewDoc) {
+                    var projection = docInstance.SaveToProjection();
+                    await DocumentStorageService.UpdateDocumentAsync(documentId, projection).ConfigureAwait(false);
                 }
 
                 // Add to cache, ensuring only one instance per documentId

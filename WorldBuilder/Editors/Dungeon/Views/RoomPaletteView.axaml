@@ -14,7 +14,7 @@
                 BorderBrush="#2a1d42"
                 BorderThickness="0,0,0,1"
                 Padding="8,6">
-            <TextBlock Text="Room Palette"
+            <TextBlock Text="Dungeon Pieces"
                        FontSize="12"
                        FontWeight="SemiBold"
                        Foreground="#c0b0d8" />
@@ -23,38 +23,21 @@
         <!-- Search -->
         <Border DockPanel.Dock="Top" Padding="6,4">
             <TextBox Text="{Binding SearchText}"
-                     Watermark="Search by Environment ID..."
+                     Watermark="Search pieces..."
                      FontSize="11" />
         </Border>
 
-        <!-- Starter / Browse toggle -->
+        <!-- Category filter -->
         <Border DockPanel.Dock="Top" Padding="6,2">
-            <StackPanel Orientation="Horizontal" Spacing="8">
-                <CheckBox IsChecked="{Binding ShowStarterMode}"
-                          Content="Recommended"
-                          FontSize="11"
-                          Foreground="#c0b0d8" />
-                <TextBlock Text="|"
-                           VerticalAlignment="Center"
-                           FontSize="11"
-                           Foreground="#5a4a6e" />
-                <TextBlock Text="Portals:"
-                           VerticalAlignment="Center"
-                           FontSize="11"
-                           Foreground="#8a7a9e" />
-                <NumericUpDown Value="{Binding MinPortals}"
-                               Minimum="0" Maximum="20"
-                               Width="60" FontSize="11"
-                               FormatString="0" />
-                <TextBlock Text="to"
-                           VerticalAlignment="Center"
-                           FontSize="11"
-                           Foreground="#8a7a9e" />
-                <NumericUpDown Value="{Binding MaxPortals}"
-                               Minimum="0" Maximum="99"
-                               Width="60" FontSize="11"
-                               FormatString="0" />
-            </StackPanel>
+            <Grid ColumnDefinitions="*,Auto">
+                <ComboBox Grid.Column="0" ItemsSource="{Binding CatalogCategories}"
+                          SelectedItem="{Binding CatalogCategory}"
+                          FontSize="11" HorizontalAlignment="Stretch" />
+                <CheckBox Grid.Column="1" IsChecked="{Binding ShowCompatibleOnly}"
+                          Content="Compatible" FontSize="10" Foreground="#6ec07a"
+                          ToolTip.Tip="Only show pieces that connect to your dungeon's open doorways"
+                          Margin="6,0,0,0" VerticalAlignment="Center" />
+            </Grid>
         </Border>
 
         <!-- Status -->
@@ -67,30 +50,51 @@
                        Foreground="#5a4a6e" />
         </Border>
 
-        <!-- Room List -->
-        <ListBox ItemsSource="{Binding RoomsToShow}"
-                 SelectedItem="{Binding SelectedRoom}"
+        <!-- Building knowledge base indicator -->
+        <Border DockPanel.Dock="Top" Padding="12,16"
+                Background="#1a0e30" IsVisible="{Binding IsBuildingKnowledgeBase}">
+            <StackPanel Spacing="8" HorizontalAlignment="Center">
+                <TextBlock Text="Building Piece Catalog..."
+                           FontSize="14" FontWeight="SemiBold"
+                           Foreground="#4dbdbd" HorizontalAlignment="Center" />
+                <TextBlock Text="{Binding BuildingMessage}"
+                           FontSize="11" Foreground="#6a8a8a"
+                           TextWrapping="Wrap" TextAlignment="Center"
+                           HorizontalAlignment="Center" />
+                <ProgressBar IsIndeterminate="True" Height="4"
+                             Foreground="#4dbdbd" Background="#2a1d42" />
+            </StackPanel>
+        </Border>
+
+        <!-- Piece List -->
+        <ListBox ItemsSource="{Binding PrefabEntries}"
+                 SelectedItem="{Binding SelectedPrefab}"
                  FontSize="11"
-                 Background="Transparent">
+                 Background="Transparent"
+                 IsVisible="{Binding !IsBuildingKnowledgeBase}">
             <ListBox.ItemTemplate>
-                <DataTemplate x:DataType="vm:RoomEntry">
-                    <StackPanel Orientation="Horizontal" Spacing="6" Margin="2,2">
-                        <Panel Width="72" Height="72">
-                            <Border Background="#FF0E0A16" CornerRadius="3"
+                <DataTemplate x:DataType="vm:PrefabListEntry">
+                    <Grid ColumnDefinitions="Auto,*" Margin="2,3"
+                          PointerEntered="PrefabItem_PointerEntered"
+                          PointerExited="PrefabItem_PointerExited"
+                          Background="Transparent">
+                        <Panel Grid.Column="0" Width="80" Height="80">
+                            <Border Background="#FF0E0A16" CornerRadius="4"
                                     IsVisible="{Binding Thumbnail, Converter={x:Static ObjectConverters.IsNull}}" />
-                            <Image Width="72" Height="72" Source="{Binding Thumbnail}" Stretch="Uniform"
+                            <Image Width="80" Height="80" Source="{Binding Thumbnail}" Stretch="Uniform"
                                    IsVisible="{Binding Thumbnail, Converter={x:Static ObjectConverters.IsNotNull}}" />
                         </Panel>
-                        <StackPanel VerticalAlignment="Center" Spacing="1">
+                        <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="3" Margin="8,0,0,0">
                             <TextBlock Text="{Binding DisplayName}"
-                                       Foreground="#c0b0d8"
-                                       FontSize="9"
-                                       FontFamily="Consolas" />
+                                       Foreground="#c0e0e0"
+                                       FontSize="12"
+                                       FontWeight="SemiBold"
+                                       TextWrapping="Wrap" />
                             <TextBlock Text="{Binding DetailText}"
-                                       Foreground="#5a4a6e"
-                                       FontSize="9" />
+                                       Foreground="#5a6a6a"
+                                       FontSize="10" />
                         </StackPanel>
-                    </StackPanel>
+                    </Grid>
                 </DataTemplate>
             </ListBox.ItemTemplate>
         </ListBox>
