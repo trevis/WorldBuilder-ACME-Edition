@@ -144,7 +144,7 @@ namespace WorldBuilder.Editors.Dungeon {
         public DungeonScene? Scene => _scene;
         public DungeonDocument? Document => _document;
         public RoomPaletteViewModel? RoomPalette { get; private set; }
-        private Views.DungeonGraphView? _graphView;
+        private DungeonGraphPanelViewModel? _graphPanel;
         public DungeonObjectBrowserViewModel? ObjectBrowser { get; private set; }
         public SurfaceBrowserViewModel? SurfaceBrowser { get; private set; }
         public DungeonHistoryPanelViewModel? HistoryPanel { get; private set; }
@@ -313,8 +313,8 @@ namespace WorldBuilder.Editors.Dungeon {
             if (SurfaceBrowser != null) Register("SurfaceBrowser", "Surfaces", SurfaceBrowser, Lib.Docking.DockLocation.Left);
             if (Toolbox != null) Register("Toolbox", "Tools", Toolbox, Lib.Docking.DockLocation.Right);
             if (HistoryPanel != null) Register("History", "History", HistoryPanel, Lib.Docking.DockLocation.Right);
-            _graphView = new Views.DungeonGraphView { DataContext = this };
-            Register("DungeonGraph", "Dungeon Map", _graphView, Lib.Docking.DockLocation.Bottom);
+            _graphPanel = new DungeonGraphPanelViewModel(this);
+            Register("DungeonGraph", "Dungeon Map", _graphPanel, Lib.Docking.DockLocation.Bottom);
 
             var uiState = Settings.Dungeon.UIState;
             if (Enum.TryParse<Lib.Docking.DockRegionMode>(uiState.LeftDockMode, out var leftMode))
@@ -1184,7 +1184,7 @@ namespace WorldBuilder.Editors.Dungeon {
         }
 
         private void RefreshGraphView() {
-            _graphView?.Refresh(_document, Selection?.SelectedCell != null
+            _graphPanel?.RequestRefresh(_document, Selection?.SelectedCell != null
                 ? (ushort)(Selection.SelectedCell.CellId & 0xFFFF)
                 : null);
         }
