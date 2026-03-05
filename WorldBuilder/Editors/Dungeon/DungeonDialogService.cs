@@ -343,8 +343,9 @@ namespace WorldBuilder.Editors.Dungeon {
             }
         }
 
-        public async Task<GeneratorParams?> ShowGenerateDialog(DungeonKnowledgeBase kb) {
+        public async Task<GeneratorParams?> ShowGenerateDialog(DungeonKnowledgeBase kb, HashSet<string>? favoritePrefabSignatures = null, List<DungeonPrefab>? customPrefabs = null) {
             GeneratorParams? result = null;
+            int favCount = favoritePrefabSignatures?.Count ?? 0;
 
             var styles = new List<string> { "All" };
             var seenStyles = kb.Catalog
@@ -401,10 +402,43 @@ namespace WorldBuilder.Editors.Dungeon {
                 Foreground = new SolidColorBrush(Color.Parse("#c0b0d8"))
             };
 
+            var favLabel = favCount > 0
+                ? $"Generate from favorites ({favCount} favorited)"
+                : "Generate from favorites (no favorites yet)";
+            var useFavoritesCheck = new CheckBox {
+                Content = favLabel,
+                IsChecked = false,
+                IsEnabled = favCount > 0,
+                FontSize = 11,
+                Foreground = new SolidColorBrush(Color.Parse("#c0b0d8"))
+            };
+            var favHint = new TextBlock {
+                Text = "Builds new dungeons using the room shapes found in your favorites.\n" +
+                       "Favorite whole dungeons or individual pieces — both work.",
+                FontSize = 10,
+                Foreground = new SolidColorBrush(Color.Parse("#6a5a7e")),
+                TextWrapping = TextWrapping.Wrap,
+                MaxWidth = 350,
+                IsVisible = false,
+                Margin = new Thickness(20, -4, 0, 0)
+            };
+            useFavoritesCheck.IsCheckedChanged += (s, e) => {
+                bool favOn = useFavoritesCheck.IsChecked == true;
+                styleCombo.IsEnabled = !favOn;
+                lockStyleCheck.IsEnabled = !favOn;
+                favHint.IsVisible = favOn;
+                if (favOn) {
+                    styleCombo.SelectedIndex = 0;
+                    lockStyleCheck.IsChecked = false;
+                }
+            };
+
             AddRow("Rooms:", roomCount);
             AddRow("Style:", styleCombo);
             AddRow("Seed:", seedBox);
             panel.Children.Add(new Border { Height = 4 });
+            panel.Children.Add(useFavoritesCheck);
+            panel.Children.Add(favHint);
             panel.Children.Add(requireRoofCheck);
             panel.Children.Add(lockStyleCheck);
             panel.Children.Add(allowVerticalCheck);
@@ -419,13 +453,17 @@ namespace WorldBuilder.Editors.Dungeon {
 
             genBtn.Click += (s, e) => {
                 int.TryParse(seedBox.Text, out var seed);
+                bool useFavs = useFavoritesCheck.IsChecked == true && favCount > 0;
                 result = new GeneratorParams {
-                    PrefabCount = (int)(roomCount.Value ?? 10),
-                    Style = styleCombo.SelectedItem as string ?? "All",
+                    RoomCount = (int)(roomCount.Value ?? 10),
+                    Style = useFavs ? "All" : (styleCombo.SelectedItem as string ?? "All"),
                     Seed = seed,
                     RequireRoof = requireRoofCheck.IsChecked == true,
                     AllowVertical = allowVerticalCheck.IsChecked == true,
-                    LockStyle = lockStyleCheck.IsChecked == true,
+                    LockStyle = useFavs ? false : (lockStyleCheck.IsChecked == true),
+                    UseFavoritesOnly = useFavs,
+                    FavoritePrefabSignatures = useFavs ? favoritePrefabSignatures : null,
+                    CustomPrefabs = useFavs ? customPrefabs : null,
                 };
                 DialogHost.Close("DungeonDialogHost");
             };

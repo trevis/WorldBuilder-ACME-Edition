@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Numerics;
+using DatReaderWriter.Types;
 using WorldBuilder.Editors.Landscape;
 using WorldBuilder.Shared.Documents;
 using WorldBuilder.Shared.Lib;
@@ -219,13 +220,44 @@ namespace WorldBuilder.Editors.Dungeon {
             return sb.ToString();
         }
 
-        public static string ComputeCellTeleportLine(LoadedEnvCell cell, DungeonDocument? document) {
+        public static string ComputeCellTeleportLine(LoadedEnvCell cell, DungeonDocument? document, IDatReaderWriter? dats = null) {
             var dc = document?.GetCell((ushort)(cell.CellId & 0xFFFF));
             if (dc == null) return $"0x{cell.CellId:X8}";
 
-            if (!Matrix4x4.Decompose(cell.WorldTransform, out _, out var q, out _))
-                q = Quaternion.Identity;
-            return $"0x{cell.CellId:X8} [{dc.Origin.X:F6} {dc.Origin.Y:F6} {dc.Origin.Z:F6}] {q.W:F6} {q.X:F6} {q.Y:F6} {q.Z:F6}";
+            var pos = ComputeFloorCentroid(dc, dats);
+            return $"0x{cell.CellId:X8} [{pos.X:F6} {pos.Y:F6} {pos.Z:F6}] 1.000000 0.000000 0.000000 0.000000";
+        }
+
+        /// <summary>
+        /// Compute a world-space position at the center of the cell floor.
+        /// Uses the cell geometry vertices to find the centroid at floor level.
+        /// </summary>
+        private static Vector3 ComputeFloorCentroid(DungeonCellData dc, IDatReaderWriter? dats) {
+            if (dats == null) return dc.Origin;
+
+            uint envFileId = (uint)(dc.EnvironmentId | 0x0D000000);
+            if (!dats.TryGet<DatReaderWriter.DBObjs.Environment>(envFileId, out var env)) return dc.Origin;
+            if (!env.Cells.TryGetValue(dc.CellStructure, out var cs)) return dc.Origin;
+            if (cs.VertexArray?.Vertices == null || cs.VertexArray.Vertices.Count == 0) return dc.Origin;
+
+            var rot = dc.Orientation;
+            if (rot.LengthSquared() < 0.01f) rot = Quaternion.Identity;
+            rot = Quaternion.Normalize(rot);
+
+            float minZ = float.MaxValue;
+            var centroid = Vector3.Zero;
+            int count = 0;
+            foreach (var vtx in cs.VertexArray.Vertices.Values) {
+                var worldPos = dc.Origin + Vector3.Transform(vtx.Origin, rot);
+                centroid += worldPos;
+                if (worldPos.Z < minZ) minZ = worldPos.Z;
+                count++;
+            }
+
+            if (count == 0) return dc.Origin;
+            centroid /= count;
+            centroid.Z = minZ + 0.005f;
+            return centroid;
         }
 
         public static IReadOnlyList<(Vector3 From, Vector3 To)> ComputeConnectionLines(
@@ -307,6 +339,84 @@ namespace WorldBuilder.Editors.Dungeon {
                 Console.WriteLine($"[ConnectionLines] Computed {result.Count} connection lines from {totalPortals} portals");
             }
 
+            return result;
+        }
+
+        /// <summary>
+        /// Returns the set of cell numbers that are connected via portals to any of
+        /// the currently selected cells (excluding the selected cells themselves).
+        /// </summary>
+        public HashSet<ushort> GetConnectedNeighborCellNums() {
+            var result = new HashSet<ushort>();
+            if (_ctx.Document == null) return result;
+            var selectedNums = new HashSet<ushort>(_selectedCells.Select(c => (ushort)(c.CellId & 0xFFFF)));
+            foreach (var num in selectedNums) {
+                var dc = _ctx.Document.GetCell(num);
+                if (dc == null) continue;
+                foreach (var cp in dc.CellPortals) {
+                    if (cp.OtherCellId != 0 && cp.OtherCellId != 0xFFFF && !selectedNums.Contains(cp.OtherCellId))
+                        result.Add(cp.OtherCellId);
+                }
+            }
+            return result;
+        }
+
+        /// <summary>
+        /// Compute connection lines that touch any of the currently selected cells.
+        /// Returns portal centroid pairs in world-space, matching ConnectionLines format.
+        /// </summary>
+        public IReadOnlyList<(Vector3 From, Vector3 To)> ComputeSelectedConnectionLines(
+            DungeonDocument? document, IDatReaderWriter? dats) {
+            var result = new List<(Vector3 From, Vector3 To)>();
+            if (document == null || dats == null || _selectedCells.Count == 0) return result;
+
+            var selectedNums = new HashSet<ushort>(_selectedCells.Select(c => (ushort)(c.CellId & 0xFFFF)));
+
+            uint lbId = document.LandblockKey;
+            var blockX = (lbId >> 8) & 0xFF;
+            var blockY = lbId & 0xFF;
+            var lbOffset = new Vector3(blockX * 192f, blockY * 192f, 0f);
+            const float dungeonZBump = -50f;
+
+            var drawn = new HashSet<(ushort, ushort)>();
+
+            foreach (var cell in document.Cells) {
+                if (!selectedNums.Contains(cell.CellNumber)) continue;
+                foreach (var cp in cell.CellPortals) {
+                    if (cp.OtherCellId == 0 || cp.OtherCellId == 0xFFFF) continue;
+                    var otherCell = document.GetCell(cp.OtherCellId);
+                    if (otherCell == null) continue;
+
+                    var key = (Math.Min(cell.CellNumber, cp.OtherCellId), Math.Max(cell.CellNumber, cp.OtherCellId));
+                    if (drawn.Contains(key)) continue;
+                    drawn.Add(key);
+
+                    uint envFileId = (uint)(cell.EnvironmentId | 0x0D000000);
+                    if (!dats.TryGet<DatReaderWriter.DBObjs.Environment>(envFileId, out var env) ||
+                        !env.Cells.TryGetValue(cell.CellStructure, out var cellStruct)) continue;
+
+                    var geomA = PortalSnapper.GetPortalGeometry(cellStruct, cp.PolygonId);
+                    if (geomA == null) continue;
+
+                    var worldOriginA = cell.Origin + lbOffset + new Vector3(0, 0, dungeonZBump);
+                    var (centroidA, _) = PortalSnapper.TransformPortalToWorld(geomA.Value, worldOriginA, cell.Orientation);
+
+                    uint otherEnvFileId = (uint)(otherCell.EnvironmentId | 0x0D000000);
+                    if (!dats.TryGet<DatReaderWriter.DBObjs.Environment>(otherEnvFileId, out var otherEnv) ||
+                        !otherEnv.Cells.TryGetValue(otherCell.CellStructure, out var otherCellStruct)) continue;
+
+                    var backPortal = otherCell.CellPortals.FirstOrDefault(p => p.OtherCellId == cell.CellNumber);
+                    if (backPortal == null) continue;
+
+                    var geomB = PortalSnapper.GetPortalGeometry(otherCellStruct, backPortal.PolygonId);
+                    if (geomB == null) continue;
+
+                    var worldOriginB = otherCell.Origin + lbOffset + new Vector3(0, 0, dungeonZBump);
+                    var (centroidB, _) = PortalSnapper.TransformPortalToWorld(geomB.Value, worldOriginB, otherCell.Orientation);
+
+                    result.Add((centroidA, centroidB));
+                }
+            }
             return result;
         }
 

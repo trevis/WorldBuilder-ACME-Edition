@@ -106,7 +106,76 @@ namespace WorldBuilder.Editors.Dungeon {
         public float BoundsHeight { get; set; }
         public List<string> SourceDungeons { get; set; } = new();
         public List<ushort> SampleSurfaces { get; set; } = new();
-        /// <summary>True if this room type has ceiling polygons.</summary>
         public bool HasCeiling { get; set; } = true;
+        public List<PortalDimension> PortalDimensions { get; set; } = new();
+    }
+
+    public class PortalDimension {
+        public ushort PolyId { get; set; }
+        public float Width { get; set; }
+        public float Height { get; set; }
+    }
+
+    public class RoomStaticSet {
+        public ushort EnvId { get; set; }
+        public ushort CellStruct { get; set; }
+        public List<StaticPlacement> Placements { get; set; } = new();
+    }
+
+    public class StaticPlacement {
+        public uint ObjectId { get; set; }
+        public float X { get; set; }
+        public float Y { get; set; }
+        public float Z { get; set; }
+        public float RotX { get; set; }
+        public float RotY { get; set; }
+        public float RotZ { get; set; }
+        public float RotW { get; set; } = 1f;
+        public int Frequency { get; set; }
+    }
+
+    /// <summary>
+    /// A complete blueprint of a real dungeon from the DAT. Stores enough data
+    /// to reconstruct the dungeon exactly or to re-skin it with different room types.
+    /// </summary>
+    public class DungeonTemplate {
+        public ushort SourceLandblock { get; set; }
+        public string DungeonName { get; set; } = "";
+        public string Style { get; set; } = "";
+        public int CellCount { get; set; }
+        public string GraphType { get; set; } = "";
+        public int MaxDepth { get; set; }
+        public int BranchCount { get; set; }
+        public List<TemplateNode> Nodes { get; set; } = new();
+        public List<TemplateConnection> Connections { get; set; } = new();
+    }
+
+    public class TemplateNode {
+        public int Index { get; set; }
+        public ushort EnvId { get; set; }
+        public ushort CellStruct { get; set; }
+        public int PortalCount { get; set; }
+        public string Role { get; set; } = "";
+        public List<int> ConnectedTo { get; set; } = new();
+        /// <summary>Position relative to the first cell (cell-0-relative).</summary>
+        public float OffsetX { get; set; }
+        public float OffsetY { get; set; }
+        public float OffsetZ { get; set; }
+        public float RotX { get; set; }
+        public float RotY { get; set; }
+        public float RotZ { get; set; }
+        public float RotW { get; set; } = 1f;
+        public List<ushort> Surfaces { get; set; } = new();
+    }
+
+    /// <summary>
+    /// A portal connection between two nodes in a dungeon template,
+    /// with the exact polygon IDs used on each side.
+    /// </summary>
+    public class TemplateConnection {
+        public int NodeA { get; set; }
+        public ushort PolyIdA { get; set; }
+        public int NodeB { get; set; }
+        public ushort PolyIdB { get; set; }
     }
 }

@@ -111,9 +111,9 @@ namespace WorldBuilder.Editors.Dungeon {
         public string SelectedCellLocationHex =>
             Selection?.SelectedCell != null ? $"0x{Selection.SelectedCell.CellId:X8}" : "";
 
-        /// <summary>Full teleport line: cellId x y z qx qy qz qw (center of cell, char spawn).</summary>
+        /// <summary>Full teleport line matching ACE @teleloc format, positioned at the cell floor centroid.</summary>
         public string SelectedCellTeleportCommand =>
-            Selection?.SelectedCell != null ? DungeonSelectionManager.ComputeCellTeleportLine(Selection.SelectedCell, _document) : "";
+            Selection?.SelectedCell != null ? DungeonSelectionManager.ComputeCellTeleportLine(Selection.SelectedCell, _document, _dats) : "";
 
         private bool _needsCameraFocus;
 
@@ -124,7 +124,9 @@ namespace WorldBuilder.Editors.Dungeon {
         private Vector2 _orthoDragPrev;
 
         private IReadOnlyList<(Vector3 From, Vector3 To)> _cachedConnectionLines = Array.Empty<(Vector3, Vector3)>();
+        private IReadOnlyList<(Vector3 From, Vector3 To)> _cachedSelectedConnectionLines = Array.Empty<(Vector3, Vector3)>();
         private bool _connectionLinesDirty = true;
+        private bool _selectedConnectionLinesDirty = true;
 
         public DungeonSelectionManager Selection { get; private set; } = null!;
         public CellEditingService CellEditing { get; private set; } = null!;
@@ -367,8 +369,14 @@ namespace WorldBuilder.Editors.Dungeon {
             if (_connectionLinesDirty) {
                 _cachedConnectionLines = DungeonSelectionManager.ComputeConnectionLines(_document, _dats);
                 _connectionLinesDirty = false;
+                _selectedConnectionLinesDirty = true;
+            }
+            if (_selectedConnectionLinesDirty) {
+                _cachedSelectedConnectionLines = Selection.ComputeSelectedConnectionLines(_document, _dats);
+                _selectedConnectionLinesDirty = false;
             }
             _scene.ConnectionLines = _cachedConnectionLines;
+            _scene.SelectedConnectionLines = _cachedSelectedConnectionLines;
             _scene.ShowConnectionLines = ShowConnectionLines;
             _scene.ShowPortalIndicators = ShowPortalIndicators;
             _scene.UseOrthographic = IsOrthographic;
@@ -611,6 +619,8 @@ namespace WorldBuilder.Editors.Dungeon {
                 CellRotX = ""; CellRotY = ""; CellRotZ = "";
             }
             RefreshPortalList();
+            UpdateConnectedNeighborHighlights();
+            _selectedConnectionLinesDirty = true;
             OnPropertyChanged(nameof(SelectedCellLocationHex));
             OnPropertyChanged(nameof(SelectedCellTeleportCommand));
             RefreshGraphView();
@@ -626,6 +636,12 @@ namespace WorldBuilder.Editors.Dungeon {
             CellPosX = ""; CellPosY = ""; CellPosZ = "";
             CellRotX = ""; CellRotY = ""; CellRotZ = "";
             SurfaceBrowser?.SetCurrentCellSurfaces(null);
+            if (_scene != null) {
+                _scene.ConnectedNeighborCells = null;
+                _scene.SelectedConnectionLines = null;
+            }
+            _cachedSelectedConnectionLines = Array.Empty<(Vector3, Vector3)>();
+            _selectedConnectionLinesDirty = false;
             OnPropertyChanged(nameof(SelectedCellLocationHex));
             OnPropertyChanged(nameof(SelectedCellTeleportCommand));
         }
@@ -737,6 +753,24 @@ namespace WorldBuilder.Editors.Dungeon {
             CellEditing.DisconnectPortalAt(index);
             RefreshRendering();
             if (Selection.SelectedCell != null) SelectCell(Selection.SelectedCell);
+        }
+
+        private void UpdateConnectedNeighborHighlights() {
+            if (_scene == null || _document == null) return;
+            var neighborNums = Selection.GetConnectedNeighborCellNums();
+            if (neighborNums.Count == 0) {
+                _scene.ConnectedNeighborCells = null;
+                return;
+            }
+            var lbKey = _document.LandblockKey;
+            var loadedCells = _scene.EnvCellManager?.GetLoadedCellsForLandblock(lbKey);
+            if (loadedCells == null) { _scene.ConnectedNeighborCells = null; return; }
+            var neighbors = new List<LoadedEnvCell>();
+            foreach (var cell in loadedCells) {
+                var cn = (ushort)(cell.CellId & 0xFFFF);
+                if (neighborNums.Contains(cn)) neighbors.Add(cell);
+            }
+            _scene.ConnectedNeighborCells = neighbors;
         }
 
         private void RefreshPortalList() {
@@ -1014,6 +1048,65 @@ namespace WorldBuilder.Editors.Dungeon {
             }
         }
 
+        /// <summary>Favorite all individual small pieces (corridors, chambers, etc.) that use the same room geometries as this dungeon.</summary>
+        [RelayCommand]
+        private void FavoriteDungeonPieces() {
+            if (_document == null || _document.Cells.Count == 0 || RoomPalette == null) {
+                StatusText = "Open a dungeon first, then favorite it";
+                return;
+            }
+
+            var roomTypes = new HashSet<(ushort envId, ushort cs)>();
+            foreach (var cell in _document.Cells)
+                roomTypes.Add((cell.EnvironmentId, cell.CellStructure));
+
+            var kb = DungeonKnowledgeBuilder.LoadCached();
+            if (kb == null || kb.Prefabs.Count == 0) {
+                StatusText = "Knowledge base not ready — try again after it finishes building";
+                return;
+            }
+
+            var matchingSigs = kb.Prefabs
+                .Where(pf => pf.Category != "Full Dungeon" &&
+                             pf.Cells.Any(c => roomTypes.Contains((c.EnvId, c.CellStruct))))
+                .Select(pf => pf.Signature);
+
+            int added = RoomPalette.AddPrefabFavorites(matchingSigs);
+
+            StatusText = added > 0
+                ? $"Favorited {added} individual pieces ({roomTypes.Count} room types) — use Generate from Favorites"
+                : $"All matching pieces already favorited ({roomTypes.Count} room types)";
+            Console.WriteLine($"[Dungeon] FavoriteDungeonPieces: LB {_loadedLandblockKey:X4}, {roomTypes.Count} room types, {added} new favorites");
+        }
+
+        [RelayCommand]
+        private void ClearAllFavorites() {
+            if (RoomPalette == null) return;
+            int cleared = RoomPalette.ClearAllPrefabFavorites();
+            StatusText = cleared > 0
+                ? $"Cleared {cleared} favorites and custom prefabs"
+                : "No favorites to clear";
+        }
+
+        /// <summary>Save the entire current dungeon as a single custom prefab and favorite it.</summary>
+        [RelayCommand]
+        private void FavoriteDungeonWhole() {
+            if (_document == null || _document.Cells.Count == 0 || RoomPalette == null) {
+                StatusText = "Open a dungeon first, then favorite it";
+                return;
+            }
+
+            var prefab = CellEditing.ExtractDocumentAsPrefab();
+            if (prefab == null) {
+                StatusText = "Could not extract dungeon as a piece";
+                return;
+            }
+
+            RoomPalette.AddCustomPrefab(prefab);
+            StatusText = $"Saved whole dungeon as \"{prefab.DisplayName}\" ({prefab.Cells.Count} cells) — added to favorites";
+            Console.WriteLine($"[Dungeon] FavoriteDungeonWhole: LB {_loadedLandblockKey:X4}, {prefab.Cells.Count} cells, sig={prefab.Signature[..Math.Min(30, prefab.Signature.Length)]}...");
+        }
+
         [RelayCommand]
         private void ComputeVisibility() {
             if (_document == null || _document.Cells.Count == 0) {
@@ -1136,7 +1229,8 @@ namespace WorldBuilder.Editors.Dungeon {
             var result = await ShowGenerateDialog(kb);
             if (result == null) return;
 
-            StatusText = $"Generating {result.PrefabCount}-room {result.Style} dungeon...";
+            var modeLabel = result.UseFavoritesOnly ? "favorites-only" : result.Style;
+            StatusText = $"Generating {result.RoomCount}-room {modeLabel} dungeon...";
             try {
                 ushort lbKey = _loadedLandblockKey != 0 ? _loadedLandblockKey : (ushort)0xFFFF;
                 if (_document == null) {
@@ -1161,13 +1255,23 @@ namespace WorldBuilder.Editors.Dungeon {
                 _needsCameraFocus = true;
                 CellCount = _document?.Cells.Count ?? 0;
                 int openPortals = CountOpenPortals();
+
+                // Validate the generated dungeon and show a summary
+                var validationResults = _document?.ValidateComprehensive();
+                int valErrors = validationResults?.Count(r => r.Severity == DungeonDocument.ValidationSeverity.Error) ?? 0;
+                int valWarnings = validationResults?.Count(r => r.Severity == DungeonDocument.ValidationSeverity.Warning) ?? 0;
+
                 var opts = new List<string>();
+                if (result.UseFavoritesOnly) opts.Add("favorites");
                 if (result.RequireRoof) opts.Add("roofed");
                 if (!result.AllowVertical) opts.Add("no vertical");
                 if (result.LockStyle) opts.Add("style-locked");
                 var optsStr = opts.Count > 0 ? $" [{string.Join(", ", opts)}]" : "";
-                StatusText = $"Generated {CellCount} cells across {result.PrefabCount} rooms ({openPortals} open doorways){optsStr}.";
-                Console.WriteLine($"[Dungeon] Generated: {CellCount} cells, {result.PrefabCount} target rooms, {openPortals} open portals, style={result.Style}, seed={result.Seed}");
+                var valStr = valErrors > 0 ? $"  ({valErrors} errors, {valWarnings} warnings — run Validate)"
+                           : valWarnings > 0 ? $"  ({valWarnings} warnings)"
+                           : "";
+                StatusText = $"Generated {CellCount} rooms ({openPortals} open doorways){optsStr}.{valStr}";
+                Console.WriteLine($"[Dungeon] Generated: {CellCount} cells, {result.RoomCount} target, {openPortals} open portals, style={result.Style}, favorites={result.UseFavoritesOnly}, seed={result.Seed}");
             }
             catch (Exception ex) {
                 StatusText = $"Generation failed: {ex.Message}";
@@ -1175,8 +1279,11 @@ namespace WorldBuilder.Editors.Dungeon {
             }
         }
 
-        private Task<GeneratorParams?> ShowGenerateDialog(DungeonKnowledgeBase kb) =>
-            Dialogs.ShowGenerateDialog(kb);
+        private Task<GeneratorParams?> ShowGenerateDialog(DungeonKnowledgeBase kb) {
+            var favSigs = RoomPalette?.GetFavoritePrefabSignatures();
+            var customPrefabs = RoomPalette?.GetCustomPrefabs();
+            return Dialogs.ShowGenerateDialog(kb, favSigs, customPrefabs);
+        }
 
         private void ShowErrorDialog(string title, string message) =>
             Dialogs.ShowErrorDialog(title, message);

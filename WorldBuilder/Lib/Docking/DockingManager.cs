@@ -7,7 +7,7 @@ using System.Linq;
 
 namespace WorldBuilder.Lib.Docking {
     public partial class DockingManager : ObservableObject {
-        private readonly List<IDockable> _allPanels = new();
+        private readonly ObservableCollection<IDockable> _allPanels = new();
 
         public ObservableCollection<IDockable> LeftPanels { get; } = new();
         public ObservableCollection<IDockable> RightPanels { get; } = new();
@@ -15,6 +15,10 @@ namespace WorldBuilder.Lib.Docking {
         public ObservableCollection<IDockable> BottomPanels { get; } = new();
         public ObservableCollection<IDockable> CenterPanels { get; } = new();
         public ObservableCollection<IDockable> FloatingPanels { get; } = new();
+        public ObservableCollection<IDockable> ClosedPanels { get; } = new();
+
+        [ObservableProperty]
+        private bool _hasClosedPanels;
 
         [ObservableProperty]
         private Orientation _centerOrientation = Orientation.Horizontal;
@@ -44,7 +48,7 @@ namespace WorldBuilder.Lib.Docking {
         public bool IsBottomTabbed => BottomMode == DockRegionMode.Tabbed;
         public bool IsBottomSectioned => BottomMode == DockRegionMode.Sections;
 
-        public IEnumerable<IDockable> AllPanels => _allPanels;
+        public ObservableCollection<IDockable> AllPanels => _allPanels;
 
         public void Clear() {
             _allPanels.Clear();
@@ -54,6 +58,8 @@ namespace WorldBuilder.Lib.Docking {
             BottomPanels.Clear();
             CenterPanels.Clear();
             FloatingPanels.Clear();
+            ClosedPanels.Clear();
+            HasClosedPanels = false;
         }
 
         public void RegisterPanel(IDockable panel) {
@@ -70,7 +76,15 @@ namespace WorldBuilder.Lib.Docking {
         public void UpdatePanelLocation(IDockable panel) {
             RemoveFromCollections(panel);
 
-            if (!panel.IsVisible) return;
+            if (!panel.IsVisible) {
+                if (!ClosedPanels.Contains(panel))
+                    ClosedPanels.Add(panel);
+                HasClosedPanels = ClosedPanels.Count > 0;
+                return;
+            }
+
+            ClosedPanels.Remove(panel);
+            HasClosedPanels = ClosedPanels.Count > 0;
 
             switch (panel.Location) {
                 case DockLocation.Left:

@@ -162,7 +162,7 @@ namespace WorldBuilder.Editors.Dungeon {
             if (lower.Contains("fortress") || lower.Contains("citadel") || lower.Contains("castle")) return "Fortress";
             if (lower.Contains("tower")) return "Tower";
             if (lower.Contains("swamp") || lower.Contains("marsh")) return "Swamp";
-            if (lower.Contains("hive") || lower.Contains("nest")) return "Hive";
+            if (lower.Contains("hive") || lower.Contains("nest") || lower.Contains("olthoi")) return "Hive";
             if (lower.Contains("lair") || lower.Contains("den")) return "Lair";
             if (lower.Contains("temple") || lower.Contains("shrine")) return "Temple";
             if (lower.Contains("dungeon")) return "Dungeon";

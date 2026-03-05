@@ -530,5 +530,136 @@ namespace WorldBuilder.Editors.Dungeon {
             Console.WriteLine($"[Dungeon] Extracted custom prefab: {prefab.DisplayName} ({prefab.Cells.Count} cells, {prefab.OpenFaces.Count} open faces)");
             return prefab;
         }
+
+        /// <summary>
+        /// Extracts all cells in the document into a single DungeonPrefab.
+        /// Does not require any selection — uses the full document.
+        /// </summary>
+        public DungeonPrefab? ExtractDocumentAsPrefab(string? displayName = null) {
+            if (_ctx.Document == null || _ctx.Document.Cells.Count == 0) return null;
+
+            var dats = _getDats();
+            var cells = _ctx.Document.Cells.ToList();
+            var cellNumSet = new HashSet<ushort>(cells.Select(c => c.CellNumber));
+
+            var first = cells[0];
+            var originPos = first.Origin;
+            var originRot = first.Orientation;
+            if (originRot.LengthSquared() < 0.01f) originRot = Quaternion.Identity;
+            originRot = Quaternion.Normalize(originRot);
+            var invRot = Quaternion.Conjugate(originRot);
+
+            var dungeonName = displayName;
+            if (string.IsNullOrEmpty(dungeonName)) {
+                var lbKey = (ushort)_ctx.Document.LandblockKey;
+                dungeonName = WorldBuilder.Lib.LocationDatabase.Dungeons
+                    .FirstOrDefault(d => d.LandblockId == lbKey)?.Name?.Trim();
+            }
+
+            var prefab = new DungeonPrefab {
+                SourceLandblock = _ctx.Document.LandblockKey,
+                SourceDungeonName = dungeonName ?? "Custom",
+                UsageCount = 1,
+                DisplayName = dungeonName ?? $"Custom Dungeon ({cells.Count} cell{(cells.Count != 1 ? "s" : "")})",
+                Category = "Full Dungeon",
+                Style = PrefabNamer.InferStyle(dungeonName ?? ""),
+            };
+
+            var cellIndexMap = new Dictionary<ushort, int>();
+            for (int i = 0; i < cells.Count; i++) {
+                var dc = cells[i];
+                cellIndexMap[dc.CellNumber] = i;
+
+                var relPos = Vector3.Transform(dc.Origin - originPos, invRot);
+                var relRot = Quaternion.Normalize(invRot * Quaternion.Normalize(
+                    dc.Orientation.LengthSquared() > 0.01f ? dc.Orientation : Quaternion.Identity));
+
+                prefab.Cells.Add(new PrefabCell {
+                    LocalIndex = i,
+                    EnvId = dc.EnvironmentId,
+                    CellStruct = dc.CellStructure,
+                    PortalCount = dc.CellPortals.Count,
+                    OffsetX = relPos.X, OffsetY = relPos.Y, OffsetZ = relPos.Z,
+                    RotX = relRot.X, RotY = relRot.Y, RotZ = relRot.Z, RotW = relRot.W,
+                    Surfaces = new List<ushort>(dc.Surfaces),
+                });
+            }
+
+            foreach (var dc in cells) {
+                int myIdx = cellIndexMap[dc.CellNumber];
+                foreach (var cp in dc.CellPortals) {
+                    if (cellNumSet.Contains(cp.OtherCellId) && cellIndexMap.TryGetValue(cp.OtherCellId, out int otherIdx)) {
+                        if (myIdx < otherIdx) {
+                            prefab.InternalPortals.Add(new PrefabPortal {
+                                CellIndexA = myIdx, PolyIdA = cp.PolygonId,
+                                CellIndexB = otherIdx, PolyIdB = cp.OtherPortalId,
+                            });
+                        }
+                    }
+                    else {
+                        float nx = 0, ny = 0, nz = 0;
+                        if (dats != null) {
+                            uint envFileId = (uint)(dc.EnvironmentId | 0x0D000000);
+                            if (dats.TryGet<DatReaderWriter.DBObjs.Environment>(envFileId, out var env) &&
+                                env.Cells.TryGetValue(dc.CellStructure, out var cs)) {
+                                var geom = PortalSnapper.GetPortalGeometry(cs, cp.PolygonId);
+                                if (geom != null) {
+                                    var cellRot = Quaternion.Normalize(new Quaternion(
+                                        prefab.Cells[myIdx].RotX, prefab.Cells[myIdx].RotY,
+                                        prefab.Cells[myIdx].RotZ, prefab.Cells[myIdx].RotW));
+                                    var worldNormal = Vector3.Transform(geom.Value.Normal, cellRot);
+                                    nx = worldNormal.X; ny = worldNormal.Y; nz = worldNormal.Z;
+                                }
+                            }
+                        }
+                        prefab.OpenFaces.Add(new PrefabOpenFace {
+                            CellIndex = myIdx, PolyId = cp.PolygonId,
+                            EnvId = dc.EnvironmentId,
+                            CellStruct = dc.CellStructure,
+                            NormalX = nx, NormalY = ny, NormalZ = nz,
+                        });
+                    }
+                }
+
+                if (dats != null) {
+                    uint envFileId2 = (uint)(dc.EnvironmentId | 0x0D000000);
+                    if (dats.TryGet<DatReaderWriter.DBObjs.Environment>(envFileId2, out var env2) &&
+                        env2.Cells.TryGetValue(dc.CellStructure, out var cs2)) {
+                        var allPortalPolyIds = PortalSnapper.GetPortalPolygonIds(cs2);
+                        var connectedPolyIds = new HashSet<ushort>(dc.CellPortals.Select(c => c.PolygonId));
+                        foreach (var polyId in allPortalPolyIds) {
+                            if (connectedPolyIds.Contains(polyId)) continue;
+                            float nx = 0, ny = 0, nz = 0;
+                            var geom = PortalSnapper.GetPortalGeometry(cs2, polyId);
+                            if (geom != null) {
+                                var cellRot = Quaternion.Normalize(new Quaternion(
+                                    prefab.Cells[myIdx].RotX, prefab.Cells[myIdx].RotY,
+                                    prefab.Cells[myIdx].RotZ, prefab.Cells[myIdx].RotW));
+                                var worldNormal = Vector3.Transform(geom.Value.Normal, cellRot);
+                                nx = worldNormal.X; ny = worldNormal.Y; nz = worldNormal.Z;
+                            }
+                            prefab.OpenFaces.Add(new PrefabOpenFace {
+                                CellIndex = myIdx, PolyId = polyId,
+                                EnvId = dc.EnvironmentId,
+                                CellStruct = dc.CellStructure,
+                                NormalX = nx, NormalY = ny, NormalZ = nz,
+                            });
+                        }
+                    }
+                }
+            }
+
+            foreach (var of in prefab.OpenFaces) {
+                prefab.OpenFaceDirections.Add(DungeonPrefab.ClassifyDirection(of.NormalX, of.NormalY, of.NormalZ));
+            }
+
+            var timestamp = DateTime.UtcNow.Ticks;
+            prefab.Signature = $"custom_{timestamp}_{string.Join("|",
+                prefab.Cells.OrderBy(c => c.EnvId).ThenBy(c => c.CellStruct)
+                    .Select(c => $"{c.EnvId:X4}_{c.CellStruct}"))}";
+
+            Console.WriteLine($"[Dungeon] Extracted full dungeon prefab: {prefab.DisplayName} ({prefab.Cells.Count} cells, {prefab.OpenFaces.Count} open faces)");
+            return prefab;
+        }
     }
 }

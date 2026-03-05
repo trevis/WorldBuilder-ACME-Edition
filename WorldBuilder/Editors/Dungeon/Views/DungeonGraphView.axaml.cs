@@ -120,7 +120,19 @@ namespace WorldBuilder.Editors.Dungeon.Views {
                 (p.X - cx) * scale + cw * 0.5 + _panOffset.X,
                 (p.Y - cy) * scale + ch * 0.5 + _panOffset.Y);
 
-            // Draw edges first
+            // Build set of neighbor cell numbers for highlighting
+            var neighborNums = new HashSet<ushort>();
+            if (selectedCellNum.HasValue) {
+                var selCell = document.Cells.FirstOrDefault(c => c.CellNumber == selectedCellNum.Value);
+                if (selCell != null) {
+                    foreach (var cp in selCell.CellPortals) {
+                        if (cp.OtherCellId != 0 && cp.OtherCellId != 0xFFFF)
+                            neighborNums.Add(cp.OtherCellId);
+                    }
+                }
+            }
+
+            // Draw edges first (dim for unrelated, bright for selected cell connections)
             var drawnEdges = new HashSet<(ushort, ushort)>();
             foreach (var cell in document.Cells) {
                 if (!_nodePositions.TryGetValue(cell.CellNumber, out var fromPos)) continue;
@@ -132,11 +144,14 @@ namespace WorldBuilder.Editors.Dungeon.Views {
                     if (!_nodePositions.TryGetValue(portal.OtherCellId, out var toPos)) continue;
                     var toScreen = ToScreen(toPos);
 
+                    bool touchesSelection = selectedCellNum.HasValue &&
+                        (cell.CellNumber == selectedCellNum.Value || portal.OtherCellId == selectedCellNum.Value);
+
                     var line = new Line {
                         StartPoint = fromScreen,
                         EndPoint = toScreen,
-                        Stroke = new SolidColorBrush(Color.Parse("#3366aa")),
-                        StrokeThickness = 1.5,
+                        Stroke = new SolidColorBrush(Color.Parse(touchesSelection ? "#ffcc33" : "#2a4477")),
+                        StrokeThickness = touchesSelection ? 2.5 : 1.2,
                     };
                     canvas.Children.Add(line);
                 }
@@ -148,15 +163,20 @@ namespace WorldBuilder.Editors.Dungeon.Views {
                 if (!_nodePositions.TryGetValue(cell.CellNumber, out var pos)) continue;
                 var screenPos = ToScreen(pos);
 
-                int openPortals = 0;
-                int totalPortals = cell.CellPortals.Count;
-                // (open portals would require CellStruct info — approximate from portal count)
-
                 bool isSelected = selectedCellNum.HasValue && cell.CellNumber == selectedCellNum.Value;
+                bool isNeighbor = neighborNums.Contains(cell.CellNumber);
                 bool isDisconnected = cell.CellPortals.Count == 0 && document.Cells.Count > 1;
 
-                var bgColor = isSelected ? "#7c4dbd" : isDisconnected ? "#663333" : "#2a1d42";
-                var borderColor = isSelected ? "#c0a0ff" : isDisconnected ? "#cc6666" : "#4a3a6e";
+                string bgColor, borderColor;
+                if (isSelected) {
+                    bgColor = "#7c4dbd"; borderColor = "#c0a0ff";
+                } else if (isNeighbor) {
+                    bgColor = "#1a4466"; borderColor = "#55aadd";
+                } else if (isDisconnected) {
+                    bgColor = "#663333"; borderColor = "#cc6666";
+                } else {
+                    bgColor = "#2a1d42"; borderColor = "#4a3a6e";
+                }
 
                 var node = new Border {
                     Width = nodeSize,
@@ -164,11 +184,12 @@ namespace WorldBuilder.Editors.Dungeon.Views {
                     CornerRadius = new CornerRadius(4),
                     Background = new SolidColorBrush(Color.Parse(bgColor)),
                     BorderBrush = new SolidColorBrush(Color.Parse(borderColor)),
-                    BorderThickness = new Thickness(isSelected ? 2 : 1),
+                    BorderThickness = new Thickness(isSelected ? 2 : isNeighbor ? 1.5 : 1),
                     Child = new TextBlock {
                         Text = $"{cell.CellNumber:X2}",
                         FontSize = 8,
-                        Foreground = new SolidColorBrush(Color.Parse("#c0b0d8")),
+                        Foreground = new SolidColorBrush(Color.Parse(
+                            isSelected ? "#ffffff" : isNeighbor ? "#aaddff" : "#c0b0d8")),
                         HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Center,
                         VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center,
                         FontFamily = new FontFamily("Consolas"),

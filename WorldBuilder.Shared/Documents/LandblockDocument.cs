@@ -49,6 +49,11 @@ namespace WorldBuilder.Shared.Documents {
                 return true;
             }
 
+            if (documentManager.SkipDatStatics) {
+                ClearDirty();
+                return true;
+            }
+
             var lbIdHex = Id.Replace("landblock_", "");
             var lbId = uint.Parse(lbIdHex, System.Globalization.NumberStyles.HexNumber);
             var infoId = lbId << 16 | 0xFFFE;
@@ -523,6 +528,17 @@ namespace WorldBuilder.Shared.Documents {
             _data.StaticObjects.RemoveAt(index);
             MarkDirty();
             return true;
+        }
+
+        /// <summary>
+        /// Removes all static objects from this landblock and marks it dirty so the
+        /// empty state is persisted. Used by the "Fresh Start" feature.
+        /// </summary>
+        public void ClearAllStatics() {
+            if (_data.StaticObjects.Count == 0) return;
+            _data.StaticObjects.Clear();
+            _loadedFromProjection = true;
+            MarkDirty();
         }
     }
     public class StaticObjectUpdateEvent : TerrainUpdateEvent {

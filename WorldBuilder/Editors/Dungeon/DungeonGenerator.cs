@@ -10,13 +10,19 @@ using WorldBuilder.Shared.Lib;
 namespace WorldBuilder.Editors.Dungeon {
 
     public record GeneratorParams {
-        /// <summary>Target number of prefabs (multi-cell pieces) to place, not individual cells.</summary>
-        public int PrefabCount { get; init; } = 10;
+        /// <summary>Target number of cells (rooms) in the generated dungeon.</summary>
+        public int RoomCount { get; init; } = 10;
         public string Style { get; init; } = "All";
         public int Seed { get; init; } = 0;
         public bool RequireRoof { get; init; } = true;
         public bool AllowVertical { get; init; } = false;
         public bool LockStyle { get; init; } = true;
+        /// <summary>When true, restrict generation to only prefabs whose Signature is in FavoritePrefabSignatures.</summary>
+        public bool UseFavoritesOnly { get; init; } = false;
+        /// <summary>Prefab signatures to use when UseFavoritesOnly is true.</summary>
+        public HashSet<string>? FavoritePrefabSignatures { get; init; }
+        /// <summary>Custom prefabs (not in KB) to include when resolving favorites.</summary>
+        public List<DungeonPrefab>? CustomPrefabs { get; init; }
     }
 
     /// <summary>
@@ -26,7 +32,7 @@ namespace WorldBuilder.Editors.Dungeon {
     /// </summary>
     public static class DungeonGenerator {
 
-        private const float OverlapMinDist = 3.0f;
+        private const float OverlapMinDistDefault = 6.0f;
 
         public static DungeonDocument? Generate(
             GeneratorParams p,
@@ -35,7 +41,7 @@ namespace WorldBuilder.Editors.Dungeon {
             ushort landblockKey) {
 
             var rng = p.Seed != 0 ? new Random(p.Seed) : new Random();
-            int targetPrefabs = p.PrefabCount;
+            int targetCells = p.RoomCount;
 
             var kb = DungeonKnowledgeBuilder.LoadCached();
             if (kb == null || kb.Prefabs.Count == 0) {
@@ -56,7 +62,62 @@ namespace WorldBuilder.Editors.Dungeon {
                 return true;
             }
 
-            var candidates = kb.Prefabs
+            bool useFavorites = p.UseFavoritesOnly && p.FavoritePrefabSignatures is { Count: > 0 };
+            var favSigs = p.FavoritePrefabSignatures;
+            List<DungeonPrefab>? favPrefabs = null;
+
+            IEnumerable<DungeonPrefab> sourcePool = kb.Prefabs;
+            if (useFavorites) {
+                // Search KB + custom prefabs when resolving favorites
+                IEnumerable<DungeonPrefab> allKnown = kb.Prefabs;
+                if (p.CustomPrefabs is { Count: > 0 })
+                    allKnown = allKnown.Concat(p.CustomPrefabs);
+                favPrefabs = allKnown.Where(pf => favSigs!.Contains(pf.Signature)).ToList();
+
+                // Decompose favorites into room types — this turns whole-dungeon
+                // favorites into the individual corridor/chamber geometries they contain.
+                var favRoomTypes = new HashSet<(ushort, ushort)>();
+                var favSourceLandblocks = new HashSet<int>();
+                foreach (var fav in favPrefabs) {
+                    foreach (var cell in fav.Cells)
+                        favRoomTypes.Add((cell.EnvId, cell.CellStruct));
+                    if (fav.SourceLandblock != 0)
+                        favSourceLandblocks.Add(fav.SourceLandblock);
+                }
+
+                // Build candidate pool in tiers — prefer pieces where ALL cells use
+                // favorite room types (tight match), then fall back to looser matching.
+                var strictPool = kb.Prefabs.Where(pf =>
+                    pf.Category != "Full Dungeon" &&
+                    pf.Cells.All(c => favRoomTypes.Contains((c.EnvId, c.CellStruct)))).ToList();
+
+                // Also include pieces from the exact same source dungeons
+                var sourceMatches = kb.Prefabs.Where(pf =>
+                    pf.Category != "Full Dungeon" &&
+                    pf.SourceLandblock != 0 && favSourceLandblocks.Contains(pf.SourceLandblock) &&
+                    !strictPool.Contains(pf)).ToList();
+
+                var tightPool = strictPool.Concat(sourceMatches).ToList();
+
+                if (tightPool.Count >= 15) {
+                    sourcePool = tightPool;
+                    Console.WriteLine($"[DungeonGen] Favorites: {favPrefabs.Count} favorited → " +
+                        $"{favRoomTypes.Count} room types, {favSourceLandblocks.Count} source dungeons → " +
+                        $"{tightPool.Count} tight-match pieces ({strictPool.Count} all-cells + {sourceMatches.Count} source)");
+                }
+                else {
+                    // Not enough tight matches — fall back to any-cell matching
+                    sourcePool = kb.Prefabs.Where(pf =>
+                        pf.Category != "Full Dungeon" &&
+                        (pf.Cells.Any(c => favRoomTypes.Contains((c.EnvId, c.CellStruct))) ||
+                         (pf.SourceLandblock != 0 && favSourceLandblocks.Contains(pf.SourceLandblock))));
+                    var looseCount = sourcePool.Count();
+                    Console.WriteLine($"[DungeonGen] Favorites: {favPrefabs.Count} favorited → " +
+                        $"{favRoomTypes.Count} room types → tight={tightPool.Count} (too few), loose={looseCount} candidates");
+                }
+            }
+
+            var candidates = sourcePool
                 .Where(pf => p.Style == "All" || pf.Style.Equals(p.Style, StringComparison.OrdinalIgnoreCase))
                 .Where(PassesFilters)
                 .OrderByDescending(pf => pf.UsageCount)
@@ -65,10 +126,19 @@ namespace WorldBuilder.Editors.Dungeon {
 
             // If RequireRoof was too strict, relax to allow partial roof
             if (candidates.Count < 20 && p.RequireRoof) {
-                candidates = kb.Prefabs
+                candidates = sourcePool
                     .Where(pf => p.Style == "All" || pf.Style.Equals(p.Style, StringComparison.OrdinalIgnoreCase))
                     .Where(pf => pf.OpenFaces.Count >= 1 && !pf.HasNoRoof)
                     .Where(pf => p.AllowVertical || !pf.OpenFaceDirections.Any(d => verticalDirs.Contains(d)))
+                    .OrderByDescending(pf => pf.UsageCount)
+                    .Take(500)
+                    .ToList();
+            }
+
+            if (candidates.Count == 0 && useFavorites) {
+                Console.WriteLine($"[DungeonGen] Favorites pool produced 0 candidates after filters, relaxing filters");
+                candidates = sourcePool
+                    .Where(pf => pf.OpenFaces.Count >= 1)
                     .OrderByDescending(pf => pf.UsageCount)
                     .Take(500)
                     .ToList();
@@ -94,9 +164,26 @@ namespace WorldBuilder.Editors.Dungeon {
             var connectors = candidates.Where(pf => pf.OpenFaces.Count >= 2).ToList();
             var caps = candidates.Where(pf => pf.OpenFaces.Count == 1).ToList();
 
-            var starter = connectors.Count > 0
-                ? connectors[rng.Next(connectors.Count)]
-                : candidates[rng.Next(candidates.Count)];
+            // Pick the starter by scoring each connector on how many compatible
+            // connections its open faces have in the portal index. Starters with
+            // well-connected portals produce much better dungeons.
+            DungeonPrefab starter;
+            if (connectors.Count > 0) {
+                var scored = connectors.Select(pf => {
+                    int score = 0;
+                    foreach (var of in pf.OpenFaces) {
+                        var compat = portalIndex.GetCompatible(of.EnvId, of.CellStruct, of.PolyId);
+                        score += compat.Count;
+                    }
+                    return (pf, score);
+                }).OrderByDescending(x => x.score).ToList();
+                // Pick randomly from the top 20% best-connected starters for variety
+                int topN = Math.Max(1, scored.Count / 5);
+                starter = scored[rng.Next(topN)].pf;
+            }
+            else {
+                starter = candidates[rng.Next(candidates.Count)];
+            }
 
             if (p.LockStyle && p.Style == "All" && !string.IsNullOrEmpty(starter.Style)) {
                 lockedStyle = starter.Style;
@@ -131,7 +218,23 @@ namespace WorldBuilder.Editors.Dungeon {
                 }
             }
 
-            Console.WriteLine($"[DungeonGen] Starter: {starter.DisplayName} ({starter.Cells.Count} cells, {starter.OpenFaces.Count} exits), style={lockedStyle ?? "mixed"}, candidates={candidates.Count}, index has {portalIndex.PortalFaceCount} portal faces");
+            // Build lookups from the catalog for overlap detection and bridge preference.
+            var roomBounds = new Dictionary<(ushort envId, ushort cs), float>();
+            var roomPortalCounts = new Dictionary<(ushort envId, ushort cs), int>();
+            foreach (var cr in kb.Catalog) {
+                var key = (cr.EnvId, cr.CellStruct);
+                if (!roomBounds.ContainsKey(key))
+                    roomBounds[key] = MathF.Max(cr.BoundsWidth, cr.BoundsDepth) * 0.5f;
+                if (!roomPortalCounts.ContainsKey(key))
+                    roomPortalCounts[key] = cr.PortalCount;
+            }
+
+            bool useBridges = useFavorites;
+            if (useBridges)
+                Console.WriteLine($"[DungeonGen] Edge-direct bridging enabled, {roomBounds.Count} catalog rooms with bounds data");
+
+            var favLabel = useFavorites ? $", favorites-only ({favSigs!.Count} sigs)" : "";
+            Console.WriteLine($"[DungeonGen] Starter: {starter.DisplayName} ({starter.Cells.Count} cells, {starter.OpenFaces.Count} exits), style={lockedStyle ?? "mixed"}, candidates={candidates.Count} ({prefabsByRoomType.Count} room types){favLabel}, index has {portalIndex.PortalFaceCount} portal faces");
 
             var doc = new DungeonDocument(new Microsoft.Extensions.Logging.Abstractions.NullLogger<DungeonDocument>());
             doc.SetLandblockKey(landblockKey);
@@ -139,7 +242,6 @@ namespace WorldBuilder.Editors.Dungeon {
             var placedCellNums = PlacePrefabAtOrigin(doc, dats, starter);
             int totalCells = placedCellNums.Count;
 
-            // Track placed cell positions for overlap detection
             var placedPositions = new List<Vector3>();
             foreach (var cn in placedCellNums) {
                 var c = doc.GetCell(cn);
@@ -149,38 +251,82 @@ namespace WorldBuilder.Editors.Dungeon {
             var frontier = new List<(ushort cellNum, ushort polyId, ushort envId, ushort cellStruct)>();
             CollectOpenFaces(doc, dats, frontier, p.AllowVertical ? null : geoCache);
 
-            int maxAttempts = targetPrefabs * 20;
+            // --- PHASE 1: Growth ---
+            // Target is cell count. Bridge cells don't count toward target.
+            int maxAttempts = targetCells * 20;
             int attempts = 0;
-            int prefabsPlaced = 1;
+            int contentCells = totalCells;
             int indexedPlacements = 0;
-            int overlapRejects = 0;
-            int geoRejects = 0;
+            int bridgePlacements = 0;
+            int snapPlacements = 0;
+            int retiredPortals = 0;
+            int edgeMissCount = 0;
 
-            while (prefabsPlaced < targetPrefabs && frontier.Count > 0 && attempts < maxAttempts) {
+            var frontierFailures = new Dictionary<(ushort cellNum, ushort polyId), int>();
+            const int maxPortalRetries = 5;
+
+            while (contentCells < targetCells && frontier.Count > 0 && attempts < maxAttempts) {
                 attempts++;
 
-                int fi = rng.Next(frontier.Count);
+                // Bias frontier selection toward portals that extend the dungeon
+                // outward rather than filling in gaps. Prefer portals farthest from
+                // the centroid -- this produces elongated layouts like real dungeons.
+                int fi;
+                if (placedPositions.Count >= 3 && frontier.Count >= 3) {
+                    var centroid = Vector3.Zero;
+                    foreach (var pp in placedPositions) centroid += pp;
+                    centroid /= placedPositions.Count;
+
+                    var scored = new List<(int idx, float dist)>();
+                    for (int f = 0; f < frontier.Count; f++) {
+                        var fc = doc.GetCell(frontier[f].cellNum);
+                        if (fc == null) continue;
+                        float dist = (fc.Origin - centroid).LengthSquared();
+                        scored.Add((f, dist));
+                    }
+                    if (scored.Count > 0) {
+                        scored.Sort((a, b) => b.dist.CompareTo(a.dist));
+                        int topN = Math.Max(1, scored.Count / 3);
+                        fi = scored[rng.Next(topN)].idx;
+                    } else {
+                        fi = rng.Next(frontier.Count);
+                    }
+                }
+                else {
+                    fi = rng.Next(frontier.Count);
+                }
+
                 var (existingCellNum, existingPolyId, existingEnvId, existingCS) = frontier[fi];
+                var frontierKey = (existingCellNum, existingPolyId);
 
-                bool wantCap = prefabsPlaced >= targetPrefabs - 2;
+                // Structural control: as the dungeon grows, progressively prefer
+                // smaller rooms. Early growth allows junctions (branching), middle
+                // growth prefers corridors, late growth caps with dead-ends.
+                float progress = (float)contentCells / targetCells;
+                int preferredMaxExits = progress < 0.3f ? 99    // early: any size, allow branching
+                                      : progress < 0.7f ? 3     // middle: corridors and small junctions
+                                      : 2;                      // late: corridors and dead-ends only
 
-                // Edge-guided: find prefabs proven to connect at this portal face
+                bool exitBudgetTight = frontier.Count > totalCells * 1.5f;
+                if (exitBudgetTight) preferredMaxExits = Math.Min(preferredMaxExits, 2);
+
                 DungeonPrefab? chosen = null;
                 CompatibleRoom? matchedRoom = null;
 
                 var compatible = portalIndex.GetCompatible(existingEnvId, existingCS, existingPolyId);
                 if (compatible.Count > 0) {
+                    // First: try matching from the favorites/style candidate pool,
+                    // preferring rooms that match the template's role.
                     var matchingPrefabs = new List<(DungeonPrefab prefab, CompatibleRoom room, int weight)>();
                     foreach (var cr in compatible) {
                         if (!geoCache.AreCompatible(existingEnvId, existingCS, existingPolyId,
-                                cr.EnvId, cr.CellStruct, cr.PolyId)) {
+                                cr.EnvId, cr.CellStruct, cr.PolyId))
                             continue;
-                        }
 
                         var roomKey = (cr.EnvId, cr.CellStruct);
                         if (prefabsByRoomType.TryGetValue(roomKey, out var pfs)) {
                             foreach (var pf in pfs) {
-                                if (wantCap && pf.OpenFaces.Count > 1) continue;
+                                if (pf.OpenFaces.Count > preferredMaxExits) continue;
                                 bool hasFace = pf.OpenFaces.Any(of =>
                                     of.EnvId == cr.EnvId && of.CellStruct == cr.CellStruct);
                                 if (!hasFace) continue;
@@ -195,44 +341,107 @@ namespace WorldBuilder.Editors.Dungeon {
                         int acc = 0;
                         foreach (var (pf, cr, w) in matchingPrefabs) {
                             acc += w;
-                            if (roll < acc) {
-                                chosen = pf;
-                                matchedRoom = cr;
-                                break;
+                            if (roll < acc) { chosen = pf; matchedRoom = cr; break; }
+                        }
+                    }
+
+                    // Second: edge-direct bridge — prefer corridors (2 portals) over junctions.
+                    if (chosen == null && useBridges) {
+                        var existingCell = doc.GetCell(existingCellNum);
+                        if (existingCell != null) {
+                            var bridgeCandidates2 = new List<CompatibleRoom>();
+                            foreach (var cr in compatible) {
+                                if (!geoCache.AreCompatible(existingEnvId, existingCS, existingPolyId,
+                                        cr.EnvId, cr.CellStruct, cr.PolyId))
+                                    continue;
+                                var bKey = (cr.EnvId, cr.CellStruct);
+                                // Filter by roof: skip rooms without ceiling when user wants roofed
+                                if (p.RequireRoof) {
+                                    var catRoom = kb.Catalog.FirstOrDefault(c => c.EnvId == cr.EnvId && c.CellStruct == cr.CellStruct);
+                                    if (catRoom != null && !catRoom.HasCeiling) continue;
+                                }
+                                // When exit budget is tight, only allow corridor bridges
+                                if (exitBudgetTight) {
+                                    if (roomPortalCounts.TryGetValue(bKey, out int pc) && pc > 2) continue;
+                                }
+                                bridgeCandidates2.Add(cr);
                             }
+                            // Sort by portal count: prefer corridors (2) over junctions (3+)
+                            bridgeCandidates2.Sort((a, b) => {
+                                roomPortalCounts.TryGetValue((a.EnvId, a.CellStruct), out int pa);
+                                roomPortalCounts.TryGetValue((b.EnvId, b.CellStruct), out int pb);
+                                return pa.CompareTo(pb);
+                            });
+                            bool bridgePlaced = false;
+                            foreach (var br in bridgeCandidates2.Take(5)) {
+                                var bridgeResult = TryPlaceEdgeDirectBridge(doc, dats, geoCache, kb,
+                                    existingCell, existingCellNum, existingPolyId,
+                                    br, placedPositions, roomBounds);
+                                if (bridgeResult != null) {
+                                    totalCells += 1;
+                                    bridgePlacements++;
+                                    indexedPlacements++;
+                                    placedPositions.Add(doc.GetCell(bridgeResult.Value)!.Origin);
+                                    frontier.Clear();
+                                    frontierFailures.Clear();
+                                    CollectOpenFaces(doc, dats, frontier, p.AllowVertical ? null : geoCache);
+                                    bridgePlaced = true;
+                                    break;
+                                }
+                            }
+                            if (bridgePlaced) continue;
                         }
                     }
                 }
+                else {
+                    edgeMissCount++;
+                }
 
                 if (chosen == null) {
-                    // No edge-guided match found. Try a few random candidates
-                    // before giving up on this frontier entry.
-                    var pool = (wantCap && caps.Count > 0) ? caps :
-                               (connectors.Count > 0 ? connectors : candidates);
-                    int retries = Math.Min(5, pool.Count);
-                    List<ushort>? fallbackResult = null;
-                    for (int r = 0; r < retries; r++) {
-                        var candidate = pool[rng.Next(pool.Count)];
-                        fallbackResult = TryAttachPrefab(doc, dats, portalIndex, geoCache,
-                            existingCellNum, existingPolyId, candidate, null, placedPositions);
-                        if (fallbackResult != null && fallbackResult.Count > 0) {
-                            chosen = candidate;
-                            break;
+                    frontierFailures.TryGetValue(frontierKey, out int fails);
+                    frontierFailures[frontierKey] = fails + 1;
+
+                    // In favorites mode, skip geo-snap entirely -- approximate
+                    // positioning produces visible portal misalignment. Only proven
+                    // transforms (edge-guided + bridges) produce correct results.
+                    if (!useFavorites) {
+                        int maxRetries = 5;
+                        if (fails < maxRetries) {
+                            var pool = exitBudgetTight
+                                ? candidates.Where(pf => pf.OpenFaces.Count <= 2).ToList()
+                                : (connectors.Count > 0 ? connectors : candidates);
+                            if (pool.Count == 0) pool = candidates;
+                            int retries = Math.Min(5, pool.Count);
+                            List<ushort>? fallbackResult = null;
+                            for (int r = 0; r < retries; r++) {
+                                var candidate = pool[rng.Next(pool.Count)];
+                                fallbackResult = TryAttachPrefab(doc, dats, portalIndex, geoCache,
+                                    existingCellNum, existingPolyId, candidate, null, placedPositions);
+                                if (fallbackResult != null && fallbackResult.Count > 0) {
+                                    chosen = candidate;
+                                    break;
+                                }
+                            }
+                            if (fallbackResult != null && fallbackResult.Count > 0) {
+                                totalCells += fallbackResult.Count;
+                                contentCells += fallbackResult.Count;
+                                snapPlacements++;
+                                foreach (var cn in fallbackResult) {
+                                    var c = doc.GetCell(cn);
+                                    if (c != null) placedPositions.Add(c.Origin);
+                                }
+                                frontier.Clear();
+                                frontierFailures.Clear();
+                                CollectOpenFaces(doc, dats, frontier, p.AllowVertical ? null : geoCache);
+                                continue;
+                            }
                         }
                     }
-                    if (fallbackResult == null || fallbackResult.Count == 0) {
-                        frontier.RemoveAt(fi);
-                        continue;
-                    }
 
-                    totalCells += fallbackResult.Count;
-                    prefabsPlaced++;
-                    foreach (var cn in fallbackResult) {
-                        var c = doc.GetCell(cn);
-                        if (c != null) placedPositions.Add(c.Origin);
+                    if (fails + 1 >= maxPortalRetries) {
+                        frontier.RemoveAt(fi);
+                        retiredPortals++;
                     }
-                    frontier.Clear();
-                    CollectOpenFaces(doc, dats, frontier, p.AllowVertical ? null : geoCache);
                     continue;
                 }
 
@@ -240,13 +449,18 @@ namespace WorldBuilder.Editors.Dungeon {
                     existingCellNum, existingPolyId, chosen, matchedRoom, placedPositions);
 
                 if (result == null || result.Count == 0) {
-                    frontier.RemoveAt(fi);
+                    frontierFailures.TryGetValue(frontierKey, out int fails);
+                    frontierFailures[frontierKey] = fails + 1;
+                    if (fails + 1 >= maxPortalRetries) {
+                        frontier.RemoveAt(fi);
+                        retiredPortals++;
+                    }
                     continue;
                 }
 
                 totalCells += result.Count;
-                prefabsPlaced++;
-                if (matchedRoom != null) indexedPlacements++;
+                contentCells += result.Count;
+                indexedPlacements++;
 
                 foreach (var cn in result) {
                     var c = doc.GetCell(cn);
@@ -254,21 +468,123 @@ namespace WorldBuilder.Editors.Dungeon {
                 }
 
                 frontier.Clear();
+                frontierFailures.Clear();
                 CollectOpenFaces(doc, dats, frontier, p.AllowVertical ? null : geoCache);
             }
 
-            Console.WriteLine($"[DungeonGen] Placed {prefabsPlaced} prefabs, {totalCells} total cells " +
-                $"({frontier.Count} open exits, {attempts} attempts, {indexedPlacements} edge-guided, " +
-                $"{overlapRejects} overlap rejects, {geoRejects} geo rejects)");
+            Console.WriteLine($"[DungeonGen] Growth: {totalCells} cells ({contentCells} content + {bridgePlacements} bridge), " +
+                $"{frontier.Count} open exits, {attempts} attempts, {indexedPlacements} edge-guided" +
+                (snapPlacements > 0 ? $", {snapPlacements} geo-snap" : "") +
+                $", {retiredPortals} retired");
 
-            // Post-generation: retexture cells to match the target style
-            string retextureStyle = lockedStyle ?? (p.Style != "All" ? p.Style : null);
-            if (retextureStyle != null) {
+            // --- PHASE 2: Capping ---
+            // Place dead-end rooms on remaining open portals to close branches.
+            int maxCaps = Math.Min(frontier.Count, (int)(totalCells * 0.3f));
+            int capsPlaced = 0;
+            if (maxCaps > 0 && frontier.Count > 0) {
+                var capFrontier = new List<(ushort cellNum, ushort polyId, ushort envId, ushort cellStruct)>(frontier);
+                for (int i = capFrontier.Count - 1; i > 0; i--) {
+                    int j = rng.Next(i + 1);
+                    (capFrontier[i], capFrontier[j]) = (capFrontier[j], capFrontier[i]);
+                }
+
+                foreach (var (capCellNum, capPolyId, capEnvId, capCS) in capFrontier) {
+                    if (capsPlaced >= maxCaps) break;
+
+                    var capCompatible = portalIndex.GetCompatible(capEnvId, capCS, capPolyId);
+                    if (capCompatible.Count == 0) continue;
+
+                    var existingCell = doc.GetCell(capCellNum);
+                    if (existingCell == null) continue;
+
+                    // Prefer dead-end rooms (1 portal) for capping. Filter by roof.
+                    var capCandidates = new List<CompatibleRoom>();
+                    foreach (var cr in capCompatible) {
+                        if (!geoCache.AreCompatible(capEnvId, capCS, capPolyId,
+                                cr.EnvId, cr.CellStruct, cr.PolyId))
+                            continue;
+                        if (p.RequireRoof) {
+                            var catRoom = kb.Catalog.FirstOrDefault(c => c.EnvId == cr.EnvId && c.CellStruct == cr.CellStruct);
+                            if (catRoom != null && !catRoom.HasCeiling) continue;
+                        }
+                        var cKey = (cr.EnvId, cr.CellStruct);
+                        if (roomPortalCounts.TryGetValue(cKey, out int pc) && pc == 1)
+                            capCandidates.Add(cr);
+                    }
+                    if (capCandidates.Count == 0) {
+                        foreach (var cr in capCompatible) {
+                            if (!geoCache.AreCompatible(capEnvId, capCS, capPolyId,
+                                    cr.EnvId, cr.CellStruct, cr.PolyId))
+                                continue;
+                            if (p.RequireRoof) {
+                                var catRoom = kb.Catalog.FirstOrDefault(c => c.EnvId == cr.EnvId && c.CellStruct == cr.CellStruct);
+                                if (catRoom != null && !catRoom.HasCeiling) continue;
+                            }
+                            var cKey = (cr.EnvId, cr.CellStruct);
+                            if (roomPortalCounts.TryGetValue(cKey, out int pc) && pc <= 2)
+                                capCandidates.Add(cr);
+                        }
+                    }
+                    if (capCandidates.Count == 0) continue;
+
+                    var capRoom = capCandidates[rng.Next(capCandidates.Count)];
+                    var capResult = TryPlaceEdgeDirectBridge(doc, dats, geoCache, kb,
+                        existingCell, capCellNum, capPolyId,
+                        capRoom, placedPositions, roomBounds);
+                    if (capResult != null) {
+                        totalCells++;
+                        capsPlaced++;
+                        placedPositions.Add(doc.GetCell(capResult.Value)!.Origin);
+                    }
+                }
+
+                if (capsPlaced > 0) {
+                    frontier.Clear();
+                    CollectOpenFaces(doc, dats, frontier, p.AllowVertical ? null : geoCache);
+                    Console.WriteLine($"[DungeonGen] Capping: placed {capsPlaced} dead-ends, {frontier.Count} exits remaining");
+                }
+            }
+
+            Console.WriteLine($"[DungeonGen] Final: {totalCells} cells, {frontier.Count} open exits");
+
+            // Post-generation: fix one-way portals that may have been missed during
+            // placement. The game client requires symmetric portal entries.
+            int portalFixes = doc.AutoFixPortals();
+            if (portalFixes > 0)
+                Console.WriteLine($"[DungeonGen] Auto-fixed {portalFixes} one-way portal(s)");
+
+            // Post-generation: apply surfaces.
+            // In favorites mode, use the surfaces from the favorited prefabs' cells directly
+            // rather than the KB catalog — the favorites have the exact textures the user wants.
+            string? retextureStyle = lockedStyle ?? (p.Style != "All" ? p.Style : null);
+            if (useFavorites && favPrefabs is { Count: > 0 }) {
+                int applied = ApplyFavoriteSurfaces(doc, favPrefabs);
+                Console.WriteLine($"[DungeonGen] Applied surfaces from favorites to {applied}/{doc.Cells.Count} cells");
+            }
+            else if (retextureStyle != null) {
                 int retextured = RetextureCells(doc, dats, kb, retextureStyle);
                 Console.WriteLine($"[DungeonGen] Retextured {retextured}/{doc.Cells.Count} cells for style '{retextureStyle}'");
             }
 
+            // Post-generation: furnish rooms with static objects from the KB.
+            if (kb.RoomStatics.Count > 0) {
+                int furnished = FurnishRooms(doc, kb);
+                if (furnished > 0)
+                    Console.WriteLine($"[DungeonGen] Furnished {furnished}/{doc.Cells.Count} rooms with static objects");
+            }
+
             doc.ComputeVisibleCells();
+
+            // Log validation summary so issues are visible during development
+            var warnings = doc.Validate();
+            if (warnings.Count > 0) {
+                Console.WriteLine($"[DungeonGen] Validation warnings ({warnings.Count}):");
+                foreach (var w in warnings.Take(10))
+                    Console.WriteLine($"  - {w}");
+                if (warnings.Count > 10)
+                    Console.WriteLine($"  ... and {warnings.Count - 10} more");
+            }
+
             return doc;
         }
 
@@ -322,7 +638,8 @@ namespace WorldBuilder.Editors.Dungeon {
                     var newOrigin = existingCell.Origin + Vector3.Transform(match.RelOffset, existingCell.Orientation);
                     var newRot = Quaternion.Normalize(existingCell.Orientation * match.RelRot);
 
-                    if (WouldOverlap(newOrigin, placedPositions, prefab, openFace.CellIndex, newRot))
+                    if (WouldOverlap(newOrigin, placedPositions, prefab, openFace.CellIndex, newRot,
+                            excludeOrigin: existingCell.Origin))
                         continue;
 
                     var cellMap = new Dictionary<int, ushort>();
@@ -362,10 +679,12 @@ namespace WorldBuilder.Editors.Dungeon {
             }
             if (connectingFace == null) return null;
 
-            var newOrigin = existingCell.Origin + Vector3.Transform(matchedRoom.RelOffset, existingCell.Orientation);
+            var rawOrigin = existingCell.Origin + Vector3.Transform(matchedRoom.RelOffset, existingCell.Orientation);
+            var newOrigin = SnapToGrid(rawOrigin, 10f, 6f);
             var newRot = Quaternion.Normalize(existingCell.Orientation * matchedRoom.RelRot);
 
-            if (WouldOverlap(newOrigin, placedPositions, prefab, connectingFace.CellIndex, newRot))
+            if (WouldOverlap(newOrigin, placedPositions, prefab, connectingFace.CellIndex, newRot,
+                    excludeOrigin: existingCell.Origin))
                 return null;
 
             var cellMap = new Dictionary<int, ushort>();
@@ -416,7 +735,8 @@ namespace WorldBuilder.Editors.Dungeon {
                 var (snapOrigin, snapRot) = PortalSnapper.ComputeSnapTransform(
                     targetCentroid, targetNormal, sourceGeom.Value);
 
-                if (WouldOverlap(snapOrigin, placedPositions, prefab, openFace.CellIndex, snapRot))
+                if (WouldOverlap(snapOrigin, placedPositions, prefab, openFace.CellIndex, snapRot,
+                        excludeOrigin: existingCell.Origin))
                     continue;
 
                 var cellMap = new Dictionary<int, ushort>();
@@ -434,11 +754,74 @@ namespace WorldBuilder.Editors.Dungeon {
         }
 
         /// <summary>
+        /// Place a single room using a proven edge transform directly, without needing
+        /// a prefab. Gets exact surface data from the DAT so the cell renders correctly.
+        /// </summary>
+        private static ushort? TryPlaceEdgeDirectBridge(
+            DungeonDocument doc, IDatReaderWriter dats, PortalGeometryCache geoCache,
+            DungeonKnowledgeBase kb,
+            DungeonCellData existingCell, ushort existingCellNum, ushort existingPolyId,
+            CompatibleRoom bridgeRoom, List<Vector3> placedPositions,
+            Dictionary<(ushort, ushort), float>? roomBounds) {
+
+            var rawOrigin = existingCell.Origin + Vector3.Transform(bridgeRoom.RelOffset, existingCell.Orientation);
+            var newOrigin = SnapToGrid(rawOrigin, 10f, 6f);
+            var newRot = Quaternion.Normalize(existingCell.Orientation * bridgeRoom.RelRot);
+
+            if (WouldOverlapSingle(newOrigin, placedPositions, bridgeRoom.EnvId, bridgeRoom.CellStruct, roomBounds,
+                    excludeOrigin: existingCell.Origin))
+                return null;
+
+            // Get exact surfaces from the DAT by finding a real EnvCell that uses
+            // this room type. The catalog's SampleSurfaces may have the wrong count.
+            var surfaces = FindSurfacesFromDat(dats, bridgeRoom.EnvId, bridgeRoom.CellStruct);
+            if (surfaces == null || surfaces.Count == 0) {
+                var catalogRoom = kb.Catalog.FirstOrDefault(cr =>
+                    cr.EnvId == bridgeRoom.EnvId && cr.CellStruct == bridgeRoom.CellStruct);
+                if (catalogRoom?.SampleSurfaces != null && catalogRoom.SampleSurfaces.Count > 0)
+                    surfaces = new List<ushort>(catalogRoom.SampleSurfaces);
+                else
+                    surfaces = new List<ushort> { 0x032A };
+            }
+
+            var cellNum = doc.AddCell(bridgeRoom.EnvId, bridgeRoom.CellStruct,
+                newOrigin, newRot, surfaces);
+            doc.ConnectPortals(existingCellNum, existingPolyId, cellNum, bridgeRoom.PolyId);
+            return cellNum;
+        }
+
+        /// <summary>
+        /// Scan LandBlockInfo entries to find an EnvCell that uses the given room type
+        /// and return its surface list. This gives us the exact surface count that the
+        /// geometry requires, avoiding rendering errors from mismatched surface slots.
+        /// </summary>
+        private static List<ushort>? FindSurfacesFromDat(IDatReaderWriter dats, ushort envId, ushort cellStruct) {
+            try {
+                var lbiIds = dats.Dats.GetAllIdsOfType<DatReaderWriter.DBObjs.LandBlockInfo>().Take(2000).ToArray();
+                if (lbiIds.Length == 0) lbiIds = dats.Dats.Cell.GetAllIdsOfType<DatReaderWriter.DBObjs.LandBlockInfo>().Take(2000).ToArray();
+                foreach (var lbiId in lbiIds) {
+                    if (!dats.TryGet<DatReaderWriter.DBObjs.LandBlockInfo>(lbiId, out var lbi) || lbi.NumCells == 0) continue;
+                    uint lbId = lbiId >> 16;
+                    for (uint i = 0; i < lbi.NumCells && i < 100; i++) {
+                        uint cellId = (lbId << 16) | (0x0100 + i);
+                        if (!dats.TryGet<DatReaderWriter.DBObjs.EnvCell>(cellId, out var ec)) continue;
+                        if (ec.EnvironmentId == envId && ec.CellStructure == cellStruct && ec.Surfaces.Count > 0)
+                            return new List<ushort>(ec.Surfaces);
+                    }
+                }
+            } catch { }
+            return null;
+        }
+
+        /// <summary>
         /// Check if placing a prefab at the given position would overlap existing cells.
-        /// Uses a distance check on cell origins to detect gross overlaps.
+        /// Uses catalog room dimensions. Skips the connecting cell's origin since rooms
+        /// joined by portals are SUPPOSED to be adjacent.
         /// </summary>
         private static bool WouldOverlap(Vector3 connectOrigin, List<Vector3> existing,
-            DungeonPrefab prefab, int connectCellIdx, Quaternion connectRot) {
+            DungeonPrefab prefab, int connectCellIdx, Quaternion connectRot,
+            Dictionary<(ushort, ushort), float>? roomBounds = null,
+            Vector3? excludeOrigin = null) {
 
             if (existing.Count == 0) return false;
 
@@ -461,13 +844,50 @@ namespace WorldBuilder.Editors.Dungeon {
                     cellWorldPos = worldBaseOrigin + Vector3.Transform(offset, worldBaseRot);
                 }
 
+                float halfWidth = OverlapMinDistDefault;
+                if (roomBounds != null && roomBounds.TryGetValue((pc.EnvId, pc.CellStruct), out var r))
+                    halfWidth = MathF.Max(r, 3.0f);
+                float minDist = halfWidth * 1.5f;
+
                 foreach (var ep in existing) {
+                    if (excludeOrigin.HasValue && (ep - excludeOrigin.Value).LengthSquared() < 1f)
+                        continue;
                     float dist = (cellWorldPos - ep).Length();
-                    if (dist < OverlapMinDist) return true;
+                    if (dist < minDist) return true;
                 }
             }
 
             return false;
+        }
+
+        private static bool WouldOverlapSingle(Vector3 origin, List<Vector3> existing,
+            ushort envId, ushort cellStruct, Dictionary<(ushort, ushort), float>? roomBounds,
+            Vector3? excludeOrigin = null) {
+
+            float halfWidth = OverlapMinDistDefault;
+            if (roomBounds != null && roomBounds.TryGetValue((envId, cellStruct), out var r))
+                halfWidth = MathF.Max(r, 3.0f);
+            float radius = halfWidth * 1.5f;
+
+            foreach (var ep in existing) {
+                if (excludeOrigin.HasValue && (ep - excludeOrigin.Value).LengthSquared() < 1f)
+                    continue;
+                if ((origin - ep).Length() < radius) return true;
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// Snap a position to the dungeon grid. Real AC dungeons use a 10-unit
+        /// horizontal and 6-unit vertical grid. Snapping eliminates floating-point
+        /// drift from chained transforms.
+        /// </summary>
+        private static Vector3 SnapToGrid(Vector3 pos, float gridH, float gridV) {
+            if (gridH <= 0 || gridV <= 0) return pos;
+            return new Vector3(
+                MathF.Round(pos.X / gridH) * gridH,
+                MathF.Round(pos.Y / gridH) * gridH,
+                MathF.Round(pos.Z / gridV) * gridV);
         }
 
         private static void PlaceRemainingCells(
@@ -537,6 +957,35 @@ namespace WorldBuilder.Editors.Dungeon {
                     frontier.Add((dc.CellNumber, pid, dc.EnvironmentId, dc.CellStructure));
                 }
             }
+        }
+
+        /// <summary>
+        /// Apply surfaces from favorited prefabs to generated cells. Builds a lookup of
+        /// (envId, cellStruct) → surfaces from the favorites, then overwrites each generated
+        /// cell's surfaces with the favorite version. This preserves the exact textures from
+        /// the dungeons the user favorited.
+        /// </summary>
+        private static int ApplyFavoriteSurfaces(DungeonDocument doc, List<DungeonPrefab> favPrefabs) {
+            var surfaceLookup = new Dictionary<(ushort, ushort), List<ushort>>();
+            foreach (var fav in favPrefabs) {
+                foreach (var cell in fav.Cells) {
+                    if (cell.Surfaces.Count == 0) continue;
+                    var key = (cell.EnvId, cell.CellStruct);
+                    if (!surfaceLookup.ContainsKey(key))
+                        surfaceLookup[key] = new List<ushort>(cell.Surfaces);
+                }
+            }
+
+            int applied = 0;
+            foreach (var dc in doc.Cells) {
+                var key = (dc.EnvironmentId, dc.CellStructure);
+                if (surfaceLookup.TryGetValue(key, out var favSurfaces) && favSurfaces.Count == dc.Surfaces.Count) {
+                    dc.Surfaces.Clear();
+                    dc.Surfaces.AddRange(favSurfaces);
+                    applied++;
+                }
+            }
+            return applied;
         }
 
         /// <summary>
@@ -619,6 +1068,42 @@ namespace WorldBuilder.Editors.Dungeon {
             }
 
             return retextured;
+        }
+
+        /// <summary>
+        /// Add static objects (torches, furniture, decorations) to generated rooms
+        /// using the most common object placements observed for each room type.
+        /// Objects are placed in cell-local coordinates and transformed to world space.
+        /// </summary>
+        private static int FurnishRooms(DungeonDocument doc, DungeonKnowledgeBase kb) {
+            var staticsLookup = new Dictionary<(ushort, ushort), RoomStaticSet>();
+            foreach (var rs in kb.RoomStatics)
+                staticsLookup.TryAdd((rs.EnvId, rs.CellStruct), rs);
+
+            int furnished = 0;
+            foreach (var dc in doc.Cells) {
+                if (dc.StaticObjects.Count > 0) continue;
+                var key = (dc.EnvironmentId, dc.CellStructure);
+                if (!staticsLookup.TryGetValue(key, out var statics)) continue;
+
+                foreach (var sp in statics.Placements) {
+                    var localPos = new Vector3(sp.X, sp.Y, sp.Z);
+                    var localRot = new Quaternion(sp.RotX, sp.RotY, sp.RotZ, sp.RotW);
+
+                    var worldPos = dc.Origin + Vector3.Transform(localPos, dc.Orientation);
+                    var worldRot = Quaternion.Normalize(dc.Orientation * localRot);
+
+                    dc.StaticObjects.Add(new WorldBuilder.Shared.Documents.DungeonStabData {
+                        Id = sp.ObjectId,
+                        Origin = worldPos,
+                        Orientation = worldRot
+                    });
+                }
+                if (statics.Placements.Count > 0) furnished++;
+            }
+
+            doc.MarkDirty();
+            return furnished;
         }
     }
 }

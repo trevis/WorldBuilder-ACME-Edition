@@ -50,6 +50,12 @@ namespace WorldBuilder.Editors.Dungeon {
         public LoadedEnvCell? SelectedCell => SelectedCells?.Count > 0 ? SelectedCells[0] : null;
 
         /// <summary>
+        /// Cells connected to the selected cell(s) via portals. Rendered with a
+        /// subtler highlight so users can see at a glance what is linked.
+        /// </summary>
+        public IReadOnlyList<LoadedEnvCell>? ConnectedNeighborCells { get; set; }
+
+        /// <summary>
         /// Set by the editor when a static object is selected, to render an AABB highlight.
         /// (worldMin, worldMax) of the selected object's bounding box.
         /// </summary>
@@ -72,6 +78,12 @@ namespace WorldBuilder.Editors.Dungeon {
         /// Set by the editor before each render to show which cells connect to which.
         /// </summary>
         public IReadOnlyList<(Vector3 From, Vector3 To)>? ConnectionLines { get; set; }
+
+        /// <summary>
+        /// Connection lines that touch the selected cell. Rendered brighter so you can
+        /// instantly see which connections belong to the current selection.
+        /// </summary>
+        public IReadOnlyList<(Vector3 From, Vector3 To)>? SelectedConnectionLines { get; set; }
 
         public bool ShowConnectionLines { get; set; } = true;
 
@@ -134,6 +146,12 @@ namespace WorldBuilder.Editors.Dungeon {
         private uint _connPortalVAO;
         private uint _connPortalVBO;
         private readonly List<float> _connPortalVerts = new();
+        private uint _neighborVAO;
+        private uint _neighborVBO;
+        private readonly List<float> _neighborBoxVerts = new();
+        private uint _selConnLineVAO;
+        private uint _selConnLineVBO;
+        private readonly List<float> _selConnLineVerts = new();
 
         private readonly List<float> _selBoxVerts = new();
         private readonly List<float> _connLineVerts = new();
@@ -445,6 +463,11 @@ namespace WorldBuilder.Editors.Dungeon {
                 RenderSelectionBoxes(gl, viewProjection);
             }
 
+            // Render connected neighbor highlights (subtler color)
+            if (ConnectedNeighborCells != null && ConnectedNeighborCells.Count > 0) {
+                RenderNeighborBoxes(gl, viewProjection);
+            }
+
             // Render selected object highlight
             if (SelectedObjectBounds.HasValue) {
                 RenderObjectSelectionBox(gl, viewProjection, SelectedObjectBounds.Value.Min, SelectedObjectBounds.Value.Max);
@@ -463,6 +486,11 @@ namespace WorldBuilder.Editors.Dungeon {
             // Render connection lines between cells (shows what connects to what)
             if (ShowConnectionLines && ConnectionLines != null && ConnectionLines.Count > 0) {
                 RenderConnectionLines(gl, viewProjection);
+            }
+
+            // Render highlighted connection lines for the selected cell (brighter)
+            if (ShowConnectionLines && SelectedConnectionLines != null && SelectedConnectionLines.Count > 0) {
+                RenderSelectedConnectionLines(gl, viewProjection);
             }
 
             ThumbnailService?.ProcessQueue(_renderer);
@@ -1275,6 +1303,155 @@ namespace WorldBuilder.Editors.Dungeon {
             gl.UseProgram(0);
         }
 
+        private unsafe void RenderNeighborBoxes(GL gl, Matrix4x4 viewProjection) {
+            if (_sceneContext == null || ConnectedNeighborCells == null) return;
+
+            _neighborBoxVerts.Clear();
+            var camPos = Camera.Position;
+            const float lineWidth = 0.12f;
+
+            foreach (var cell in ConnectedNeighborCells) {
+                var min = cell.LocalBoundsMin;
+                var max = cell.LocalBoundsMax;
+                if (min.X >= max.X) continue;
+
+                var transform = cell.WorldTransform;
+                Vector3[] c = new Vector3[8];
+                c[0] = Vector3.Transform(new Vector3(min.X, min.Y, min.Z), transform);
+                c[1] = Vector3.Transform(new Vector3(max.X, min.Y, min.Z), transform);
+                c[2] = Vector3.Transform(new Vector3(max.X, max.Y, min.Z), transform);
+                c[3] = Vector3.Transform(new Vector3(min.X, max.Y, min.Z), transform);
+                c[4] = Vector3.Transform(new Vector3(min.X, min.Y, max.Z), transform);
+                c[5] = Vector3.Transform(new Vector3(max.X, min.Y, max.Z), transform);
+                c[6] = Vector3.Transform(new Vector3(max.X, max.Y, max.Z), transform);
+                c[7] = Vector3.Transform(new Vector3(min.X, max.Y, max.Z), transform);
+
+                int[][] edges = { new[]{0,1}, new[]{1,2}, new[]{2,3}, new[]{3,0},
+                                  new[]{4,5}, new[]{5,6}, new[]{6,7}, new[]{7,4},
+                                  new[]{0,4}, new[]{1,5}, new[]{2,6}, new[]{3,7} };
+
+                foreach (var e in edges) {
+                    var a = c[e[0]];
+                    var b = c[e[1]];
+                    var edgeDir = Vector3.Normalize(b - a);
+                    var midpoint = (a + b) * 0.5f;
+                    var toCamera = Vector3.Normalize(camPos - midpoint);
+                    var sideDir = Vector3.Normalize(Vector3.Cross(edgeDir, toCamera)) * lineWidth;
+                    var normal = toCamera;
+                    void V(Vector3 p) { _neighborBoxVerts.Add(p.X); _neighborBoxVerts.Add(p.Y); _neighborBoxVerts.Add(p.Z); _neighborBoxVerts.Add(normal.X); _neighborBoxVerts.Add(normal.Y); _neighborBoxVerts.Add(normal.Z); }
+                    V(a - sideDir); V(b - sideDir); V(b + sideDir);
+                    V(a - sideDir); V(b + sideDir); V(a + sideDir);
+                }
+            }
+
+            if (_neighborBoxVerts.Count == 0) return;
+            int vertCount = _neighborBoxVerts.Count / 6;
+            var data = CollectionsMarshal.AsSpan(_neighborBoxVerts);
+
+            if (_neighborVAO == 0) {
+                gl.GenVertexArrays(1, out _neighborVAO);
+                gl.GenBuffers(1, out _neighborVBO);
+            }
+
+            gl.BindVertexArray(_neighborVAO);
+            gl.BindBuffer(GLEnum.ArrayBuffer, _neighborVBO);
+            fixed (float* ptr = data) {
+                gl.BufferData(GLEnum.ArrayBuffer, (nuint)(data.Length * sizeof(float)), ptr, GLEnum.DynamicDraw);
+            }
+            gl.EnableVertexAttribArray(0);
+            gl.VertexAttribPointer(0, 3, GLEnum.Float, false, 6 * sizeof(float), (void*)0);
+            gl.EnableVertexAttribArray(1);
+            gl.VertexAttribPointer(1, 3, GLEnum.Float, false, 6 * sizeof(float), (void*)(3 * sizeof(float)));
+            for (uint i = 2; i < 8; i++) gl.DisableVertexAttribArray(i);
+            gl.VertexAttrib4(2, 0f, 0f, 0f, 1f);
+
+            var shader = _sceneContext.SphereShader;
+            shader.Bind();
+            shader.SetUniform("uViewProjection", viewProjection);
+            shader.SetUniform("uCameraPosition", camPos);
+            shader.SetUniform("uSphereColor", new Vector3(0.3f, 0.7f, 1.0f));
+            shader.SetUniform("uLightDirection", Vector3.Normalize(new Vector3(0.3f, -0.5f, -0.8f)));
+            shader.SetUniform("uAmbientIntensity", 1.0f);
+            shader.SetUniform("uSpecularPower", 0f);
+            shader.SetUniform("uGlowColor", new Vector3(0.1f, 0.3f, 0.5f));
+            shader.SetUniform("uGlowIntensity", 0.3f);
+            shader.SetUniform("uGlowPower", 1.0f);
+
+            gl.Disable(EnableCap.DepthTest);
+            gl.Disable(EnableCap.CullFace);
+            gl.DrawArrays(GLEnum.Triangles, 0, (uint)vertCount);
+            gl.Enable(EnableCap.DepthTest);
+            gl.Enable(EnableCap.CullFace);
+
+            gl.BindVertexArray(0);
+            gl.UseProgram(0);
+        }
+
+        private unsafe void RenderSelectedConnectionLines(GL gl, Matrix4x4 viewProjection) {
+            if (_sceneContext == null || SelectedConnectionLines == null || SelectedConnectionLines.Count == 0) return;
+
+            const float lineWidth = 0.55f;
+            var camPos = Camera.Position;
+            _selConnLineVerts.Clear();
+
+            foreach (var (from, to) in SelectedConnectionLines) {
+                var edgeDir = Vector3.Normalize(to - from);
+                var midpoint = (from + to) * 0.5f;
+                var toCamera = Vector3.Normalize(camPos - midpoint);
+                var sideDir = Vector3.Normalize(Vector3.Cross(edgeDir, toCamera)) * lineWidth;
+                var normal = toCamera;
+
+                var a0 = from - sideDir; var a1 = from + sideDir;
+                var b0 = to - sideDir; var b1 = to + sideDir;
+
+                void V(Vector3 p) { _selConnLineVerts.Add(p.X); _selConnLineVerts.Add(p.Y); _selConnLineVerts.Add(p.Z); _selConnLineVerts.Add(normal.X); _selConnLineVerts.Add(normal.Y); _selConnLineVerts.Add(normal.Z); }
+                V(a0); V(b0); V(b1);
+                V(a0); V(b1); V(a1);
+            }
+
+            if (_selConnLineVerts.Count == 0) return;
+            int vertCount = _selConnLineVerts.Count / 6;
+            var data = CollectionsMarshal.AsSpan(_selConnLineVerts);
+
+            if (_selConnLineVAO == 0) {
+                gl.GenVertexArrays(1, out _selConnLineVAO);
+                gl.GenBuffers(1, out _selConnLineVBO);
+            }
+
+            gl.BindVertexArray(_selConnLineVAO);
+            gl.BindBuffer(GLEnum.ArrayBuffer, _selConnLineVBO);
+            fixed (float* ptr = data) {
+                gl.BufferData(GLEnum.ArrayBuffer, (nuint)(data.Length * sizeof(float)), ptr, GLEnum.DynamicDraw);
+            }
+            gl.EnableVertexAttribArray(0);
+            gl.VertexAttribPointer(0, 3, GLEnum.Float, false, 6 * sizeof(float), (void*)0);
+            gl.EnableVertexAttribArray(1);
+            gl.VertexAttribPointer(1, 3, GLEnum.Float, false, 6 * sizeof(float), (void*)(3 * sizeof(float)));
+            for (uint i = 2; i < 8; i++) gl.DisableVertexAttribArray(i);
+            gl.VertexAttrib4(2, 0f, 0f, 0f, 1f);
+
+            var shader = _sceneContext.SphereShader;
+            shader.Bind();
+            shader.SetUniform("uViewProjection", viewProjection);
+            shader.SetUniform("uCameraPosition", camPos);
+            shader.SetUniform("uSphereColor", new Vector3(1.0f, 0.8f, 0.2f));
+            shader.SetUniform("uLightDirection", Vector3.Normalize(new Vector3(0.3f, -0.5f, -0.8f)));
+            shader.SetUniform("uAmbientIntensity", 1.0f);
+            shader.SetUniform("uSpecularPower", 0f);
+            shader.SetUniform("uGlowColor", new Vector3(0.5f, 0.4f, 0.05f));
+            shader.SetUniform("uGlowIntensity", 0.6f);
+            shader.SetUniform("uGlowPower", 1.5f);
+
+            gl.Disable(EnableCap.DepthTest);
+            gl.Disable(EnableCap.CullFace);
+            gl.DrawArrays(GLEnum.Triangles, 0, (uint)vertCount);
+            gl.Enable(EnableCap.DepthTest);
+            gl.Enable(EnableCap.CullFace);
+
+            gl.BindVertexArray(0);
+            gl.UseProgram(0);
+        }
+
         private unsafe void RenderBatchedObject(GL gl, StaticObjectRenderData renderData, List<Matrix4x4> instanceTransforms) {
             if (_sceneContext == null || instanceTransforms.Count == 0 || renderData.Batches.Count == 0) return;
 
@@ -1375,6 +1552,10 @@ namespace WorldBuilder.Editors.Dungeon {
                 if (_highlightVAO != 0) gl.DeleteVertexArray(_highlightVAO);
                 if (_connPortalVBO != 0) gl.DeleteBuffer(_connPortalVBO);
                 if (_connPortalVAO != 0) gl.DeleteVertexArray(_connPortalVAO);
+                if (_neighborVBO != 0) gl.DeleteBuffer(_neighborVBO);
+                if (_neighborVAO != 0) gl.DeleteVertexArray(_neighborVAO);
+                if (_selConnLineVBO != 0) gl.DeleteBuffer(_selConnLineVBO);
+                if (_selConnLineVAO != 0) gl.DeleteVertexArray(_selConnLineVAO);
             }
             _sceneContext?.Dispose();
         }

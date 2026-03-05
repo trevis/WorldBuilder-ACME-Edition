@@ -557,6 +557,102 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
         }
 
         [RelayCommand]
+        private async Task FreshStart() {
+            if (TerrainSystem == null) return;
+
+            var confirmed = await ShowFreshStartConfirmation();
+            if (!confirmed) return;
+
+            const byte WATER_DEEP_SEA = 0x14;
+            const int MAP_SIZE = 255;
+            const int LANDBLOCK_SIZE = 81;
+
+            var waterEntry = new TerrainEntry(road: 0, scenery: 0, type: WATER_DEEP_SEA, height: 0).ToUInt();
+
+            var batchChanges = new Dictionary<ushort, Dictionary<byte, uint>>();
+            for (int x = 0; x <= MAP_SIZE - 1; x++) {
+                for (int y = 0; y <= MAP_SIZE - 1; y++) {
+                    var lbKey = (ushort)((x << 8) | y);
+                    var existing = TerrainSystem.GetLandblockTerrain(lbKey);
+                    if (existing == null) continue;
+
+                    var changes = new Dictionary<byte, uint>();
+                    for (byte i = 0; i < LANDBLOCK_SIZE; i++) {
+                        if (existing[i].ToUInt() != waterEntry) {
+                            changes[i] = waterEntry;
+                        }
+                    }
+                    if (changes.Count > 0) {
+                        batchChanges[lbKey] = changes;
+                    }
+
+                    if (batchChanges.Count >= 500) {
+                        TerrainSystem.TerrainDoc.UpdateLandblocksBatchInternal(batchChanges, out _);
+                        batchChanges.Clear();
+                    }
+                }
+            }
+
+            if (batchChanges.Count > 0) {
+                TerrainSystem.TerrainDoc.UpdateLandblocksBatchInternal(batchChanges, out _);
+            }
+
+            TerrainSystem.DocumentManager.SkipDatStatics = true;
+
+            foreach (var doc in TerrainSystem.DocumentManager.ActiveDocs.Values) {
+                if (doc is LandblockDocument lbDoc) {
+                    lbDoc.ClearAllStatics();
+                }
+            }
+
+            TerrainSystem.Scene.InvalidateStaticObjectsCache();
+            TerrainSystem.Scene.ClearAllCaches();
+        }
+
+        private async Task<bool> ShowFreshStartConfirmation() {
+            bool confirmed = false;
+
+            await DialogHost.Show(new StackPanel {
+                Margin = new Avalonia.Thickness(20),
+                Spacing = 10,
+                Children = {
+                    new TextBlock {
+                        Text = "Fresh Start",
+                        FontSize = 16,
+                        FontWeight = FontWeight.Bold
+                    },
+                    new TextBlock {
+                        Text = "This will reset ALL terrain to WaterDeepSea and\ndelete ALL static objects and buildings from the world.\n\nThis cannot be undone.",
+                        TextWrapping = TextWrapping.Wrap,
+                        MaxWidth = 400,
+                        FontSize = 13,
+                        Opacity = 0.85
+                    },
+                    new StackPanel {
+                        Orientation = Avalonia.Layout.Orientation.Horizontal,
+                        HorizontalAlignment = HorizontalAlignment.Right,
+                        Spacing = 10,
+                        Children = {
+                            new Button {
+                                Content = "Cancel",
+                                Command = new RelayCommand(() => DialogHost.Close("MainDialogHost"))
+                            },
+                            new Button {
+                                Content = "Reset World",
+                                Command = new RelayCommand(() => {
+                                    confirmed = true;
+                                    DialogHost.Close("MainDialogHost");
+                                })
+                            }
+                        }
+                    }
+                }
+            }, "MainDialogHost");
+
+            return confirmed;
+        }
+
+        [RelayCommand]
         public void Undo() {
             TerrainSystem?.History?.Undo();
             TerrainSystem?.Scene.InvalidateStaticObjectsCache();

@@ -24,7 +24,7 @@ namespace WorldBuilder.Editors.Landscape {
         private readonly ConcurrentDictionary<uint, int> _usageCount = new();
         private readonly HashSet<uint> _failedIds = new();
         private readonly TextureDiskCache? _textureCache;
-        private readonly Dictionary<(uint Id, bool IsSetup), (Vector3 Min, Vector3 Max)> _boundsCache = new();
+        private readonly ConcurrentDictionary<(uint Id, bool IsSetup), (Vector3 Min, Vector3 Max)> _boundsCache = new();
 
         public StaticObjectManager(OpenGLRenderer renderer, IDatReaderWriter dats, TextureDiskCache? textureCache = null) {
             _renderer = renderer;
@@ -96,8 +96,8 @@ namespace WorldBuilder.Editors.Landscape {
             _renderData.Remove(key);
 
             // Invalidate cached bounds for this object
-            _boundsCache.Remove((key, true));
-            _boundsCache.Remove((key, false));
+            _boundsCache.TryRemove((key, true), out _);
+            _boundsCache.TryRemove((key, false), out _);
         }
 
         private StaticObjectRenderData? CreateRenderData(uint id, bool isSetup) {

@@ -416,6 +416,43 @@ namespace WorldBuilder.Editors.Dungeon {
         public bool IsPrefabFavorite(DungeonPrefab prefab) =>
             _favoritePrefabSignatures.Contains(prefab.Signature);
 
+        public HashSet<string> GetFavoritePrefabSignatures() => new(_favoritePrefabSignatures);
+
+        public List<DungeonPrefab> GetCustomPrefabs() => new(_customPrefabs);
+
+        public PrefabListEntry? FindPrefabEntry(string signature) =>
+            PrefabEntries.FirstOrDefault(e => e.Prefab.Signature == signature);
+
+        /// <summary>
+        /// Bulk-add multiple prefab signatures as favorites. Saves and refreshes once at the end.
+        /// Returns the number of newly added favorites.
+        /// </summary>
+        public int AddPrefabFavorites(IEnumerable<string> signatures) {
+            int added = 0;
+            foreach (var sig in signatures) {
+                if (_favoritePrefabSignatures.Add(sig))
+                    added++;
+            }
+            if (added > 0) {
+                SavePrefabFavorites();
+                ApplyPrefabFilter();
+            }
+            return added;
+        }
+
+        /// <summary>Clear all prefab favorites and custom prefabs. Returns the total count removed.</summary>
+        public int ClearAllPrefabFavorites() {
+            int count = _favoritePrefabSignatures.Count + _customPrefabs.Count;
+            _favoritePrefabSignatures.Clear();
+            _customPrefabs.Clear();
+            _allPrefabs.RemoveAll(p => p.Signature.StartsWith("custom_"));
+            SavePrefabFavorites();
+            SaveCustomPrefabs();
+            ApplyPrefabFilter();
+            Console.WriteLine($"[RoomPalette] Cleared all favorites and custom prefabs ({count} removed)");
+            return count;
+        }
+
         public void TogglePrefabFavorite(PrefabListEntry entry) {
             var sig = entry.Prefab.Signature;
             if (_favoritePrefabSignatures.Contains(sig)) {

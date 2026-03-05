@@ -28,6 +28,13 @@ namespace WorldBuilder.Shared.Documents {
         public Guid ClientId => _clientId;
         public ConcurrentDictionary<string, BaseDocument> ActiveDocs => _activeDocs;
 
+        /// <summary>
+        /// When true, newly loaded LandblockDocuments will skip loading statics from DAT files.
+        /// Set by the "Fresh Start" feature to ensure navigating to new areas doesn't
+        /// bring back original world statics.
+        /// </summary>
+        public bool SkipDatStatics { get; set; }
+
         private record DocumentUpdate(string DocumentId, BaseDocument Document, DateTime Timestamp);
 
         private string? _cacheDirectory;

@@ -67,6 +67,12 @@ namespace WorldBuilder.Editors.Dungeon {
             var prefabSignatures = new Dictionary<string, int>();
             var roomUsage = new Dictionary<(ushort envId, ushort cs), (int count, HashSet<string> dungeonNames, List<ushort> sampleSurfaces)>();
 
+            // Collect static objects per room type across all dungeons
+            var roomStaticsRaw = new Dictionary<(ushort envId, ushort cs), List<List<(uint id, Vector3 pos, Quaternion rot)>>>();
+
+            // Collect full dungeon graph structures as templates
+            var templates = new List<DungeonTemplate>();
+
             var lbiIds = GetDungeonLandblockIds(dats);
             Console.WriteLine($"[DungeonKnowledge] Scanning {lbiIds.Length} dungeon landblocks...");
 
@@ -109,12 +115,41 @@ namespace WorldBuilder.Editors.Dungeon {
                     if (ecSurfaces.Count > ru.sampleSurfaces.Count && ecSurfaces.Count > 0)
                         ru.sampleSurfaces = ecSurfaces;
                     roomUsage[rk] = (ru.count, ru.dungeonNames, ru.sampleSurfaces);
+
+                    // Collect static objects for this room type instance.
+                    // Convert from landblock-absolute to cell-relative coordinates
+                    // so they can be placed correctly in generated cells at different positions.
+                    if (ec.StaticObjects != null && ec.StaticObjects.Count > 0) {
+                        if (!roomStaticsRaw.TryGetValue(rk, out var instanceList)) {
+                            instanceList = new List<List<(uint, Vector3, Quaternion)>>();
+                            roomStaticsRaw[rk] = instanceList;
+                        }
+                        if (instanceList.Count < 20) {
+                            var cellOrigin = ec.Position.Origin;
+                            var cellRot = ec.Position.Orientation;
+                            var invCellRot = Quaternion.Conjugate(cellRot);
+
+                            var objs = new List<(uint id, Vector3 pos, Quaternion rot)>();
+                            foreach (var stab in ec.StaticObjects) {
+                                var relPos = Vector3.Transform(stab.Frame.Origin - cellOrigin, invCellRot);
+                                var relRot = Quaternion.Normalize(invCellRot * stab.Frame.Orientation);
+                                objs.Add((stab.Id, relPos, relRot));
+                            }
+                            instanceList.Add(objs);
+                        }
+                    }
                 }
 
                 ExtractAdjacencyEdges(cells, edgeCounts);
 
                 if (cells.Count <= 80) {
                     ExtractPrefabs(cells, dats, lbKey, dungeonName ?? "", allPrefabs, prefabSignatures);
+                }
+
+                // Extract dungeon topology as a template (limit to named dungeons <=60 cells)
+                if (cells.Count >= 3 && cells.Count <= 60 && templates.Count < 1000) {
+                    var tmpl = ExtractTemplate(cells, lbKey, dungeonName);
+                    if (tmpl != null) templates.Add(tmpl);
                 }
 
                 if (dungeonsScanned % 500 == 0)
@@ -138,10 +173,15 @@ namespace WorldBuilder.Editors.Dungeon {
                 .ToList();
 
             var catalog = BuildCatalog(roomUsage, dats);
+            var roomStatics = BuildRoomStatics(roomStaticsRaw);
+            var gridConstants = ComputeGridConstants(edges);
 
             PrefabNamer.NameAll(uniquePrefabs, catalog);
 
-            Console.WriteLine($"[DungeonKnowledge] Done: {dungeonsScanned} dungeons, {edges.Count} edges, {uniquePrefabs.Count} prefabs, {catalog.Count} catalog rooms");
+            Console.WriteLine($"[DungeonKnowledge] Done: {dungeonsScanned} dungeons, {edges.Count} edges, " +
+                $"{uniquePrefabs.Count} prefabs, {catalog.Count} catalog rooms, " +
+                $"{roomStatics.Count} room statics, {templates.Count} templates, " +
+                $"grid H={gridConstants.h:F1} V={gridConstants.v:F1}");
 
             var kb = new DungeonKnowledgeBase {
                 Version = DungeonKnowledgeBase.CurrentVersion,
@@ -150,9 +190,13 @@ namespace WorldBuilder.Editors.Dungeon {
                 TotalEdges = edges.Count,
                 TotalPrefabs = uniquePrefabs.Count,
                 TotalCatalogRooms = catalog.Count,
+                GridStepH = gridConstants.h,
+                GridStepV = gridConstants.v,
                 Edges = edges,
                 Prefabs = uniquePrefabs,
-                Catalog = catalog
+                Catalog = catalog,
+                RoomStatics = roomStatics,
+                Templates = templates
             };
 
             Save(kb);
@@ -213,6 +257,26 @@ namespace WorldBuilder.Editors.Dungeon {
                 string size = maxDim < 10 ? "Small" : maxDim < 25 ? "Medium" : "Large";
                 string style = PrefabNamer.InferStyle(string.Join(" ", data.dungeonNames));
 
+                // Compute portal polygon dimensions
+                var portalDims = new List<PortalDimension>();
+                foreach (var pid in portalIds) {
+                    var geom = PortalSnapper.GetPortalGeometry(cellStruct, pid);
+                    if (geom == null) continue;
+                    var verts = geom.Value.Vertices;
+                    if (verts.Count < 3) continue;
+                    float pMinX = float.MaxValue, pMaxX = float.MinValue;
+                    float pMinY = float.MaxValue, pMaxY = float.MinValue;
+                    float pMinZ = float.MaxValue, pMaxZ = float.MinValue;
+                    foreach (var pv in verts) {
+                        if (pv.X < pMinX) pMinX = pv.X; if (pv.X > pMaxX) pMaxX = pv.X;
+                        if (pv.Y < pMinY) pMinY = pv.Y; if (pv.Y > pMaxY) pMaxY = pv.Y;
+                        if (pv.Z < pMinZ) pMinZ = pv.Z; if (pv.Z > pMaxZ) pMaxZ = pv.Z;
+                    }
+                    float pw = MathF.Max(pMaxX - pMinX, pMaxY - pMinY);
+                    float ph = pMaxZ - pMinZ;
+                    portalDims.Add(new PortalDimension { PolyId = pid, Width = pw, Height = ph });
+                }
+
                 catalog.Add(new CatalogRoom {
                     EnvId = key.envId, CellStruct = key.cs,
                     Category = category, Size = size, Style = style,
@@ -220,7 +284,8 @@ namespace WorldBuilder.Editors.Dungeon {
                     PortalCount = portalCount, UsageCount = data.count,
                     BoundsWidth = width, BoundsDepth = depth, BoundsHeight = height,
                     SourceDungeons = data.dungeonNames.Take(5).OrderBy(n => n).ToList(),
-                    SampleSurfaces = data.sampleSurfaces.Take(10).ToList()
+                    SampleSurfaces = data.sampleSurfaces.Take(10).ToList(),
+                    PortalDimensions = portalDims
                 });
             }
             return catalog.OrderByDescending(r => r.UsageCount).ToList();
@@ -441,6 +506,178 @@ namespace WorldBuilder.Editors.Dungeon {
 
             if (prefab.Cells.Count < 2) return null;
             return prefab;
+        }
+
+        /// <summary>
+        /// Consolidate per-room-type static object observations into a representative set.
+        /// For each room type, pick the object placements that appear across the most instances.
+        /// </summary>
+        private static List<RoomStaticSet> BuildRoomStatics(
+            Dictionary<(ushort envId, ushort cs), List<List<(uint id, Vector3 pos, Quaternion rot)>>> raw) {
+
+            var result = new List<RoomStaticSet>();
+            foreach (var (key, instances) in raw) {
+                if (instances.Count == 0) continue;
+
+                // Pick the instance with the most objects as representative
+                var best = instances.OrderByDescending(i => i.Count).First();
+                if (best.Count == 0) continue;
+
+                var set = new RoomStaticSet { EnvId = key.envId, CellStruct = key.cs };
+                foreach (var (id, pos, rot) in best) {
+                    // Count how many other instances also have this object ID
+                    int freq = instances.Count(inst => inst.Any(o => o.id == id));
+                    set.Placements.Add(new StaticPlacement {
+                        ObjectId = id,
+                        X = pos.X, Y = pos.Y, Z = pos.Z,
+                        RotX = rot.X, RotY = rot.Y, RotZ = rot.Z, RotW = rot.W,
+                        Frequency = freq
+                    });
+                }
+                // Only keep objects that appear in at least 30% of instances
+                int threshold = Math.Max(1, instances.Count * 3 / 10);
+                set.Placements.RemoveAll(p => p.Frequency < threshold);
+                if (set.Placements.Count > 0)
+                    result.Add(set);
+            }
+            Console.WriteLine($"[DungeonKnowledge] Built static sets for {result.Count} room types ({result.Sum(s => s.Placements.Count)} total objects)");
+            return result;
+        }
+
+        /// <summary>
+        /// Extract a complete dungeon blueprint -- positions, orientations, portal
+        /// connections, surfaces, and graph structure. This is enough data to
+        /// reconstruct the dungeon exactly or to re-skin it with different room types.
+        /// </summary>
+        private static DungeonTemplate? ExtractTemplate(
+            Dictionary<ushort, EnvCell> cells, ushort sourceLandblock, string dungeonName) {
+
+            var cellNums = cells.Keys.OrderBy(k => k).ToList();
+            var indexMap = new Dictionary<ushort, int>();
+            for (int i = 0; i < cellNums.Count; i++)
+                indexMap[cellNums[i]] = i;
+
+            var adj = new Dictionary<int, List<int>>();
+            for (int i = 0; i < cellNums.Count; i++) adj[i] = new List<int>();
+
+            var connections = new List<TemplateConnection>();
+            var drawnEdges = new HashSet<(int, int)>();
+
+            foreach (var (cn, ec) in cells) {
+                if (ec.CellPortals == null) continue;
+                int myIdx = indexMap[cn];
+                foreach (var portal in ec.CellPortals) {
+                    if (!indexMap.TryGetValue(portal.OtherCellId, out int otherIdx)) continue;
+                    if (!adj[myIdx].Contains(otherIdx)) adj[myIdx].Add(otherIdx);
+
+                    var edgeKey = (Math.Min(myIdx, otherIdx), Math.Max(myIdx, otherIdx));
+                    if (drawnEdges.Add(edgeKey)) {
+                        connections.Add(new TemplateConnection {
+                            NodeA = myIdx,
+                            PolyIdA = (ushort)portal.PolygonId,
+                            NodeB = otherIdx,
+                            PolyIdB = (ushort)portal.OtherPortalId
+                        });
+                    }
+                }
+            }
+
+            // BFS to compute depth and detect graph type
+            var visited = new HashSet<int>();
+            var queue = new Queue<(int node, int depth)>();
+            queue.Enqueue((0, 0));
+            visited.Add(0);
+            int maxDepth = 0;
+            int branchCount = 0;
+
+            while (queue.Count > 0) {
+                var (node, depth) = queue.Dequeue();
+                if (depth > maxDepth) maxDepth = depth;
+                foreach (var n in adj[node]) {
+                    if (visited.Add(n)) queue.Enqueue((n, depth + 1));
+                }
+            }
+
+            foreach (var (_, neighbors) in adj) {
+                if (neighbors.Count >= 3) branchCount++;
+            }
+
+            bool hasCycles = cells.Values.Sum(c => c.CellPortals?.Count ?? 0) / 2 > cellNums.Count - 1;
+            string graphType = hasCycles ? "Complex" : branchCount == 0 ? "Linear" : "Tree";
+
+            // Store positions relative to the first cell so templates are origin-independent
+            var firstCell = cells[cellNums[0]];
+            var originPos = firstCell.Position.Origin;
+            var originRot = firstCell.Position.Orientation;
+            var invRot = Quaternion.Conjugate(originRot);
+
+            var nodes = new List<TemplateNode>();
+            for (int i = 0; i < cellNums.Count; i++) {
+                var ec = cells[cellNums[i]];
+                int degree = adj[i].Count;
+                string role = degree == 0 ? "Isolated" : degree == 1 ? "DeadEnd" : degree == 2 ? "Corridor" : "Junction";
+                if (i == 0) role = "Entry";
+
+                var relPos = Vector3.Transform(ec.Position.Origin - originPos, invRot);
+                var relRot = Quaternion.Normalize(invRot * ec.Position.Orientation);
+
+                nodes.Add(new TemplateNode {
+                    Index = i,
+                    EnvId = (ushort)ec.EnvironmentId,
+                    CellStruct = (ushort)ec.CellStructure,
+                    PortalCount = ec.CellPortals?.Count ?? 0,
+                    Role = role,
+                    ConnectedTo = adj[i],
+                    OffsetX = relPos.X, OffsetY = relPos.Y, OffsetZ = relPos.Z,
+                    RotX = relRot.X, RotY = relRot.Y, RotZ = relRot.Z, RotW = relRot.W,
+                    Surfaces = ec.Surfaces?.ToList() ?? new List<ushort>()
+                });
+            }
+
+            string style = PrefabNamer.InferStyle(dungeonName);
+
+            return new DungeonTemplate {
+                SourceLandblock = sourceLandblock,
+                DungeonName = dungeonName,
+                Style = style,
+                CellCount = cellNums.Count,
+                GraphType = graphType,
+                MaxDepth = maxDepth,
+                BranchCount = branchCount,
+                Nodes = nodes,
+                Connections = connections
+            };
+        }
+
+        /// <summary>
+        /// Compute the most common horizontal and vertical grid step from edge offsets.
+        /// </summary>
+        private static (float h, float v) ComputeGridConstants(List<AdjacencyEdge> edges) {
+            var hSteps = new Dictionary<float, int>();
+            var vSteps = new Dictionary<float, int>();
+
+            foreach (var e in edges) {
+                float absX = MathF.Abs(e.RelOffsetX);
+                float absY = MathF.Abs(e.RelOffsetY);
+                float absZ = MathF.Abs(e.RelOffsetZ);
+
+                float hStep = MathF.Max(absX, absY);
+                if (hStep > 1f) {
+                    float rounded = MathF.Round(hStep);
+                    hSteps.TryGetValue(rounded, out int hc);
+                    hSteps[rounded] = hc + e.Count;
+                }
+                if (absZ > 1f) {
+                    float rounded = MathF.Round(absZ);
+                    vSteps.TryGetValue(rounded, out int vc);
+                    vSteps[rounded] = vc + e.Count;
+                }
+            }
+
+            float gridH = hSteps.Count > 0 ? hSteps.OrderByDescending(kv => kv.Value).First().Key : 10f;
+            float gridV = vSteps.Count > 0 ? vSteps.OrderByDescending(kv => kv.Value).First().Key : 6f;
+
+            return (gridH, gridV);
         }
     }
 }

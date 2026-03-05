@@ -7,6 +7,7 @@ using CommunityToolkit.Mvvm.Input;
 using CommunityToolkit.Mvvm.Messaging;
 using System;
 using System.Collections.Generic;
+using System.Collections.ObjectModel;
 using System.Threading.Tasks;
 using WorldBuilder.Editors.Dungeon;
 using WorldBuilder.Editors.Landscape.ViewModels;
@@ -35,18 +36,28 @@ public partial class MainViewModel : ViewModelBase {
     [ObservableProperty]
     private object? _activeEditor;
 
+    partial void OnActiveEditorChanged(object? value) {
+        OnPropertyChanged(nameof(DockingPanels));
+    }
+
     public KeyGesture? ExitGesture => _inputManager.GetKeyGesture(InputActions.AppExit);
     public KeyGesture? GotoLandblockGesture => _inputManager.GetKeyGesture(InputActions.NavigationGoToLandblock);
 
-    // We expose a collection of dockable panels for the Windows menu
-    public IEnumerable<IDockable> DockingPanels {
+    private static readonly ObservableCollection<IDockable> _emptyPanels = new();
+
+    public ObservableCollection<IDockable> DockingPanels {
         get {
-            var landscapeEditor = ProjectManager.Instance.GetProjectService<LandscapeEditorViewModel>();
-            if (landscapeEditor != null) {
-                return landscapeEditor.DockingManager.AllPanels;
-            }
-            return new List<IDockable>();
+            var dm = GetActiveDockingManager();
+            return dm?.AllPanels ?? _emptyPanels;
         }
+    }
+
+    private DockingManager? GetActiveDockingManager() {
+        return ActiveEditor switch {
+            DungeonEditorViewModel de => de.DockingManager,
+            LandscapeEditorViewModel le => le.DockingManager,
+            _ => null,
+        };
     }
 
     public MainViewModel() {
@@ -63,10 +74,7 @@ public partial class MainViewModel : ViewModelBase {
     [RelayCommand]
     private void TogglePanelVisibility(object? parameter) {
         if (parameter is string id) {
-             var landscapeEditor = ProjectManager.Instance.GetProjectService<LandscapeEditorViewModel>();
-             if (landscapeEditor != null) {
-                 landscapeEditor.DockingManager.TogglePanelVisibility(id);
-             }
+            GetActiveDockingManager()?.TogglePanelVisibility(id);
         }
     }
 

@@ -109,6 +109,20 @@
                                 ToolTip.Tip="Run comprehensive validation checks." />
                         <Button Classes="dng-toolbar-btn" Content="Generate..." Command="{Binding GenerateDungeonCommand}" Foreground="#4dbdbd"
                                 ToolTip.Tip="Build a new dungeon using proven room connections from real game data." />
+                        <Button Classes="dng-toolbar-btn" Content="&#x2605; Favorite" Foreground="#bd974d"
+                                ToolTip.Tip="Favorite this dungeon for use with Generate from Favorites.">
+                            <Button.Flyout>
+                                <MenuFlyout Placement="BottomEdgeAlignedLeft">
+                                    <MenuItem Header="Favorite individual pieces" Command="{Binding FavoriteDungeonPiecesCommand}"
+                                              ToolTip.Tip="Extract individual corridors, chambers, junctions etc. from this dungeon and favorite them. Best for generating new variations in this style." />
+                                    <MenuItem Header="Favorite as whole dungeon" Command="{Binding FavoriteDungeonWholeCommand}"
+                                              ToolTip.Tip="Save the entire dungeon as a single reusable piece and add to favorites." />
+                                    <Separator />
+                                    <MenuItem Header="Clear all favorites" Command="{Binding ClearAllFavoritesCommand}"
+                                              ToolTip.Tip="Remove all favorited pieces and custom prefabs." />
+                                </MenuFlyout>
+                            </Button.Flyout>
+                        </Button>
                         <Border Width="1" Background="#2a1d42" Margin="4,2" />
                         <CheckBox IsChecked="{Binding ShowConnectionLines}" Content="Show connections" FontSize="11" Foreground="#8a7a9e" VerticalAlignment="Center" />
                         <CheckBox IsChecked="{Binding ShowPortalIndicators}" Content="Show doorways" FontSize="11" Foreground="#8a7a9e" VerticalAlignment="Center" />

@@ -382,6 +382,7 @@ namespace WorldBuilder.Editors.Landscape {
         /// </summary>
         private void RetryMissingEnvCells(Vector3 cameraPosition) {
             if (_envCellRetryTask != null && !_envCellRetryTask.IsCompleted) return;
+            if (_documentManager.SkipDatStatics) return;
 
             var envCellManager = _contexts.Values.FirstOrDefault()?.EnvCellManager;
             if (envCellManager == null) return;
@@ -525,7 +526,7 @@ namespace WorldBuilder.Editors.Landscape {
                             // Resolve EnvCellManager lazily — on the first batch it may not
                             // exist yet until the GL thread creates a render context.
                             envCellManager ??= contexts.Values.FirstOrDefault()?.EnvCellManager;
-                            if (envCellManager != null && distFromCamera <= dungeonThreshold && !envCellManager.HasLoadedCells(lbKey)) {
+                            if (!documentManager.SkipDatStatics && envCellManager != null && distFromCamera <= dungeonThreshold && !envCellManager.HasLoadedCells(lbKey)) {
                                 uint lbId = (uint)lbKey;
                                 uint infoId = lbId << 16 | 0xFFFE;
                                 if (dats.TryGet<LandBlockInfo>(infoId, out var lbi) && lbi.NumCells > 0) {
