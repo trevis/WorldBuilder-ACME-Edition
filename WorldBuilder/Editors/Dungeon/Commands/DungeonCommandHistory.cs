@@ -1,15 +1,19 @@
 using System;
 using System.Collections.Generic;
 using WorldBuilder.Shared.Documents;
+using WorldBuilder.ViewModels;
 
 namespace WorldBuilder.Editors.Dungeon {
     public class DungeonCommandHistory {
-        private readonly Stack<IDungeonCommand> _undoStack = new();
-        private readonly Stack<IDungeonCommand> _redoStack = new();
+        private readonly List<(IDungeonCommand Command, DateTime Timestamp)> _history = new();
+        private int _currentIndex = -1;
 
-        public bool CanUndo => _undoStack.Count > 0;
-        public bool CanRedo => _redoStack.Count > 0;
-        public string? LastCommandDescription => _undoStack.Count > 0 ? _undoStack.Peek().Description : null;
+        public bool CanUndo => _currentIndex >= 0;
+        public bool CanRedo => _currentIndex < _history.Count - 1;
+        public int CurrentIndex => _currentIndex;
+
+        public string? LastCommandDescription =>
+            _currentIndex >= 0 ? _history[_currentIndex].Command.Description : null;
 
         public int HistoryLimit { get; set; } = 50;
 
@@ -17,17 +21,14 @@ namespace WorldBuilder.Editors.Dungeon {
 
         public void Execute(IDungeonCommand command, DungeonDocument document) {
             command.Execute(document);
-            _undoStack.Push(command);
-            _redoStack.Clear();
 
-            if (HistoryLimit > 0 && _undoStack.Count > HistoryLimit) {
-                var temp = new Stack<IDungeonCommand>();
-                int keep = HistoryLimit;
-                while (keep-- > 0 && _undoStack.Count > 0) temp.Push(_undoStack.Pop());
-                _undoStack.Clear();
-                while (temp.Count > 0) _undoStack.Push(temp.Pop());
+            if (_currentIndex < _history.Count - 1) {
+                _history.RemoveRange(_currentIndex + 1, _history.Count - _currentIndex - 1);
             }
 
+            _history.Add((command, DateTime.UtcNow));
+            _currentIndex++;
+            TrimHistory(document);
             Changed?.Invoke(this, EventArgs.Empty);
         }
 
@@ -35,31 +36,83 @@ namespace WorldBuilder.Editors.Dungeon {
         /// Record an already-executed command for undo/redo without calling Execute again.
         /// </summary>
         public void Record(IDungeonCommand command) {
-            _undoStack.Push(command);
-            _redoStack.Clear();
+            if (_currentIndex < _history.Count - 1) {
+                _history.RemoveRange(_currentIndex + 1, _history.Count - _currentIndex - 1);
+            }
+
+            _history.Add((command, DateTime.UtcNow));
+            _currentIndex++;
             Changed?.Invoke(this, EventArgs.Empty);
         }
 
         public void Undo(DungeonDocument document) {
-            if (_undoStack.Count == 0) return;
-            var command = _undoStack.Pop();
-            command.Undo(document);
-            _redoStack.Push(command);
+            if (_currentIndex < 0) return;
+            _history[_currentIndex].Command.Undo(document);
+            _currentIndex--;
             Changed?.Invoke(this, EventArgs.Empty);
         }
 
         public void Redo(DungeonDocument document) {
-            if (_redoStack.Count == 0) return;
-            var command = _redoStack.Pop();
-            command.Execute(document);
-            _undoStack.Push(command);
+            if (_currentIndex >= _history.Count - 1) return;
+            _currentIndex++;
+            _history[_currentIndex].Command.Execute(document);
             Changed?.Invoke(this, EventArgs.Empty);
         }
 
-        public void Clear() {
-            _undoStack.Clear();
-            _redoStack.Clear();
+        public void JumpToHistory(int targetIndex, DungeonDocument document) {
+            if (targetIndex < -1 || targetIndex >= _history.Count) return;
+            if (targetIndex == _currentIndex) return;
+
+            while (_currentIndex > targetIndex) {
+                _history[_currentIndex].Command.Undo(document);
+                _currentIndex--;
+            }
+
+            while (_currentIndex < targetIndex) {
+                _currentIndex++;
+                _history[_currentIndex].Command.Execute(document);
+            }
+
             Changed?.Invoke(this, EventArgs.Empty);
+        }
+
+        public List<HistoryListItem> GetHistoryList() {
+            var items = new List<HistoryListItem> {
+                new HistoryListItem {
+                    Index = -1,
+                    Description = "Original Document",
+                    Timestamp = DateTime.MinValue,
+                    IsCurrent = _currentIndex == -1,
+                    IsSnapshot = false
+                }
+            };
+
+            for (int i = 0; i < _history.Count; i++) {
+                items.Add(new HistoryListItem {
+                    Index = i,
+                    Description = _history[i].Command.Description,
+                    Timestamp = _history[i].Timestamp,
+                    IsCurrent = _currentIndex == i,
+                    IsSnapshot = false,
+                    IsDimmed = i > _currentIndex
+                });
+            }
+
+            return items;
+        }
+
+        public void Clear() {
+            _history.Clear();
+            _currentIndex = -1;
+            Changed?.Invoke(this, EventArgs.Empty);
+        }
+
+        private void TrimHistory(DungeonDocument document) {
+            while (HistoryLimit > 0 && _history.Count > HistoryLimit) {
+                _history.RemoveAt(0);
+                _currentIndex--;
+            }
+            if (_currentIndex < -1) _currentIndex = -1;
         }
     }
 }

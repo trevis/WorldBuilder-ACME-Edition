@@ -147,6 +147,7 @@ namespace WorldBuilder.Editors.Dungeon {
         private Views.DungeonGraphView? _graphView;
         public DungeonObjectBrowserViewModel? ObjectBrowser { get; private set; }
         public SurfaceBrowserViewModel? SurfaceBrowser { get; private set; }
+        public DungeonHistoryPanelViewModel? HistoryPanel { get; private set; }
         public DungeonCommandHistory CommandHistory { get; } = new();
         public Lib.Docking.DockingManager DockingManager { get; } = new();
 
@@ -207,6 +208,14 @@ namespace WorldBuilder.Editors.Dungeon {
             SurfaceBrowser = new SurfaceBrowserViewModel(_dats, _textureImport);
             SurfaceBrowser.SurfaceSelected += OnSurfaceSelected;
             OnPropertyChanged(nameof(SurfaceBrowser));
+
+            HistoryPanel = new DungeonHistoryPanelViewModel(
+                CommandHistory, () => _document, () => {
+                    DeselectCell();
+                    RefreshRendering();
+                    CellCount = _document?.Cells.Count ?? 0;
+                });
+            OnPropertyChanged(nameof(HistoryPanel));
 
             InitTools();
             InitDocking();
@@ -303,6 +312,7 @@ namespace WorldBuilder.Editors.Dungeon {
             if (ObjectBrowser != null) Register("ObjectBrowser", "Object Browser", ObjectBrowser, Lib.Docking.DockLocation.Left);
             if (SurfaceBrowser != null) Register("SurfaceBrowser", "Surfaces", SurfaceBrowser, Lib.Docking.DockLocation.Left);
             if (Toolbox != null) Register("Toolbox", "Tools", Toolbox, Lib.Docking.DockLocation.Right);
+            if (HistoryPanel != null) Register("History", "History", HistoryPanel, Lib.Docking.DockLocation.Right);
             _graphView = new Views.DungeonGraphView { DataContext = this };
             Register("DungeonGraph", "Dungeon Map", _graphView, Lib.Docking.DockLocation.Bottom);
 
@@ -516,6 +526,12 @@ namespace WorldBuilder.Editors.Dungeon {
                 else DeselectCell();
             }
         }
+
+        [RelayCommand]
+        private void Undo() => UndoRedoUndo();
+
+        [RelayCommand]
+        private void Redo() => UndoRedoRedo();
 
         private void UndoRedoUndo() {
             if (_document == null || !CommandHistory.CanUndo) return;
@@ -1247,6 +1263,7 @@ namespace WorldBuilder.Editors.Dungeon {
                     return;
                 }
 
+                CommandHistory.Clear();
                 if (_document != null) {
                     _document.CopyFrom(generated);
                 }
@@ -1344,6 +1361,7 @@ namespace WorldBuilder.Editors.Dungeon {
             var lbKey = (ushort)(cellId.Value >> 16);
             if (lbKey == 0) lbKey = (ushort)(cellId.Value & 0xFFFF);
 
+            CommandHistory.Clear();
             _loadedLandblockKey = lbKey;
             _document = GetOrCreateDungeonDoc(lbKey);
             HasDungeon = true;
@@ -1780,6 +1798,7 @@ namespace WorldBuilder.Editors.Dungeon {
         private void CopyTemplateToLandblock(ushort sourceLb, ushort targetLb) {
             if (_scene == null || _project == null || _dats == null) return;
 
+            CommandHistory.Clear();
             var sourceDoc = GetOrCreateDungeonDoc(sourceLb);
             if (sourceDoc == null) {
                 StatusText = $"LB {sourceLb:X4}: No dungeon cells to copy";
@@ -1847,6 +1866,7 @@ namespace WorldBuilder.Editors.Dungeon {
         public void LoadDungeon(ushort landblockKey, ushort targetCellId = 0) {
             if (_scene == null || _dats == null) return;
 
+            CommandHistory.Clear();
             _document = GetOrCreateDungeonDoc(landblockKey);
             if (_document == null) {
                 StatusText = $"LB {landblockKey:X4}: Failed to create document";

@@ -77,8 +77,10 @@ namespace WorldBuilder.Editors.Dungeon {
             var cellNum = (ushort)(_selection.SelectedCell.CellId & 0xFFFF);
             var dc = _ctx.Document.GetCell(cellNum);
             if (dc == null) return null;
-            dc.Orientation = EulerToQuat(new Vector3(rx, ry, rz));
-            _ctx.Document.MarkDirty();
+            var newOrientation = EulerToQuat(new Vector3(rx, ry, rz));
+            _ctx.CommandHistory.Execute(
+                new SetCellOrientationCommand(cellNum, dc.Orientation, newOrientation),
+                _ctx.Document);
             return $"Room {cellNum:X4} rotation set to ({rx:F1}, {ry:F1}, {rz:F1})";
         }
 
@@ -94,20 +96,18 @@ namespace WorldBuilder.Editors.Dungeon {
             }
             if (newSurfaces.Count == 0) return null;
 
-            int updated = 0;
+            var composite = new DungeonCompositeCommand("Change Surfaces");
+            int count = 0;
             foreach (var cell in _selection.SelectedCells) {
                 var cellNum = (ushort)(cell.CellId & 0xFFFF);
                 var dc = _ctx.Document.GetCell(cellNum);
                 if (dc == null) continue;
-                dc.Surfaces.Clear();
-                dc.Surfaces.AddRange(newSurfaces);
-                updated++;
+                composite.Add(new SetCellSurfacesCommand(cellNum, dc.Surfaces, newSurfaces));
+                count++;
             }
-            if (updated > 0) {
-                _ctx.Document.MarkDirty();
-                return $"Updated textures on {updated} room(s)";
-            }
-            return null;
+            if (count == 0) return null;
+            _ctx.CommandHistory.Execute(composite, _ctx.Document);
+            return $"Updated textures on {count} room(s)";
         }
 
         /// <returns>Status message, plus the updated surfaces string and the refreshed DungeonCellData for UI update.</returns>
@@ -115,30 +115,35 @@ namespace WorldBuilder.Editors.Dungeon {
             if (_selection.SelectedCells.Count == 0 || _ctx.Document == null)
                 return ("Select a room first, then pick a texture", null, null);
 
-            int updated = 0;
+            var composite = new DungeonCompositeCommand("Apply Surface");
+            int count = 0;
             foreach (var cell in _selection.SelectedCells) {
                 var cellNum = (ushort)(cell.CellId & 0xFFFF);
                 var dc = _ctx.Document.GetCell(cellNum);
                 if (dc == null) continue;
 
-                if (slotIndex >= 0 && slotIndex < dc.Surfaces.Count) {
-                    dc.Surfaces[slotIndex] = surfaceId;
+                var newSurfaces = new List<ushort>(dc.Surfaces);
+                if (slotIndex >= 0 && slotIndex < newSurfaces.Count) {
+                    newSurfaces[slotIndex] = surfaceId;
                 } else {
-                    for (int i = 0; i < dc.Surfaces.Count; i++)
-                        dc.Surfaces[i] = surfaceId;
-                    if (dc.Surfaces.Count == 0)
-                        dc.Surfaces.Add(surfaceId);
+                    for (int i = 0; i < newSurfaces.Count; i++)
+                        newSurfaces[i] = surfaceId;
+                    if (newSurfaces.Count == 0)
+                        newSurfaces.Add(surfaceId);
                 }
-                updated++;
+                composite.Add(new SetCellSurfacesCommand(cellNum, dc.Surfaces, newSurfaces));
+                count++;
             }
 
-            _ctx.Document.MarkDirty();
+            if (count > 0)
+                _ctx.CommandHistory.Execute(composite, _ctx.Document);
+
             var primaryDc = _ctx.Document.GetCell((ushort)(_selection.SelectedCell!.CellId & 0xFFFF));
             string? surfText = primaryDc != null ? string.Join(", ", primaryDc.Surfaces.Select(s => s.ToString("X4"))) : null;
 
             var status = slotIndex >= 0
-                ? $"Texture {slotIndex + 1}: applied 0x{surfaceId:X4} to {updated} room(s)"
-                : $"Applied texture 0x{surfaceId:X4} to all textures on {updated} room(s)";
+                ? $"Texture {slotIndex + 1}: applied 0x{surfaceId:X4} to {count} room(s)"
+                : $"Applied texture 0x{surfaceId:X4} to all textures on {count} room(s)";
             return (status, surfText, primaryDc);
         }
 

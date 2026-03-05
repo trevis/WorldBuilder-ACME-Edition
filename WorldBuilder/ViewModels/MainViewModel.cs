@@ -84,23 +84,42 @@ public partial class MainViewModel : ViewModelBase {
     public KeyGesture? PasteGesture => _inputManager.GetKeyGesture(InputActions.EditPaste);
     public KeyGesture? DeleteGesture => _inputManager.GetKeyGesture(InputActions.EditDelete);
 
-    private LandscapeEditorViewModel? GetEditor() =>
+    private LandscapeEditorViewModel? GetLandscapeEditor() =>
         ProjectManager.Instance.GetProjectService<LandscapeEditorViewModel>();
 
     [RelayCommand]
-    private void Undo() => GetEditor()?.UndoCommand.Execute(null);
+    private void Undo() {
+        if (ActiveEditor is DungeonEditorViewModel de) { de.UndoCommand.Execute(null); return; }
+        GetLandscapeEditor()?.UndoCommand.Execute(null);
+    }
 
     [RelayCommand]
-    private void Redo() => GetEditor()?.RedoCommand.Execute(null);
+    private void Redo() {
+        if (ActiveEditor is DungeonEditorViewModel de) { de.RedoCommand.Execute(null); return; }
+        GetLandscapeEditor()?.RedoCommand.Execute(null);
+    }
 
     [RelayCommand]
-    private void Copy() => GetEditor()?.CopySelectedObjectCommand.Execute(null);
+    private void Copy() {
+        if (ActiveEditor is DungeonEditorViewModel de) { de.CopySelectedCells(); return; }
+        GetLandscapeEditor()?.CopySelectedObjectCommand.Execute(null);
+    }
 
     [RelayCommand]
-    private void Paste() => GetEditor()?.PasteObjectCommand.Execute(null);
+    private void Paste() {
+        if (ActiveEditor is DungeonEditorViewModel de) { de.PasteCells(); return; }
+        GetLandscapeEditor()?.PasteObjectCommand.Execute(null);
+    }
 
     [RelayCommand]
-    private void Delete() => GetEditor()?.DeleteSelectedObjectCommand.Execute(null);
+    private void Delete() {
+        if (ActiveEditor is DungeonEditorViewModel de) {
+            if (de.HasSelectedObject) de.DeleteSelectedObjectCommand.Execute(null);
+            else de.DeleteSelectedCellCommand.Execute(null);
+            return;
+        }
+        GetLandscapeEditor()?.DeleteSelectedObjectCommand.Execute(null);
+    }
 
     [RelayCommand]
     private void Exit() {
