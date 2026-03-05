@@ -7,8 +7,8 @@
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     xmlns:vm="clr-namespace:WorldBuilder.ViewModels"
     Title="Export Dats"
-    Width="500"
-    Height="350"
+    Width="520"
+    Height="600"
     x:DataType="vm:ExportDatsWindowViewModel"
     Background="#0d0016"
     RequestedThemeVariant="Dark"
@@ -70,6 +70,77 @@
                             Content="Overwrite existing DAT files"
                             IsChecked="{Binding OverwriteFiles}" />
                     </StackPanel>
+
+                    <!-- ACE Database Instance Reposition -->
+                    <Border
+                        BorderBrush="#333"
+                        BorderThickness="1"
+                        CornerRadius="4"
+                        Padding="10"
+                        Margin="0,4,0,0">
+                        <StackPanel Spacing="10">
+                            <CheckBox
+                                Content="Reposition DB instances after export"
+                                IsChecked="{Binding EnableReposition}"
+                                FontWeight="SemiBold" />
+
+                            <StackPanel
+                                Spacing="8"
+                                IsVisible="{Binding EnableReposition}">
+
+                                <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto">
+                                    <StackPanel Grid.Row="0" Grid.Column="0" Margin="0,0,5,0">
+                                        <TextBlock Text="MySQL Host" Margin="0,0,0,3" />
+                                        <TextBox Text="{Binding DbHost}" Watermark="localhost" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Row="0" Grid.Column="1" MinWidth="80">
+                                        <TextBlock Text="Port" Margin="0,0,0,3" />
+                                        <TextBox Text="{Binding DbPort}" Watermark="3306" />
+                                    </StackPanel>
+                                </Grid>
+
+                                <StackPanel>
+                                    <TextBlock Text="Database" Margin="0,0,0,3" />
+                                    <TextBox Text="{Binding DbDatabase}" Watermark="ace_world" />
+                                </StackPanel>
+
+                                <Grid ColumnDefinitions="*,*">
+                                    <StackPanel Grid.Column="0" Margin="0,0,5,0">
+                                        <TextBlock Text="User" Margin="0,0,0,3" />
+                                        <TextBox Text="{Binding DbUser}" Watermark="root" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="1">
+                                        <TextBlock Text="Password" Margin="0,0,0,3" />
+                                        <TextBox Text="{Binding DbPassword}"
+                                                 PasswordChar="*"
+                                                 Watermark="password" />
+                                    </StackPanel>
+                                </Grid>
+
+                                <StackPanel>
+                                    <TextBlock Text="Min Height Delta Threshold" Margin="0,0,0,3" />
+                                    <TextBox Text="{Binding RepositionThreshold}" Watermark="0.05" />
+                                </StackPanel>
+
+                                <CheckBox
+                                    Content="Apply changes directly to database"
+                                    IsChecked="{Binding ApplyDirectly}" />
+
+                                <StackPanel Orientation="Horizontal" Spacing="10">
+                                    <Button
+                                        Content="Test Connection"
+                                        Command="{Binding TestConnectionCommand}"
+                                        Padding="10,5" />
+                                </StackPanel>
+                                <TextBlock
+                                    IsVisible="{Binding HasConnectionTestResult}"
+                                    Text="{Binding ConnectionTestResult}"
+                                    Foreground="#aaa"
+                                    TextWrapping="Wrap"
+                                    FontSize="11" />
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
                 </StackPanel>
             </ScrollViewer>
 

@@ -1,4 +1,4 @@
-﻿using Avalonia.Controls;
+using Avalonia.Controls;
 using Avalonia.Platform.Storage;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -7,6 +7,7 @@ using System;
 using System.IO;
 using System.Threading.Tasks;
 using WorldBuilder.Lib.Settings;
+using WorldBuilder.Shared.Lib.AceDb;
 using WorldBuilder.Shared.Models;
 
 namespace WorldBuilder.ViewModels {
@@ -14,6 +15,7 @@ namespace WorldBuilder.ViewModels {
         private readonly WorldBuilderSettings _settings;
         private readonly Project _project;
         private readonly Window _window;
+        private readonly InstanceRepositionService _repositionService;
         private readonly string[] datFiles = new[]
         {
             "client_cell_1.dat",
@@ -21,7 +23,7 @@ namespace WorldBuilder.ViewModels {
             "client_highres.dat",
             "client_local_English.dat"
         };
-        private bool _isValidating; // Reentrancy guard
+        private bool _isValidating;
 
         [ObservableProperty]
         private string _exportDirectory = string.Empty;
@@ -50,6 +52,40 @@ namespace WorldBuilder.ViewModels {
         [ObservableProperty]
         private bool _canExport = false;
 
+        // ACE DB reposition settings
+        [ObservableProperty]
+        private bool _enableReposition = false;
+
+        [ObservableProperty]
+        private string _dbHost = "localhost";
+
+        [ObservableProperty]
+        private int _dbPort = 3306;
+
+        [ObservableProperty]
+        private string _dbDatabase = "ace_world";
+
+        [ObservableProperty]
+        private string _dbUser = "root";
+
+        [ObservableProperty]
+        private string _dbPassword = string.Empty;
+
+        [ObservableProperty]
+        private bool _applyDirectly = false;
+
+        [ObservableProperty]
+        private float _repositionThreshold = 0.05f;
+
+        [ObservableProperty]
+        private string _connectionTestResult = string.Empty;
+
+        [ObservableProperty]
+        private bool _hasConnectionTestResult = false;
+
+        [ObservableProperty]
+        private bool _connectionTestSuccess = false;
+
         partial void OnExportDirectoryChanged(string value) {
             Validate();
         }
@@ -62,16 +98,59 @@ namespace WorldBuilder.ViewModels {
             Validate();
         }
 
-        public ExportDatsWindowViewModel(WorldBuilderSettings settings, Project project, Window window) {
+        public ExportDatsWindowViewModel(WorldBuilderSettings settings, Project project,
+            Window window, InstanceRepositionService repositionService) {
             _settings = settings;
             _project = project;
             _window = window;
+            _repositionService = repositionService;
 
             ExportDirectory = _settings.App.ProjectsDirectory;
             CurrentPortalIteration = _project.DocumentManager.Dats.Dats.Portal.Iteration.CurrentIteration;
             PortalIteration = _project.DocumentManager.Dats.Dats.Portal.Iteration.CurrentIteration;
 
-            Validate(); // Initial validation
+            // Load saved ACE DB settings from project
+            if (_project.AceDb != null) {
+                EnableReposition = _project.AceDb.EnableReposition;
+                DbHost = _project.AceDb.Host;
+                DbPort = _project.AceDb.Port;
+                DbDatabase = _project.AceDb.Database;
+                DbUser = _project.AceDb.User;
+                DbPassword = _project.AceDb.Password;
+                ApplyDirectly = _project.AceDb.ApplyDirectly;
+                RepositionThreshold = _project.AceDb.Threshold;
+            }
+
+            Validate();
+        }
+
+        private AceDbSettings BuildAceDbSettings() => new AceDbSettings {
+            Host = DbHost,
+            Port = DbPort,
+            Database = DbDatabase,
+            User = DbUser,
+            Password = DbPassword,
+            EnableReposition = EnableReposition,
+            ApplyDirectly = ApplyDirectly,
+            Threshold = RepositionThreshold,
+        };
+
+        [RelayCommand]
+        public async Task TestConnection() {
+            HasConnectionTestResult = false;
+            var aceSettings = BuildAceDbSettings();
+            using var connector = new AceDbConnector(aceSettings);
+            var error = await connector.TestConnectionAsync();
+
+            if (error == null) {
+                ConnectionTestResult = "Connection successful!";
+                ConnectionTestSuccess = true;
+            }
+            else {
+                ConnectionTestResult = $"Connection failed: {error}";
+                ConnectionTestSuccess = false;
+            }
+            HasConnectionTestResult = true;
         }
 
         [RelayCommand]
@@ -85,7 +164,7 @@ namespace WorldBuilder.ViewModels {
             if (files.Count > 0) {
                 var localPath = files[0].TryGetLocalPath();
                 if (!string.IsNullOrWhiteSpace(localPath)) {
-                    ExportDirectory = localPath; // This triggers OnExportDirectoryChanged
+                    ExportDirectory = localPath;
                 }
             }
         }
@@ -95,7 +174,6 @@ namespace WorldBuilder.ViewModels {
             if (!Validate()) return;
 
             try {
-                // Check if files exist and overwrite is not checked
                 if (!OverwriteFiles) {
                     foreach (var datFile in datFiles) {
                         var filePath = Path.Combine(ExportDirectory, datFile);
@@ -107,15 +185,49 @@ namespace WorldBuilder.ViewModels {
                     }
                 }
 
+                // Persist ACE DB settings to project before export
+                var aceSettings = BuildAceDbSettings();
+                _project.AceDb = aceSettings;
+                _project.Save();
+
+                InstanceRepositionService.RepositionResult? repoResult = null;
+
+                if (EnableReposition) {
+                    _project.OnExportReposition = async (ctx) => {
+                        repoResult = await _repositionService.RunAsync(aceSettings, ctx);
+                    };
+                }
+                else {
+                    _project.OnExportReposition = null;
+                }
+
                 await Task.Run(() => _project.ExportDats(ExportDirectory, PortalIteration));
 
-                // Show success dialog using DialogHost
+                var successMsg = "DAT files exported successfully!";
+                if (repoResult != null) {
+                    if (repoResult.Error != null) {
+                        successMsg += $"\n\nReposition warning: {repoResult.Error}";
+                    }
+                    else if (repoResult.InstancesUpdated > 0) {
+                        successMsg += $"\n\nRepositioned {repoResult.InstancesUpdated} of {repoResult.InstancesChecked} instances across {repoResult.LandblocksProcessed} landblocks.";
+                        if (repoResult.SqlFilePath != null) {
+                            successMsg += $"\nSQL file: {repoResult.SqlFilePath}";
+                        }
+                        if (repoResult.AppliedDirectly) {
+                            successMsg += "\nChanges applied directly to database.";
+                        }
+                    }
+                    else {
+                        successMsg += $"\n\nNo instances needed repositioning ({repoResult.InstancesChecked} checked).";
+                    }
+                }
+
                 await DialogHost.Show(new StackPanel {
                     Margin = new Avalonia.Thickness(10),
                     Spacing = 10,
                     Children =
                     {
-                        new TextBlock { Text = "DAT files exported successfully!" },
+                        new TextBlock { Text = successMsg, TextWrapping = Avalonia.Media.TextWrapping.Wrap, MaxWidth = 400 },
                         new Button
                         {
                             Content = "OK",
@@ -131,7 +243,6 @@ namespace WorldBuilder.ViewModels {
                 DirectoryErrorMessage = $"Export failed: {ex.Message}";
                 HasDirectoryError = true;
 
-                // Show error dialog using DialogHost
                 await DialogHost.Show(new StackPanel {
                     Margin = new Avalonia.Thickness(10),
                     Spacing = 10,
@@ -147,10 +258,13 @@ namespace WorldBuilder.ViewModels {
                     }
                 }, "ExportDialogHost");
             }
+            finally {
+                _project.OnExportReposition = null;
+            }
         }
 
         private bool Validate() {
-            if (_isValidating) return false; // Prevent reentrancy
+            if (_isValidating) return false;
             _isValidating = true;
 
             try {
@@ -159,7 +273,6 @@ namespace WorldBuilder.ViewModels {
                 DirectoryErrorMessage = string.Empty;
                 IterationErrorMessage = string.Empty;
 
-                // Validate directory
                 if (string.IsNullOrWhiteSpace(ExportDirectory)) {
                     DirectoryErrorMessage = "Export directory is required.";
                     HasDirectoryError = true;
@@ -169,7 +282,6 @@ namespace WorldBuilder.ViewModels {
                     HasDirectoryError = true;
                 }
 
-                // Validate portal iteration
                 if (PortalIteration <= 0) {
                     IterationErrorMessage = "Portal iteration must be greater than 0.";
                     HasIterationError = true;

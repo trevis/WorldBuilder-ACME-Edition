@@ -18,6 +18,7 @@ using WorldBuilder.Lib.Settings;
 using WorldBuilder.Services;
 using WorldBuilder.Shared.Documents;
 using WorldBuilder.Shared.Lib;
+using WorldBuilder.Shared.Lib.AceDb;
 using WorldBuilder.Shared.Models;
 using WorldBuilder.Shared.Services;
 using WorldBuilder.ViewModels;
@@ -66,6 +67,7 @@ namespace WorldBuilder.Lib.Extensions {
                 };
                 return svc;
             });
+            collection.AddSingleton<InstanceRepositionService>();
             collection.AddSingleton<LandscapeEditorViewModel>();
             collection.AddSingleton<DungeonEditorViewModel>();
             collection.AddSingleton<SpellEditorViewModel>();

@@ -21,6 +21,7 @@ using WorldBuilder.Lib;
 using WorldBuilder.Lib.Docking;
 using WorldBuilder.Lib.Input;
 using WorldBuilder.Lib.Settings;
+using WorldBuilder.Shared.Lib.AceDb;
 using WorldBuilder.Views;
 
 namespace WorldBuilder.ViewModels;
@@ -137,10 +138,11 @@ public partial class MainViewModel : ViewModelBase {
 
             var project = ProjectManager.Instance.CurrentProject
                 ?? throw new Exception("No project open, cannot export DATs.");
-            var viewModel = new ExportDatsWindowViewModel(_settings, project, desktop.MainWindow);
+            var repoService = ProjectManager.Instance.GetProjectService<InstanceRepositionService>()
+                ?? new InstanceRepositionService();
 
             var exportWindow = new ExportDatsWindow();
-            exportWindow.DataContext = new ExportDatsWindowViewModel(_settings, project, exportWindow);
+            exportWindow.DataContext = new ExportDatsWindowViewModel(_settings, project, exportWindow, repoService);
 
             await exportWindow.ShowDialog(desktop.MainWindow);
         }

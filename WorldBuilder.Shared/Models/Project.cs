@@ -9,6 +9,7 @@ using DatReaderWriter.Options;
 using Microsoft.Data.Sqlite;
 using WorldBuilder.Shared.Documents;
 using WorldBuilder.Shared.Lib;
+using WorldBuilder.Shared.Lib.AceDb;
 using WorldBuilder.Shared.Services;
 
 namespace WorldBuilder.Shared.Models {
@@ -105,7 +106,7 @@ namespace WorldBuilder.Shared.Models {
             var tmp = Path.GetTempFileName();
             try {
                 File.WriteAllText(tmp, JsonSerializer.Serialize(this, _opts));
-                File.Move(tmp, FilePath);
+                File.Move(tmp, FilePath, overwrite: true);
             }
             finally {
                 if (File.Exists(tmp)) {
@@ -115,11 +116,24 @@ namespace WorldBuilder.Shared.Models {
         }
 
         /// <summary>
+        /// ACE database connection settings for instance repositioning on export.
+        /// Persisted per-project in the project JSON.
+        /// </summary>
+        public AceDbSettings? AceDb { get; set; }
+
+        /// <summary>
         /// Called during export to write custom textures and update Region.
         /// Set by the UI layer (TextureImportService) since image decoding requires platform deps.
         /// </summary>
         [JsonIgnore]
         public Action<IDatReaderWriter, int?>? OnExportCustomTextures { get; set; }
+
+        /// <summary>
+        /// Called after DAT export with terrain change context so the UI layer can
+        /// run the instance reposition workflow asynchronously.
+        /// </summary>
+        [JsonIgnore]
+        public Func<RepositionContext, Task>? OnExportReposition { get; set; }
 
         public bool ExportDats(string exportDirectory, int portalIteration) {
             if (!Directory.Exists(exportDirectory)) {
@@ -173,6 +187,25 @@ namespace WorldBuilder.Shared.Models {
 
             const int LANDBLOCK_SIZE = 81;
 
+            // Capture old terrain from base DATs for reposition delta calculation
+            var oldTerrain = new Dictionary<ushort, TerrainEntry[]>();
+            var newTerrain = new Dictionary<ushort, TerrainEntry[]>();
+
+            foreach (var lbKey in modifiedLandblocks) {
+                var baseLbId = (uint)(lbKey << 16) | 0xFFFF;
+                if (DatReaderWriter.TryGet<LandBlock>(baseLbId, out var baseLb)) {
+                    var entries = new TerrainEntry[LANDBLOCK_SIZE];
+                    for (int i = 0; i < LANDBLOCK_SIZE; i++) {
+                        entries[i] = new TerrainEntry(
+                            baseLb.Terrain[i].Road,
+                            baseLb.Terrain[i].Scenery,
+                            (byte)baseLb.Terrain[i].Type,
+                            baseLb.Height[i]);
+                    }
+                    oldTerrain[lbKey] = entries;
+                }
+            }
+
             // Process and save each modified landblock
             foreach (var lbKey in modifiedLandblocks) {
                 var lbId = (uint)(lbKey << 16) | 0xFFFF;
@@ -190,10 +223,9 @@ namespace WorldBuilder.Shared.Models {
                     layerDoc.TerrainData.FieldMasks.TryGetValue(lbKey, out var sparseMasks);
 
                     foreach (var (cellIdx, cellValue) in sparseCells) {
-                        // Determine which fields this layer claims for this cell
                         byte layerMask = (sparseMasks != null && sparseMasks.TryGetValue(cellIdx, out var m))
                             ? m
-                            : TerrainFieldMask.All; // No mask = legacy data
+                            : TerrainFieldMask.All;
 
                         byte unclaimed = (byte)(layerMask & ~resolved[cellIdx]);
                         if (unclaimed == 0) continue;
@@ -212,9 +244,12 @@ namespace WorldBuilder.Shared.Models {
                     }
                 }
 
-                // 3. Save the composite result to the DAT
+                // Snapshot the composited terrain for reposition
+                var snapshot = new TerrainEntry[LANDBLOCK_SIZE];
+                Array.Copy(currentEntries, snapshot, LANDBLOCK_SIZE);
+                newTerrain[lbKey] = snapshot;
+
                 if (!writer.TryGet<LandBlock>(lbId, out var lb)) {
-                    // If missing from the destination DAT, implies missing from base DAT too usually.
                     continue;
                 }
 
@@ -229,7 +264,6 @@ namespace WorldBuilder.Shared.Models {
                 }
 
                 if (!writer.TrySave(lb, portalIteration)) {
-                    // Log error? Project doesn't store logger directly but could throw or ignore.
                 }
             }
 
@@ -256,6 +290,25 @@ namespace WorldBuilder.Shared.Models {
 
             // TODO: all other dat iterations
             writer.Dats.Portal.Iteration.CurrentIteration = portalIteration;
+
+            // Instance reposition: build context and invoke hook if wired
+            if (OnExportReposition != null && oldTerrain.Count > 0 && newTerrain.Count > 0) {
+                float[]? heightTable = null;
+                if (DatReaderWriter.TryGet<Region>(0x13000000, out var region)) {
+                    heightTable = region.LandDefs.LandHeightTable;
+                }
+
+                if (heightTable != null) {
+                    var ctx = new RepositionContext {
+                        ModifiedLandblocks = modifiedLandblocks.ToArray(),
+                        OldTerrain = oldTerrain,
+                        NewTerrain = newTerrain,
+                        LandHeightTable = heightTable,
+                        ExportDirectory = exportDirectory
+                    };
+                    OnExportReposition(ctx).GetAwaiter().GetResult();
+                }
+            }
 
             return true;
         }
