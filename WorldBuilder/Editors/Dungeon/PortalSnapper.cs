@@ -52,22 +52,35 @@ namespace WorldBuilder.Editors.Dungeon {
         /// Find all portal polygon IDs in a CellStruct using the structural Portals list
         /// (corresponds to CCellStruct::portals in the AC client).
         /// </summary>
+        /// <remarks>
+        /// In the AC client, CCellStruct::portals[] stores CPolygon* pointers resolved
+        /// from indices during UnPack. DatReaderWriter's CellStruct.Portals stores
+        /// ushort values that may be either polygon IDs (if already resolved) or raw
+        /// indices into the polygon array. We handle both cases.
+        /// </remarks>
         public static List<ushort> GetPortalPolygonIds(CellStruct cellStruct) {
             if (cellStruct.Portals == null || cellStruct.Portals.Count == 0)
                 return new List<ushort>();
 
+            // Pre-build a sorted key list for index-based lookup so we don't
+            // depend on Dictionary insertion order.
+            ushort[]? sortedPolyKeys = null;
+
             var result = new List<ushort>(cellStruct.Portals.Count);
             var seen = new HashSet<ushort>();
             foreach (var portalRef in cellStruct.Portals) {
-                // In AC source, CCellStruct::portals is stored as polygon array refs.
-                // DatReaderWriter may expose either refs or resolved IDs depending on source.
                 ushort resolvedId = portalRef;
+
                 if (!cellStruct.Polygons.ContainsKey(resolvedId)) {
-                    int portalIndex = portalRef;
-                    if (portalIndex >= 0 && portalIndex < cellStruct.Polygons.Count) {
-                        resolvedId = cellStruct.Polygons.ElementAt(portalIndex).Key;
+                    // portalRef is a raw index into the polygon array.
+                    // Build sorted key list on first use.
+                    if (sortedPolyKeys == null) {
+                        sortedPolyKeys = cellStruct.Polygons.Keys.OrderBy(k => k).ToArray();
                     }
-                    else {
+                    int idx = portalRef;
+                    if (idx >= 0 && idx < sortedPolyKeys.Length) {
+                        resolvedId = sortedPolyKeys[idx];
+                    } else {
                         continue;
                     }
                 }
@@ -83,29 +96,82 @@ namespace WorldBuilder.Editors.Dungeon {
         /// Compute the world transform (origin + orientation) for a new cell so that
         /// its sourcePortal aligns with the targetPortal on an existing cell.
         ///
-        /// The portals will face each other (normals opposite), centers aligned.
+        /// The portals will face each other (normals opposite), centers aligned,
+        /// and edge directions matched so the openings overlap properly.
         /// </summary>
         /// <param name="targetCentroidWorld">Target portal centroid in world space.</param>
         /// <param name="targetNormalWorld">Target portal normal in world space (pointing outward from existing cell).</param>
         /// <param name="sourceGeometryLocal">Source portal geometry in local space of the new cell.</param>
+        /// <param name="targetGeometryWorld">Optional target portal geometry in world space for twist alignment.</param>
         /// <returns>Origin and orientation for the new cell in world space.</returns>
         public static (Vector3 origin, Quaternion orientation) ComputeSnapTransform(
             Vector3 targetCentroidWorld,
             Vector3 targetNormalWorld,
-            PortalGeometry sourceGeometryLocal) {
+            PortalGeometry sourceGeometryLocal,
+            PortalGeometry? targetGeometryWorld = null) {
 
-            // The source portal normal needs to face OPPOSITE to the target normal
-            // (portals face each other across the opening)
             var desiredSourceNormalWorld = -targetNormalWorld;
 
-            // Compute rotation from source normal to desired direction
-            var rotation = RotationBetween(sourceGeometryLocal.Normal, desiredSourceNormalWorld);
+            // Step 1: Align normals so the portals face each other
+            var normalRotation = RotationBetween(sourceGeometryLocal.Normal, desiredSourceNormalWorld);
 
-            // The rotated source centroid needs to end up at the target centroid
+            // Step 2: Align the "up" edges of the two portals to eliminate twist.
+            // Compute an up-like vector perpendicular to the normal from each portal's
+            // vertex span. Without this, portals can be rotated 90/180 degrees.
+            var rotation = normalRotation;
+            if (targetGeometryWorld != null && targetGeometryWorld.Value.Vertices.Count >= 2 &&
+                sourceGeometryLocal.Vertices.Count >= 2) {
+
+                var targetUp = ComputePortalUp(targetGeometryWorld.Value.Vertices, targetNormalWorld);
+                var sourceUp = ComputePortalUp(sourceGeometryLocal.Vertices, sourceGeometryLocal.Normal);
+                var rotatedSourceUp = Vector3.Transform(sourceUp, normalRotation);
+
+                // The source's up (after normal alignment) should match the target's up.
+                // The portals face each other, so one is mirrored — we want the up vectors
+                // to be parallel (same direction) for proper alignment.
+                if (targetUp.LengthSquared() > 0.01f && rotatedSourceUp.LengthSquared() > 0.01f) {
+                    targetUp = Vector3.Normalize(targetUp);
+                    rotatedSourceUp = Vector3.Normalize(rotatedSourceUp);
+                    var twistRotation = RotationBetween(rotatedSourceUp, targetUp);
+                    rotation = Quaternion.Normalize(twistRotation * normalRotation);
+                }
+            }
+
             var rotatedSourceCentroid = Vector3.Transform(sourceGeometryLocal.Centroid, rotation);
             var origin = targetCentroidWorld - rotatedSourceCentroid;
 
             return (origin, rotation);
+        }
+
+        /// <summary>
+        /// Compute a consistent "up" direction from a portal polygon's vertices.
+        /// Uses the vertical extent of the polygon, falling back to the first edge
+        /// perpendicular to the normal.
+        /// </summary>
+        private static Vector3 ComputePortalUp(List<Vector3> vertices, Vector3 normal) {
+            if (vertices.Count < 2) return Vector3.UnitZ;
+
+            // Find the vertex span in the Z direction to get a vertical edge
+            float minZ = float.MaxValue, maxZ = float.MinValue;
+            int minZi = 0, maxZi = 0;
+            for (int i = 0; i < vertices.Count; i++) {
+                if (vertices[i].Z < minZ) { minZ = vertices[i].Z; minZi = i; }
+                if (vertices[i].Z > maxZ) { maxZ = vertices[i].Z; maxZi = i; }
+            }
+
+            Vector3 up;
+            if (maxZ - minZ > 0.1f) {
+                up = vertices[maxZi] - vertices[minZi];
+            } else {
+                // Flat portal (e.g. floor/ceiling) — use cross product with world forward
+                up = Vector3.Cross(normal, Vector3.UnitX);
+                if (up.LengthSquared() < 0.01f)
+                    up = Vector3.Cross(normal, Vector3.UnitY);
+            }
+
+            // Project out the normal component to keep it perpendicular
+            up -= Vector3.Dot(up, Vector3.Normalize(normal)) * Vector3.Normalize(normal);
+            return up.LengthSquared() > 0.001f ? Vector3.Normalize(up) : Vector3.UnitZ;
         }
 
         /// <summary>

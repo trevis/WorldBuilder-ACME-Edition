@@ -27,7 +27,9 @@ namespace WorldBuilder.Editors.Dungeon {
                     Count = edge.Count, RelOffset = relOffset, RelRot = relRot
                 });
 
-                var invRot = Quaternion.Conjugate(relRot);
+                // Use Inverse (not Conjugate) for safety — handles slightly denormalized
+                // quaternions from JSON deserialization without accumulating error.
+                var invRot = Quaternion.Inverse(relRot);
                 idx.Add(keyB, new CompatibleRoom {
                     EnvId = edge.EnvIdA, CellStruct = edge.CellStructA, PolyId = edge.PolyIdA,
                     Count = edge.Count,

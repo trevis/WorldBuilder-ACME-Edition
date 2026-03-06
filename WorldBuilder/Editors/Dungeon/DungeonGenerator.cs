@@ -34,6 +34,30 @@ namespace WorldBuilder.Editors.Dungeon {
 
         private const float OverlapMinDistDefault = 6.0f;
 
+        /// <summary>
+        /// Constrain a quaternion to yaw-only (Z-axis rotation). AC dungeon cells
+        /// are always upright — floors flat on XY, gravity along -Z. They only rotate
+        /// around Z to face N/S/E/W. Any pitch/roll from computed transforms must be
+        /// stripped or rooms end up sideways.
+        /// </summary>
+        private static Quaternion ConstrainToYaw(Quaternion q) {
+            float len = MathF.Sqrt(q.Z * q.Z + q.W * q.W);
+            if (len < 0.001f) return Quaternion.Identity;
+            return new Quaternion(0, 0, q.Z / len, q.W / len);
+        }
+
+        /// <summary>
+        /// Verify a room is truly a dead-end by loading its CellStruct and counting
+        /// actual portal polygons. The catalog's PortalCount can be stale or wrong.
+        /// </summary>
+        private static bool IsVerifiedDeadEnd(IDatReaderWriter dats, ushort envId, ushort cellStruct) {
+            uint envFileId = (uint)(envId | 0x0D000000);
+            if (!dats.TryGet<DatReaderWriter.DBObjs.Environment>(envFileId, out var env)) return false;
+            if (!env.Cells.TryGetValue(cellStruct, out var cs)) return false;
+            var portalIds = PortalSnapper.GetPortalPolygonIds(cs);
+            return portalIds.Count == 1;
+        }
+
         public static DungeonDocument? Generate(
             GeneratorParams p,
             List<RoomEntry> availableRooms,
@@ -263,7 +287,7 @@ namespace WorldBuilder.Editors.Dungeon {
             int edgeMissCount = 0;
 
             var frontierFailures = new Dictionary<(ushort cellNum, ushort polyId), int>();
-            const int maxPortalRetries = 5;
+            int maxPortalRetries = useFavorites ? 15 : 8;
 
             while (contentCells < targetCells && frontier.Count > 0 && attempts < maxAttempts) {
                 attempts++;
@@ -300,15 +324,18 @@ namespace WorldBuilder.Editors.Dungeon {
                 var frontierKey = (existingCellNum, existingPolyId);
 
                 // Structural control: as the dungeon grows, progressively prefer
-                // smaller rooms. Early growth allows junctions (branching), middle
-                // growth prefers corridors, late growth caps with dead-ends.
+                // smaller rooms. Every extra exit on a placed room creates another
+                // open doorway hole that must eventually be sealed. Prefer corridors
+                // (2 portals) for the bulk of growth, and dead-ends late.
                 float progress = (float)contentCells / targetCells;
-                int preferredMaxExits = progress < 0.3f ? 99    // early: any size, allow branching
-                                      : progress < 0.7f ? 3     // middle: corridors and small junctions
-                                      : 2;                      // late: corridors and dead-ends only
+                int preferredMaxExits = progress < 0.15f ? 4    // very early: allow junctions to branch
+                                      : progress < 0.5f ? 3     // early-mid: corridors and small junctions
+                                      : progress < 0.8f ? 2     // mid-late: corridors only
+                                      : 2;                      // late: corridors and dead-ends
 
-                bool exitBudgetTight = frontier.Count > totalCells * 1.5f;
-                if (exitBudgetTight) preferredMaxExits = Math.Min(preferredMaxExits, 2);
+                // If open exits are growing faster than placed cells, clamp hard
+                bool exitBudgetTight = frontier.Count > totalCells;
+                if (exitBudgetTight) preferredMaxExits = 2;
 
                 DungeonPrefab? chosen = null;
                 CompatibleRoom? matchedRoom = null;
@@ -401,17 +428,17 @@ namespace WorldBuilder.Editors.Dungeon {
                     frontierFailures.TryGetValue(frontierKey, out int fails);
                     frontierFailures[frontierKey] = fails + 1;
 
-                    // In favorites mode, skip geo-snap entirely -- approximate
-                    // positioning produces visible portal misalignment. Only proven
-                    // transforms (edge-guided + bridges) produce correct results.
-                    if (!useFavorites) {
-                        int maxRetries = 5;
-                        if (fails < maxRetries) {
+                    // Geo-snap fallback: use geometric portal alignment when no proven
+                    // transform exists. Now viable in all modes since ComputeSnapTransform
+                    // handles both normal alignment and twist correction.
+                    {
+                        int maxGeoRetries = useFavorites ? 12 : 5;
+                        if (fails < maxGeoRetries) {
                             var pool = exitBudgetTight
                                 ? candidates.Where(pf => pf.OpenFaces.Count <= 2).ToList()
                                 : (connectors.Count > 0 ? connectors : candidates);
                             if (pool.Count == 0) pool = candidates;
-                            int retries = Math.Min(5, pool.Count);
+                            int retries = Math.Min(useFavorites ? 15 : 8, pool.Count);
                             List<ushort>? fallbackResult = null;
                             for (int r = 0; r < retries; r++) {
                                 var candidate = pool[rng.Next(pool.Count)];
@@ -472,16 +499,104 @@ namespace WorldBuilder.Editors.Dungeon {
                 CollectOpenFaces(doc, dats, frontier, p.AllowVertical ? null : geoCache);
             }
 
+            // If growth fell short of target, rebuild frontier and try again using
+            // the FULL KB pool (not just favorites). This creates bridge rooms between
+            // favorite-compatible areas, letting the dungeon grow beyond the narrow
+            // favorites pool. The bridges get favorite surfaces applied later.
+            if (contentCells < targetCells * 0.7f) {
+                frontier.Clear();
+                frontierFailures.Clear();
+                CollectOpenFaces(doc, dats, frontier, p.AllowVertical ? null : geoCache);
+                int restartCells = 0;
+
+                // Build a wider pool from the full KB for bridging
+                var widePool = kb.Prefabs
+                    .Where(pf => pf.OpenFaces.Count >= 1 && pf.OpenFaces.Count <= 3)
+                    .Where(pf => !p.AllowVertical ? !pf.OpenFaceDirections.Any(d => verticalDirs.Contains(d)) : true)
+                    .OrderByDescending(pf => pf.UsageCount)
+                    .Take(300)
+                    .ToList();
+                var wideConnectors = widePool.Where(pf => pf.OpenFaces.Count >= 2).ToList();
+
+                if (frontier.Count > 0 && widePool.Count > 0) {
+                    int restartBudget = (targetCells - contentCells) * 8;
+                    var restartFailures = new Dictionary<(ushort, ushort), int>();
+
+                    for (int ra = 0; ra < restartBudget && frontier.Count > 0 && contentCells < targetCells; ra++) {
+                        int fi = rng.Next(frontier.Count);
+                        var (cn, pid, eid, cs) = frontier[fi];
+                        var fKey = (cn, pid);
+                        var cell = doc.GetCell(cn);
+                        if (cell == null) { frontier.RemoveAt(fi); continue; }
+
+                        restartFailures.TryGetValue(fKey, out int rf);
+
+                        // Try edge-guided first from the full index
+                        bool placed = false;
+                        var compat = portalIndex.GetCompatible(eid, cs, pid);
+                        if (compat.Count > 0) {
+                            foreach (var cr in compat.Take(3)) {
+                                if (!geoCache.AreCompatible(eid, cs, pid, cr.EnvId, cr.CellStruct, cr.PolyId)) continue;
+                                var bridgeResult = TryPlaceEdgeDirectBridge(doc, dats, geoCache, kb,
+                                    cell, cn, pid, cr, placedPositions, roomBounds);
+                                if (bridgeResult != null) {
+                                    totalCells++; contentCells++; restartCells++;
+                                    bridgePlacements++;
+                                    placedPositions.Add(doc.GetCell(bridgeResult.Value)!.Origin);
+                                    frontier.Clear(); restartFailures.Clear();
+                                    CollectOpenFaces(doc, dats, frontier, p.AllowVertical ? null : geoCache);
+                                    placed = true; break;
+                                }
+                            }
+                        }
+
+                        // Then geo-snap with the wide pool
+                        if (!placed) {
+                            var pool = wideConnectors.Count > 0 ? wideConnectors : widePool;
+                            for (int r = 0; r < Math.Min(10, pool.Count); r++) {
+                                var candidate = pool[rng.Next(pool.Count)];
+                                var res = TryAttachPrefab(doc, dats, portalIndex, geoCache,
+                                    cn, pid, candidate, null, placedPositions);
+                                if (res != null && res.Count > 0) {
+                                    totalCells += res.Count; contentCells += res.Count;
+                                    restartCells += res.Count; snapPlacements++;
+                                    foreach (var c in res) {
+                                        var dc = doc.GetCell(c);
+                                        if (dc != null) placedPositions.Add(dc.Origin);
+                                    }
+                                    frontier.Clear(); restartFailures.Clear();
+                                    CollectOpenFaces(doc, dats, frontier, p.AllowVertical ? null : geoCache);
+                                    placed = true; break;
+                                }
+                            }
+                        }
+
+                        if (!placed) {
+                            restartFailures[fKey] = rf + 1;
+                            if (rf + 1 >= 8) frontier.RemoveAt(fi);
+                        }
+                    }
+                    if (restartCells > 0)
+                        Console.WriteLine($"[DungeonGen] Growth boost: placed {restartCells} cells using wider pool");
+                }
+            }
+
             Console.WriteLine($"[DungeonGen] Growth: {totalCells} cells ({contentCells} content + {bridgePlacements} bridge), " +
                 $"{frontier.Count} open exits, {attempts} attempts, {indexedPlacements} edge-guided" +
                 (snapPlacements > 0 ? $", {snapPlacements} geo-snap" : "") +
                 $", {retiredPortals} retired");
 
             // --- PHASE 2: Capping ---
-            // Place dead-end rooms on remaining open portals to close branches.
-            int maxCaps = Math.Min(frontier.Count, (int)(totalCells * 0.3f));
+            // Rebuild the open faces list from scratch — the growth phase's frontier
+            // was depleted by retirements, but the actual dungeon still has open doorways.
+            // Every unconnected portal polygon is a visible hole in a wall.
+            frontier.Clear();
+            CollectOpenFaces(doc, dats, frontier, p.AllowVertical ? null : geoCache);
+            Console.WriteLine($"[DungeonGen] Pre-cap: {frontier.Count} open portals to seal");
+
             int capsPlaced = 0;
-            if (maxCaps > 0 && frontier.Count > 0) {
+            int capNoIndex = 0, capNoCandidate = 0, capOverlap = 0;
+            if (frontier.Count > 0) {
                 var capFrontier = new List<(ushort cellNum, ushort polyId, ushort envId, ushort cellStruct)>(frontier);
                 for (int i = capFrontier.Count - 1; i > 0; i--) {
                     int j = rng.Next(i + 1);
@@ -489,69 +604,184 @@ namespace WorldBuilder.Editors.Dungeon {
                 }
 
                 foreach (var (capCellNum, capPolyId, capEnvId, capCS) in capFrontier) {
-                    if (capsPlaced >= maxCaps) break;
-
                     var capCompatible = portalIndex.GetCompatible(capEnvId, capCS, capPolyId);
-                    if (capCompatible.Count == 0) continue;
+                    if (capCompatible.Count == 0) { capNoIndex++; continue; }
 
                     var existingCell = doc.GetCell(capCellNum);
                     if (existingCell == null) continue;
 
-                    // Prefer dead-end rooms (1 portal) for capping. Filter by roof.
+                    // Only dead-end rooms (1 portal) for capping — placing rooms with
+                    // 2+ portals creates new holes, causing a cascade that doubles the
+                    // open portal count instead of reducing it.
                     var capCandidates = new List<CompatibleRoom>();
+
+                    // Tier 1: verified dead-ends with geometry match
                     foreach (var cr in capCompatible) {
                         if (!geoCache.AreCompatible(capEnvId, capCS, capPolyId,
                                 cr.EnvId, cr.CellStruct, cr.PolyId))
                             continue;
-                        if (p.RequireRoof) {
-                            var catRoom = kb.Catalog.FirstOrDefault(c => c.EnvId == cr.EnvId && c.CellStruct == cr.CellStruct);
-                            if (catRoom != null && !catRoom.HasCeiling) continue;
-                        }
-                        var cKey = (cr.EnvId, cr.CellStruct);
-                        if (roomPortalCounts.TryGetValue(cKey, out int pc) && pc == 1)
-                            capCandidates.Add(cr);
+                        if (!IsVerifiedDeadEnd(dats, cr.EnvId, cr.CellStruct)) continue;
+                        capCandidates.Add(cr);
                     }
+                    // Tier 2: verified dead-ends WITHOUT geometry check
                     if (capCandidates.Count == 0) {
                         foreach (var cr in capCompatible) {
-                            if (!geoCache.AreCompatible(capEnvId, capCS, capPolyId,
-                                    cr.EnvId, cr.CellStruct, cr.PolyId))
-                                continue;
-                            if (p.RequireRoof) {
-                                var catRoom = kb.Catalog.FirstOrDefault(c => c.EnvId == cr.EnvId && c.CellStruct == cr.CellStruct);
-                                if (catRoom != null && !catRoom.HasCeiling) continue;
-                            }
-                            var cKey = (cr.EnvId, cr.CellStruct);
-                            if (roomPortalCounts.TryGetValue(cKey, out int pc) && pc <= 2)
-                                capCandidates.Add(cr);
+                            if (!IsVerifiedDeadEnd(dats, cr.EnvId, cr.CellStruct)) continue;
+                            capCandidates.Add(cr);
                         }
                     }
-                    if (capCandidates.Count == 0) continue;
-
-                    var capRoom = capCandidates[rng.Next(capCandidates.Count)];
-                    var capResult = TryPlaceEdgeDirectBridge(doc, dats, geoCache, kb,
-                        existingCell, capCellNum, capPolyId,
-                        capRoom, placedPositions, roomBounds);
-                    if (capResult != null) {
-                        totalCells++;
-                        capsPlaced++;
-                        placedPositions.Add(doc.GetCell(capResult.Value)!.Origin);
+                    // Tier 3: geometric snap — find dead-end rooms from the catalog
+                    // by portal dimension matching, then position via geometric snap.
+                    // This handles portal faces that never appear adjacent to dead-ends
+                    // in real dungeons.
+                    if (capCandidates.Count == 0) {
+                        var openGeo = geoCache.Get(capEnvId, capCS, capPolyId);
+                        if (openGeo != null && openGeo.Area > 0.01f) {
+                            foreach (var catRoom in kb.Catalog) {
+                                if (catRoom.PortalCount != 1) continue;
+                                if (!IsVerifiedDeadEnd(dats, catRoom.EnvId, catRoom.CellStruct)) continue;
+                                if (catRoom.PortalDimensions.Count == 0) continue;
+                                var pd = catRoom.PortalDimensions[0];
+                                if (pd.Width < 0.1f && pd.Height < 0.1f) continue;
+                                float wRatio = (openGeo.Width > 0.5f && pd.Width > 0.5f)
+                                    ? MathF.Min(openGeo.Width, pd.Width) / MathF.Max(openGeo.Width, pd.Width) : 1f;
+                                float hRatio = (openGeo.Height > 0.5f && pd.Height > 0.5f)
+                                    ? MathF.Min(openGeo.Height, pd.Height) / MathF.Max(openGeo.Height, pd.Height) : 1f;
+                                if (wRatio < 0.5f || hRatio < 0.5f) continue;
+                                capCandidates.Add(new CompatibleRoom {
+                                    EnvId = catRoom.EnvId, CellStruct = catRoom.CellStruct,
+                                    PolyId = catRoom.PortalDimensions[0].PolyId,
+                                    Count = catRoom.UsageCount
+                                });
+                                if (capCandidates.Count >= 10) break;
+                            }
+                        }
                     }
+                    if (capCandidates.Count == 0) { capNoCandidate++; continue; }
+
+                    var sorted = capCandidates
+                        .OrderByDescending(cr => cr.Count)
+                        .Take(8);
+
+                    bool placed = false;
+                    foreach (var capRoom in sorted) {
+                        // Try edge-direct first (proven transform), then geometric snap
+                        var capResult = TryPlaceEdgeDirectBridge(doc, dats, geoCache, kb,
+                            existingCell, capCellNum, capPolyId,
+                            capRoom, placedPositions, roomBounds, overlapScale: 0.3f);
+                        if (capResult == null) {
+                            capResult = TryPlaceEdgeDirectBridge(doc, dats, geoCache, kb,
+                                existingCell, capCellNum, capPolyId,
+                                capRoom, placedPositions, roomBounds, overlapScale: 0f);
+                        }
+                        if (capResult == null) {
+                            capResult = TryCapWithGeometricSnap(doc, dats, geoCache, kb,
+                                existingCell, capCellNum, capPolyId,
+                                capRoom, placedPositions);
+                        }
+                        if (capResult != null) {
+                            totalCells++;
+                            capsPlaced++;
+                            placedPositions.Add(doc.GetCell(capResult.Value)!.Origin);
+                            placed = true;
+                            break;
+                        }
+                    }
+                    if (!placed) capOverlap++;
                 }
 
-                if (capsPlaced > 0) {
+                frontier.Clear();
+                CollectOpenFaces(doc, dats, frontier, p.AllowVertical ? null : geoCache);
+                Console.WriteLine($"[DungeonGen] Capping: placed {capsPlaced} dead-ends, {frontier.Count} remaining " +
+                    $"(failed: {capNoIndex} no-index, {capNoCandidate} no-candidate, {capOverlap} overlap)");
+
+                // Iterative capping: seal new open portals created by previous caps.
+                // Stop when no net progress (remaining count stops decreasing).
+                int prevRemaining = frontier.Count;
+                for (int capPass = 2; capPass <= 4 && frontier.Count > 0; capPass++) {
+                    int passSealed = 0;
+                    var passFrontier = new List<(ushort cellNum, ushort polyId, ushort envId, ushort cellStruct)>(frontier);
+                    foreach (var (cn, pid, eid, cs) in passFrontier) {
+                        var compat = portalIndex.GetCompatible(eid, cs, pid);
+                        var cell = doc.GetCell(cn);
+                        if (cell == null) continue;
+
+                        // Try dead-ends from index first, then catalog geometric snap
+                        CompatibleRoom? deadEnd = null;
+                        if (compat.Count > 0) {
+                            foreach (var cr in compat) {
+                                if (!IsVerifiedDeadEnd(dats, cr.EnvId, cr.CellStruct)) continue;
+                                deadEnd = cr; break;
+                            }
+                        }
+
+                        bool sealed_ = false;
+                        if (deadEnd != null) {
+                            var r = TryPlaceEdgeDirectBridge(doc, dats, geoCache, kb,
+                                cell, cn, pid, deadEnd, placedPositions, roomBounds, overlapScale: 0f);
+                            if (r != null) {
+                                totalCells++; passSealed++;
+                                placedPositions.Add(doc.GetCell(r.Value)!.Origin);
+                                sealed_ = true;
+                            }
+                        }
+                        if (!sealed_) {
+                            // Geometric snap with catalog dead-ends
+                            var openGeo = geoCache.Get(eid, cs, pid);
+                            if (openGeo != null) {
+                                foreach (var catRoom in kb.Catalog.Where(c => c.PortalCount == 1 && c.PortalDimensions.Count > 0
+                                    && IsVerifiedDeadEnd(dats, c.EnvId, c.CellStruct)).Take(20)) {
+                                    var pd = catRoom.PortalDimensions[0];
+                                    float wR = (openGeo.Width > 0.5f && pd.Width > 0.5f)
+                                        ? MathF.Min(openGeo.Width, pd.Width) / MathF.Max(openGeo.Width, pd.Width) : 1f;
+                                    float hR = (openGeo.Height > 0.5f && pd.Height > 0.5f)
+                                        ? MathF.Min(openGeo.Height, pd.Height) / MathF.Max(openGeo.Height, pd.Height) : 1f;
+                                    if (wR < 0.4f || hR < 0.4f) continue;
+                                    var cr = new CompatibleRoom { EnvId = catRoom.EnvId, CellStruct = catRoom.CellStruct, PolyId = pd.PolyId };
+                                    var r = TryCapWithGeometricSnap(doc, dats, geoCache, kb,
+                                        cell, cn, pid, cr, placedPositions);
+                                    if (r != null) {
+                                        totalCells++; passSealed++;
+                                        placedPositions.Add(doc.GetCell(r.Value)!.Origin);
+                                        sealed_ = true; break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if (passSealed == 0) break;
+                    capsPlaced += passSealed;
                     frontier.Clear();
                     CollectOpenFaces(doc, dats, frontier, p.AllowVertical ? null : geoCache);
-                    Console.WriteLine($"[DungeonGen] Capping: placed {capsPlaced} dead-ends, {frontier.Count} exits remaining");
+                    Console.WriteLine($"[DungeonGen] Cap pass {capPass}: sealed {passSealed} more, {frontier.Count} remaining");
+
+                    // Stop if remaining count isn't decreasing — geometric snap caps
+                    // may place rooms with more portals than the catalog reports,
+                    // creating an infinite seal/create cycle.
+                    if (frontier.Count >= prevRemaining) break;
+                    prevRemaining = frontier.Count;
                 }
             }
 
-            Console.WriteLine($"[DungeonGen] Final: {totalCells} cells, {frontier.Count} open exits");
+            Console.WriteLine($"[DungeonGen] Final: {totalCells} cells, {frontier.Count} open portals");
 
             // Post-generation: fix one-way portals that may have been missed during
             // placement. The game client requires symmetric portal entries.
             int portalFixes = doc.AutoFixPortals();
             if (portalFixes > 0)
                 Console.WriteLine($"[DungeonGen] Auto-fixed {portalFixes} one-way portal(s)");
+
+            // Compute portal_side flags from geometry. The AC client uses these to
+            // determine which half-space of each portal polygon is the cell interior.
+            // Without correct flags, portal traversal and collision detection break.
+            int flagFixes = doc.RecomputePortalFlags(dats);
+            if (flagFixes > 0)
+                Console.WriteLine($"[DungeonGen] Computed portal flags for {flagFixes} portal(s)");
+
+            // Set exact_match on portal pairs whose geometry matches.
+            int exactMatchFixes = SetExactMatchFlags(doc, dats, geoCache);
+            if (exactMatchFixes > 0)
+                Console.WriteLine($"[DungeonGen] Set exact_match on {exactMatchFixes} portal pair(s)");
 
             // Post-generation: apply surfaces.
             // In favorites mode, use the surfaces from the favorited prefabs' cells directly
@@ -636,7 +866,7 @@ namespace WorldBuilder.Editors.Dungeon {
                         continue;
 
                     var newOrigin = existingCell.Origin + Vector3.Transform(match.RelOffset, existingCell.Orientation);
-                    var newRot = Quaternion.Normalize(existingCell.Orientation * match.RelRot);
+                    var newRot = ConstrainToYaw(Quaternion.Normalize(existingCell.Orientation * match.RelRot));
 
                     if (WouldOverlap(newOrigin, placedPositions, prefab, openFace.CellIndex, newRot,
                             excludeOrigin: existingCell.Origin))
@@ -679,9 +909,8 @@ namespace WorldBuilder.Editors.Dungeon {
             }
             if (connectingFace == null) return null;
 
-            var rawOrigin = existingCell.Origin + Vector3.Transform(matchedRoom.RelOffset, existingCell.Orientation);
-            var newOrigin = SnapToGrid(rawOrigin, 10f, 6f);
-            var newRot = Quaternion.Normalize(existingCell.Orientation * matchedRoom.RelRot);
+            var newOrigin = existingCell.Origin + Vector3.Transform(matchedRoom.RelOffset, existingCell.Orientation);
+            var newRot = ConstrainToYaw(Quaternion.Normalize(existingCell.Orientation * matchedRoom.RelRot));
 
             if (WouldOverlap(newOrigin, placedPositions, prefab, connectingFace.CellIndex, newRot,
                     excludeOrigin: existingCell.Origin))
@@ -732,8 +961,17 @@ namespace WorldBuilder.Editors.Dungeon {
                 var sourceGeom = PortalSnapper.GetPortalGeometry(prefabCS, openFace.PolyId);
                 if (sourceGeom == null) continue;
 
-                var (snapOrigin, snapRot) = PortalSnapper.ComputeSnapTransform(
-                    targetCentroid, targetNormal, sourceGeom.Value);
+                // Transform target portal verts to world space for twist alignment
+                var targetWorldGeom = new PortalSnapper.PortalGeometry {
+                    Centroid = targetCentroid,
+                    Normal = targetNormal,
+                    Vertices = targetGeom.Value.Vertices.Select(v =>
+                        Vector3.Transform(v, existingCell.Orientation) + existingCell.Origin).ToList()
+                };
+
+                var (snapOrigin, snapRotRaw) = PortalSnapper.ComputeSnapTransform(
+                    targetCentroid, targetNormal, sourceGeom.Value, targetWorldGeom);
+                var snapRot = ConstrainToYaw(snapRotRaw);
 
                 if (WouldOverlap(snapOrigin, placedPositions, prefab, openFace.CellIndex, snapRot,
                         excludeOrigin: existingCell.Origin))
@@ -757,19 +995,20 @@ namespace WorldBuilder.Editors.Dungeon {
         /// Place a single room using a proven edge transform directly, without needing
         /// a prefab. Gets exact surface data from the DAT so the cell renders correctly.
         /// </summary>
+        /// <param name="overlapScale">Multiplier for overlap radius (1.0 = normal, 0.5 = relaxed for capping).</param>
         private static ushort? TryPlaceEdgeDirectBridge(
             DungeonDocument doc, IDatReaderWriter dats, PortalGeometryCache geoCache,
             DungeonKnowledgeBase kb,
             DungeonCellData existingCell, ushort existingCellNum, ushort existingPolyId,
             CompatibleRoom bridgeRoom, List<Vector3> placedPositions,
-            Dictionary<(ushort, ushort), float>? roomBounds) {
+            Dictionary<(ushort, ushort), float>? roomBounds,
+            float overlapScale = 1.0f) {
 
-            var rawOrigin = existingCell.Origin + Vector3.Transform(bridgeRoom.RelOffset, existingCell.Orientation);
-            var newOrigin = SnapToGrid(rawOrigin, 10f, 6f);
-            var newRot = Quaternion.Normalize(existingCell.Orientation * bridgeRoom.RelRot);
+            var newOrigin = existingCell.Origin + Vector3.Transform(bridgeRoom.RelOffset, existingCell.Orientation);
+            var newRot = ConstrainToYaw(Quaternion.Normalize(existingCell.Orientation * bridgeRoom.RelRot));
 
             if (WouldOverlapSingle(newOrigin, placedPositions, bridgeRoom.EnvId, bridgeRoom.CellStruct, roomBounds,
-                    excludeOrigin: existingCell.Origin))
+                    excludeOrigin: existingCell.Origin, overlapScale: overlapScale))
                 return null;
 
             // Get exact surfaces from the DAT by finding a real EnvCell that uses
@@ -862,12 +1101,14 @@ namespace WorldBuilder.Editors.Dungeon {
 
         private static bool WouldOverlapSingle(Vector3 origin, List<Vector3> existing,
             ushort envId, ushort cellStruct, Dictionary<(ushort, ushort), float>? roomBounds,
-            Vector3? excludeOrigin = null) {
+            Vector3? excludeOrigin = null, float overlapScale = 1.0f) {
+
+            if (overlapScale <= 0f) return false;
 
             float halfWidth = OverlapMinDistDefault;
             if (roomBounds != null && roomBounds.TryGetValue((envId, cellStruct), out var r))
                 halfWidth = MathF.Max(r, 3.0f);
-            float radius = halfWidth * 1.5f;
+            float radius = halfWidth * 1.5f * overlapScale;
 
             foreach (var ep in existing) {
                 if (excludeOrigin.HasValue && (ep - excludeOrigin.Value).LengthSquared() < 1f)
@@ -878,16 +1119,99 @@ namespace WorldBuilder.Editors.Dungeon {
         }
 
         /// <summary>
-        /// Snap a position to the dungeon grid. Real AC dungeons use a 10-unit
-        /// horizontal and 6-unit vertical grid. Snapping eliminates floating-point
-        /// drift from chained transforms.
+        /// Cap an open portal via geometric snap when no proven edge transform exists.
+        /// Loads the target room's CellStruct, finds its single portal polygon, and
+        /// uses ComputeSnapTransform to align it with the open portal.
         /// </summary>
-        private static Vector3 SnapToGrid(Vector3 pos, float gridH, float gridV) {
-            if (gridH <= 0 || gridV <= 0) return pos;
-            return new Vector3(
-                MathF.Round(pos.X / gridH) * gridH,
-                MathF.Round(pos.Y / gridH) * gridH,
-                MathF.Round(pos.Z / gridV) * gridV);
+        private static ushort? TryCapWithGeometricSnap(
+            DungeonDocument doc, IDatReaderWriter dats, PortalGeometryCache geoCache,
+            DungeonKnowledgeBase kb,
+            DungeonCellData existingCell, ushort existingCellNum, ushort existingPolyId,
+            CompatibleRoom capRoom, List<Vector3> placedPositions) {
+
+            uint existingEnvFileId = (uint)(existingCell.EnvironmentId | 0x0D000000);
+            if (!dats.TryGet<DatReaderWriter.DBObjs.Environment>(existingEnvFileId, out var existingEnv)) return null;
+            if (!existingEnv.Cells.TryGetValue(existingCell.CellStructure, out var existingCS)) return null;
+
+            var targetGeom = PortalSnapper.GetPortalGeometry(existingCS, existingPolyId);
+            if (targetGeom == null) return null;
+
+            var (targetCentroid, targetNormal) = PortalSnapper.TransformPortalToWorld(
+                targetGeom.Value, existingCell.Origin, existingCell.Orientation);
+
+            uint capEnvFileId = (uint)(capRoom.EnvId | 0x0D000000);
+            if (!dats.TryGet<DatReaderWriter.DBObjs.Environment>(capEnvFileId, out var capEnv)) return null;
+            if (!capEnv.Cells.TryGetValue(capRoom.CellStruct, out var capCS)) return null;
+
+            var portalIds = PortalSnapper.GetPortalPolygonIds(capCS);
+            if (portalIds.Count == 0) return null;
+
+            // Use the specified portal or find the best matching one
+            ushort capPolyId = capRoom.PolyId;
+            if (!capCS.Polygons.ContainsKey(capPolyId) && portalIds.Count > 0)
+                capPolyId = portalIds[0];
+
+            var sourceGeom = PortalSnapper.GetPortalGeometry(capCS, capPolyId);
+            if (sourceGeom == null) return null;
+
+            var targetWorldGeom = new PortalSnapper.PortalGeometry {
+                Centroid = targetCentroid, Normal = targetNormal,
+                Vertices = targetGeom.Value.Vertices.Select(v =>
+                    Vector3.Transform(v, existingCell.Orientation) + existingCell.Origin).ToList()
+            };
+
+            var (snapOrigin, snapRotRaw) = PortalSnapper.ComputeSnapTransform(
+                targetCentroid, targetNormal, sourceGeom.Value, targetWorldGeom);
+            var snapRot = ConstrainToYaw(snapRotRaw);
+
+            var surfaces = FindSurfacesFromDat(dats, capRoom.EnvId, capRoom.CellStruct);
+            if (surfaces == null || surfaces.Count == 0) {
+                var catalogRoom = kb.Catalog.FirstOrDefault(cr =>
+                    cr.EnvId == capRoom.EnvId && cr.CellStruct == capRoom.CellStruct);
+                if (catalogRoom?.SampleSurfaces != null && catalogRoom.SampleSurfaces.Count > 0)
+                    surfaces = new List<ushort>(catalogRoom.SampleSurfaces);
+                else
+                    surfaces = new List<ushort> { 0x032A };
+            }
+
+            var cellNum = doc.AddCell(capRoom.EnvId, capRoom.CellStruct,
+                snapOrigin, snapRot, surfaces);
+            doc.ConnectPortals(existingCellNum, existingPolyId, cellNum, capPolyId);
+            return cellNum;
+        }
+
+        /// <summary>
+        /// Set the exact_match flag on portal pairs where both sides have the same
+        /// portal polygon geometry (area, vertex count). The AC client uses this
+        /// flag for rendering optimization and proper portal clipping.
+        /// </summary>
+        private static int SetExactMatchFlags(DungeonDocument doc, IDatReaderWriter dats,
+            PortalGeometryCache geoCache) {
+            int fixes = 0;
+            foreach (var cell in doc.Cells) {
+                foreach (var portal in cell.CellPortals) {
+                    var otherCell = doc.GetCell(portal.OtherCellId);
+                    if (otherCell == null) continue;
+
+                    var geoA = geoCache.Get(cell.EnvironmentId, cell.CellStructure, portal.PolygonId);
+                    var geoB = geoCache.Get(otherCell.EnvironmentId, otherCell.CellStructure, portal.OtherPortalId);
+
+                    if (geoA != null && geoB != null) {
+                        float areaRatio = MathF.Min(geoA.Area, geoB.Area) / MathF.Max(geoA.Area, geoB.Area);
+                        bool isExact = areaRatio > 0.95f && geoA.VertexCount == geoB.VertexCount;
+
+                        // AC client: exact_match is bit 0 of the flags word.
+                        // portal_side is bit 1 (inverted in the packed format, but
+                        // RecomputePortalFlags handles that separately).
+                        if (isExact && (portal.Flags & 0x0001) == 0) {
+                            portal.Flags |= 0x0001;
+                            fixes++;
+                        }
+                    }
+                }
+            }
+            if (fixes > 0) doc.MarkDirty();
+            return fixes;
         }
 
         private static void PlaceRemainingCells(
@@ -915,7 +1239,7 @@ namespace WorldBuilder.Editors.Dungeon {
                 var relRot = Quaternion.Normalize(new Quaternion(pc.RotX, pc.RotY, pc.RotZ, pc.RotW));
 
                 var worldOrigin = worldBaseOrigin + Vector3.Transform(offset, worldBaseRot);
-                var worldRot = Quaternion.Normalize(worldBaseRot * relRot);
+                var worldRot = ConstrainToYaw(Quaternion.Normalize(worldBaseRot * relRot));
 
                 var newCellNum = doc.AddCell(pc.EnvId, pc.CellStruct,
                     worldOrigin, worldRot, pc.Surfaces.ToList());
