@@ -57,6 +57,9 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
         private CameraBookmarksPanelViewModel? _bookmarksPanel;
 
         [ObservableProperty]
+        private WorldMapPanelViewModel? _worldMapPanel;
+
+        [ObservableProperty]
         private object? _leftPanelContent;
 
         [ObservableProperty]
@@ -179,6 +182,7 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
             TexturePalette.TextureSelected += OnPaletteTextureSelected;
 
             BookmarksPanel = new CameraBookmarksPanelViewModel(TerrainSystem, Settings);
+            WorldMapPanel = new WorldMapPanelViewModel(TerrainSystem, TerrainSystem.Scene.SurfaceManager);
 
             LeftPanelContent = ObjectBrowser;
             LeftPanelTitle = "Object Browser";
@@ -207,6 +211,7 @@ namespace WorldBuilder.Editors.Landscape.ViewModels {
             if (LayersPanel != null) Register("Layers", "Layers", LayersPanel, DockLocation.Right);
             if (HistorySnapshotPanel != null) Register("History", "History", HistorySnapshotPanel, DockLocation.Right);
             if (BookmarksPanel != null) Register("Bookmarks", "Bookmarks", BookmarksPanel, DockLocation.Right);
+            if (WorldMapPanel != null) Register("WorldMap", "World Map", WorldMapPanel, DockLocation.Right);
 
             Register("AceInstances", "ACE Instances", new AceInstancesPanelViewModel(this), DockLocation.Right);
             Register("Toolbox", "Tools", new ToolboxViewModel(this), DockLocation.Right);
